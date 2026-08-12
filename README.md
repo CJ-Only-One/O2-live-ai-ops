@@ -72,11 +72,51 @@ aws s3api put-public-access-block --bucket o2-live-tfstate \
 저장소 Settings → Environments → `infra` 생성 후 **required reviewers** 지정.
 이 설정을 빼먹으면 `tf.yml`의 apply가 승인 없이 그냥 실행된다.
 
+### 4. Argo CD 등록
+
+클러스터에 Argo CD를 설치한 뒤, 이 저장소를 보게 한 번만 등록한다.
+
+```bash
+kubectl apply -f bootstrap/argocd-application.yaml
+```
+
+이후로는 `main` 에 태그 갱신 커밋이 올라올 때마다 Argo가 알아서 반영한다.
+기본 폴링 주기는 180초다.
+
+## 배포 흐름
+
+```
+푸시 → app.yml
+        ├ verify   바뀐 서비스만 gradle build + test
+        ├ image    이미지 빌드 → ECR (태그: 커밋 SHA)
+        └ deploy   deploy/<service>-deployment.yaml 의 태그 갱신 후 커밋
+                     → Argo CD가 감지 → 클러스터에 반영
+```
+
+`app.yml` 은 **EKS를 직접 건드리지 않는다.** 배포 요청을 커밋으로 남기는 데서 끝난다.
+CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004에 있다.
+
+매니페스트 파일명은 `deploy/<service>-deployment.yaml` 규약을 따른다.
+평면 배치라 `yq` 가 이 경로로 이미지 태그를 찾아 고치기 때문이며,
+이름이 어긋나면 태그 갱신이 건너뛰어진다(워크플로가 경고를 남긴다).
+
+## 서비스 추가하기
+
+1. `apps/<service>/` — Dockerfile과 소스
+2. `deploy/<service>-deployment.yaml`, `deploy/<service>-service.yaml`
+3. ECR 저장소 `o2/<service>` 생성
+
+워크플로는 고치지 않아도 된다. `apps/` 아래를 훑어 바뀐 서비스만 빌드한다.
+
 ## 상태
 
 - [x] 저장소 골격
 - [x] `scan.yml` — gitleaks
 - [x] `tf.yml` — plan / 승인 후 apply
-- [ ] `app.yml` — 배포 방식 결정 대기 (`docs/decisions.md` D-004)
-- [ ] `infra/01-network`, `02-eks`, `03-data` — 범위 결정 대기 (D-005)
-- [ ] `apps/`, `deploy/`, `loadtest/`
+- [x] `app.yml` — 빌드 → ECR → 태그 갱신 커밋 (Argo가 배포)
+- [x] `apps/api` — Spring Boot (Kotlin)
+- [x] `deploy/` — 평면 매니페스트
+- [x] `bootstrap/` — Argo CD Application
+- [x] `loadtest/spike.js` — 스파이크 시나리오 (k6)
+- [ ] `infra/01-network`, `02-eks`, `03-data` — 로컬 검증 후 반영 (D-005)
+- [ ] `AWS_APP_ROLE_ARN` 시크릿 등록 — 없으면 `image` 잡이 인증 오류로 실패한다

@@ -1,0 +1,231 @@
+name: app
+
+# 빌드와 배포를 한 파일에서 다룬다. 다만 "배포"의 정의가 GitOps에서는 다르다.
+# 이 워크플로는 EKS를 직접 건드리지 않고, deploy/ 의 이미지 태그를 갱신하는
+# 커밋을 만드는 데서 끝난다. 그 커밋을 Argo CD가 읽어 클러스터에 반영한다.
+#
+# Actions가 kubectl apply까지 하면 Argo와 서로를 덮어쓰며 싸우고,
+# CI에 클러스터 수정 권한을 줘야 해서 토큰 유출 시 노출 범위가 커진다.
+on:
+  pull_request:
+    paths: ['apps/**', 'deploy/**', '.github/workflows/app.yml']
+  push:
+    branches: [main]
+    # deploy/** 를 뺀 이유: 이 워크플로가 스스로 만든 태그 갱신 커밋에
+    # 다시 반응해서 무한히 도는 것을 막는다.
+    paths: ['apps/**', '.github/workflows/app.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: app-${{ github.ref }}
+  # 배포는 취소하지 않는다. 중간에 끊기면 ECR에는 이미지가 있는데
+  # 매니페스트는 안 올라간 어정쩡한 상태가 남는다.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  YQ_VERSION: v4.44.3
+
+jobs:
+  # apps/ 아래에서 바뀐 서비스만 골라낸다.
+  # 서비스가 늘어도 워크플로를 고칠 필요가 없게 하는 것이 목적이다.
+  changed:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.detect.outputs.services }}
+      any: ${{ steps.detect.outputs.any }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: detect
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if git rev-parse --verify --quiet "$BASE" >/dev/null; then
+            CHANGED=$(git diff --name-only "$BASE" HEAD -- apps/)
+          else
+            CHANGED=""
+          fi
+
+          SERVICES=()
+          for dir in apps/*/; do
+            [ -d "$dir" ] || continue
+            svc=$(basename "$dir")
+            # 기준 커밋을 못 찾거나(최초 푸시) 수동 실행이면 전부 대상으로 삼는다.
+            if [ -z "$CHANGED" ] && [ "${{ github.event_name }}" != "pull_request" ]; then
+              SERVICES+=("$svc")
+            elif echo "$CHANGED" | grep -q "^apps/$svc/"; then
+              SERVICES+=("$svc")
+            fi
+          done
+
+          if [ ${#SERVICES[@]} -eq 0 ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "services=[]" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+            printf -v J '"%s",' "${SERVICES[@]}"
+            echo "services=[${J%,}]" >> "$GITHUB_OUTPUT"
+          fi
+          echo "대상 서비스: ${SERVICES[*]:-없음}"
+
+  # ── 빌드 · 테스트 ────────────────────────────────────────
+  # PR에서 도는 것이 핵심이다. 합치기 전에 깨진 것을 잡는 게 목적이다.
+  verify:
+    needs: changed
+    if: needs.changed.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changed.outputs.services) }}
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+          # 포크 PR이 캐시를 오염시키지 못하게 한다.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: 빌드 + 테스트
+        run: gradle build --no-daemon
+
+      - name: 테스트 리포트
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-${{ matrix.service }}
+          path: apps/${{ matrix.service }}/build/reports/tests/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # 매니페스트가 문법적으로 유효한지 본다.
+  # 깨진 채로 머지되면 Argo가 sync에서 멈추는데, 그때는 원인이 훨씬 안 보인다.
+  manifests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: YAML 검증
+        run: |
+          fail=0
+          for f in deploy/*.yaml bootstrap/*.yaml; do
+            [ -e "$f" ] || continue
+            python3 -c "import yaml,sys; list(yaml.safe_load_all(open('$f')))" \
+              && echo "OK   $f" || { echo "FAIL $f"; fail=1; }
+          done
+          exit $fail
+
+  # ── 이미지 빌드 · ECR ────────────────────────────────────
+  image:
+    needs: [changed, verify]
+    if: github.event_name != 'pull_request' && needs.changed.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write        # OIDC로 AWS 역할을 빌린다
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changed.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # 장기 액세스 키를 저장소에 두지 않는다.
+      # 앱 배포용 역할은 ECR push 권한만 갖는다 — Terraform 역할과 분리되어 있다.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_APP_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.service }}
+          push: true
+          # 커밋 SHA가 진짜 태그다. latest는 사람이 보기 편한 별칭일 뿐이고,
+          # 매니페스트가 latest를 참조하면 롤백이 불가능해진다.
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/o2/${{ matrix.service }}:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/o2/${{ matrix.service }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 배포 요청 ────────────────────────────────────────────
+  # 여기가 GitOps의 이음매다. 이 커밋이 곧 배포 요청이 된다.
+  # 서비스마다 커밋을 만들면 병렬 잡이 서로 밀어내며 충돌하므로,
+  # 이미지가 전부 올라간 뒤 단일 잡에서 한 번에 갱신한다.
+  deploy:
+    needs: [changed, image]
+    if: github.event_name != 'pull_request' && needs.changed.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write        # 태그 갱신 커밋을 되민다
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_APP_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 평면 배치라 kustomize가 없다. sed로 문자열을 바꾸면 주석이나
+      # 비슷한 문자열까지 건드릴 수 있어, 경로를 지정해 고치는 yq를 쓴다.
+      - name: yq 설치
+        run: |
+          curl -sSL -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          chmod +x /usr/local/bin/yq
+
+      - name: 이미지 태그 갱신
+        run: |
+          for svc in $(echo '${{ needs.changed.outputs.services }}' | tr -d '[]"' | tr ',' ' '); do
+            f="deploy/${svc}-deployment.yaml"
+            if [ ! -f "$f" ]; then
+              echo "::warning::$f 가 없어 건너뜁니다. 서비스를 추가할 때 매니페스트도 같이 만들어야 합니다."
+              continue
+            fi
+            IMAGE="${{ steps.ecr.outputs.registry }}/o2/${svc}:${{ github.sha }}" \
+              yq -i '.spec.template.spec.containers[0].image = strenv(IMAGE)' "$f"
+            echo "$f → $IMAGE"
+          done
+
+      - name: 커밋
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/
+          if git diff --cached --quiet; then
+            echo "이미지 태그 변화 없음 — 커밋 생략"
+            exit 0
+          fi
+          git commit -m "deploy: 이미지를 ${GITHUB_SHA::7}로 갱신"
+          git push
