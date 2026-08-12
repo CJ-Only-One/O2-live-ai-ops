@@ -22,28 +22,28 @@ spec:
         - name: api
           # app.yml의 deploy 잡이 yq로 이 줄만 갈아끼운다.
           # 태그는 커밋 SHA다. latest를 쓰면 롤백이 불가능해진다.
-          image: 066107819912.dkr.ecr.ap-northeast-2.amazonaws.com/o2/api:latest
+          image: 066107819912.dkr.ecr.ap-northeast-2.amazonaws.com/o2/api:32ed2ce74c7e7708ca47a456f2247c405aceeede
           ports:
             - name: http
               containerPort: 8080
           # JVM은 뜨는 데 시간이 걸린다. startupProbe로 초기 구동을 봐주지 않으면
           # liveness가 먼저 실패해 파드가 계속 재시작되는 루프에 빠진다.
           startupProbe:
-            httpGet: { path: /actuator/health/readiness, port: http }
+            httpGet: {path: /actuator/health/readiness, port: http}
             periodSeconds: 5
             failureThreshold: 30
           readinessProbe:
-            httpGet: { path: /actuator/health/readiness, port: http }
+            httpGet: {path: /actuator/health/readiness, port: http}
             periodSeconds: 10
           livenessProbe:
-            httpGet: { path: /actuator/health/liveness, port: http }
+            httpGet: {path: /actuator/health/liveness, port: http}
             periodSeconds: 20
           resources:
             requests:
               cpu: 100m
               memory: 384Mi
             limits:
-              memory: 640Mi   # CPU limit은 일부러 걸지 않는다 — 스로틀링이 지연을 만든다
+              memory: 640Mi # CPU limit은 일부러 걸지 않는다 — 스로틀링이 지연을 만든다
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
