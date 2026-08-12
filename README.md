@@ -118,5 +118,10 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 - [x] `deploy/` — 평면 매니페스트
 - [x] `bootstrap/` — Argo CD Application
 - [x] `loadtest/spike.js` — 스파이크 시나리오 (k6)
+- [x] `AWS_APP_ROLE_ARN` / `AWS_TF_ROLE_ARN` 시크릿 등록
+- [x] `infra/00-cicd` — OIDC 프로바이더, IAM Role 2개, ECR (로컬 적용 완료)
+- [x] `infra` 환경 승인 게이트 — 필수 리뷰어 SangMun, j0chan
+- [x] 파이프라인 전 구간 검증 — 커밋 → ECR → 태그 갱신 → Argo → 파드 응답
+- [ ] Terraform state를 S3로 이전 — **끝나기 전에는 `infra/` 를 커밋하지 말 것**
+      (CI에는 state가 없어 이미 있는 리소스를 다시 만들려다 깨진다)
 - [ ] `infra/01-network`, `02-eks`, `03-data` — 로컬 검증 후 반영 (D-005)
-- [ ] `AWS_APP_ROLE_ARN` 시크릿 등록 — 없으면 `image` 잡이 인증 오류로 실패한다

@@ -94,6 +94,54 @@ kustomize가 없으므로 `kustomize edit set image` 를 쓸 수 없다.
 
 ---
 
+## 겪은 함정
+
+구축 중 실제로 부딪힌 것들. 같은 자리에서 두 번 넘어지지 않기 위해 남긴다.
+
+### IAM Role의 `description`에 한글을 쓸 수 없다
+
+AWS가 `[	
+ -~¡-ÿ]` 만 허용한다.
+한글은 물론 em-dash(`—`)도 범위 밖이라 `ValidationError` 로 apply가 실패한다.
+Terraform 변수나 출력의 `description` 은 AWS로 전달되지 않으므로 한글이어도 무방하다.
+
+### `force_delete` 는 config가 아니라 state의 값으로 동작한다
+
+이미지가 든 ECR 저장소는 그냥 destroy되지 않는다. `force_delete = true` 를
+**나중에 추가하고 destroy하면 반영되지 않는다** — destroy는 state에 저장된 값을 쓰기 때문이다.
+반영하려면 `apply` 를 한 번 거쳐 state를 갱신해야 하는데,
+이미 다른 리소스가 지워진 뒤라면 그 apply가 지워진 것들을 되살린다.
+
+만들 때 정해두거나, 삭제 대신 `terraform state rm` + `import` 로
+소유권을 옮기는 편이 안전하다. 실제로 `o2/api` 는 후자로 처리했다.
+
+### OIDC 프로바이더는 계정에 하나뿐이라 소유자를 정해야 한다
+
+`token.actions.githubusercontent.com` 프로바이더는 계정 단위 리소스다.
+여러 스택이 각자 `resource` 로 선언하면 두 번째 apply가 충돌하고,
+한쪽이 destroy하면 다른 쪽이 조용히 깨진다.
+**이 저장소의 `00-cicd` 가 소유자다.** 다른 스택은 `data` 로 참조할 것.
+
+### GitHub OIDC의 `sub` 에 숫자 ID가 붙는다
+
+이 조직은 `repo:CJ-Only-One@315606307/O2-live-ai-ops@1331684285:...` 형태다.
+문서에 흔히 나오는 `repo:org/repo:*` 패턴만 신뢰 정책에 넣으면
+`Not authorized to perform sts:AssumeRoleWithWebIdentity` 로 거절된다.
+확인 방법:
+
+```bash
+gh api /repos/CJ-Only-One/O2-live-ai-ops/actions/oidc/customization/sub
+```
+
+### 컨테이너 `USER` 는 숫자여야 한다
+
+매니페스트에 `runAsNonRoot: true` 를 걸면 kubelet이 root 여부를 검증하는데,
+이미지가 `USER app` 처럼 **이름**으로 지정하면 검증이 불가능해
+`CreateContainerConfigError` 로 컨테이너 생성 자체가 거부된다.
+Dockerfile과 매니페스트가 같은 숫자 UID(여기서는 `10001`)를 가리켜야 한다.
+
+---
+
 ## D-005. 인프라는 로컬에서 검증한 뒤 올린다
 
 `infra/` 의 세 스택은 아직 비어 있다. 로컬에서 `plan` 으로 확인이 끝난 뒤
