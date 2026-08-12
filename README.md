@@ -45,17 +45,25 @@ state에는 RDS 비밀번호 같은 값이 평문으로 들어가므로 로컬�
 S3 버킷과 잠금 테이블을 먼저 만든다. (이 두 개만은 손으로 만든다 —
 state를 보관할 곳을 만드는 데 state가 필요한 순환을 피하기 위해서다)
 
+**이미 만들어져 있다** — `s3://o2-live-tfstate`. 아래는 재현이 필요할 때의 기록이다.
+버킷 하나만 손으로 만들고, 각 스택은 `backend "s3"` 로 그 안의 키를 쓴다.
+
 ```bash
-aws s3api create-bucket --bucket o2-live-tfstate --region ap-northeast-2 \
+B=o2-live-tfstate
+aws s3api create-bucket --bucket $B --region ap-northeast-2 \
   --create-bucket-configuration LocationConstraint=ap-northeast-2
-aws s3api put-bucket-versioning --bucket o2-live-tfstate \
-  --versioning-configuration Status=Enabled
-aws s3api put-public-access-block --bucket o2-live-tfstate \
-  --public-access-block-configuration \
+aws s3api put-public-access-block --bucket $B --public-access-block-configuration \
   BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+aws s3api put-bucket-versioning --bucket $B \
+  --versioning-configuration Status=Enabled
+aws s3api put-bucket-encryption --bucket $B --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"},"BucketKeyEnabled":true}]}'
 ```
 
 버전 관리를 켜는 이유는 잘못된 apply로 state가 깨졌을 때 되돌리기 위해서다.
+오래된 버전은 90일 뒤 만료되게 lifecycle 규칙을 걸어두었다.
+
+잠금에 DynamoDB는 필요 없다. Terraform 1.10부터 S3 자체 잠금(`use_lockfile`)을 쓴다.
 
 ### 2. GitHub 시크릿
 
@@ -122,6 +130,5 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 - [x] `infra/00-cicd` — OIDC 프로바이더, IAM Role 2개, ECR (로컬 적용 완료)
 - [x] `infra` 환경 승인 게이트 — 필수 리뷰어 SangMun, j0chan
 - [x] 파이프라인 전 구간 검증 — 커밋 → ECR → 태그 갱신 → Argo → 파드 응답
-- [ ] Terraform state를 S3로 이전 — **끝나기 전에는 `infra/` 를 커밋하지 말 것**
-      (CI에는 state가 없어 이미 있는 리소스를 다시 만들려다 깨진다)
+- [x] Terraform state를 S3로 이전 (`s3://o2-live-tfstate`, 버전 관리·암호화·잠금)
 - [ ] `infra/01-network`, `02-eks`, `03-data` — 로컬 검증 후 반영 (D-005)
