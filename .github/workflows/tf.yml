@@ -1,0 +1,187 @@
+name: tf
+
+# PR에서는 plan만 돌려 무엇이 바뀔지 보여주고,
+# main에 들어오면 사람이 승인한 뒤에 apply한다.
+#
+# 인프라는 코드 리뷰만으로 안전을 담보할 수 없다. plan 결과를 눈으로 보고
+# "정말 이걸 지워도 되나"를 판단하는 단계가 반드시 필요하다.
+on:
+  pull_request:
+    paths: ['infra/**', '.github/workflows/tf.yml']
+  push:
+    branches: [main]
+    paths: ['infra/**', '.github/workflows/tf.yml']
+  workflow_dispatch:
+
+# apply는 절대 중간에 끊지 않는다. 끊긴 apply는 state와 실제 리소스가
+# 어긋난 상태를 남기고, 그걸 되돌리는 건 훨씬 비싸다.
+concurrency:
+  group: tf-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  id-token: write        # OIDC로 AWS 역할을 빌린다
+  pull-requests: write   # plan 결과를 PR에 남긴다
+
+env:
+  AWS_REGION: ap-northeast-2
+  TF_VERSION: '1.15.8'
+  TF_IN_AUTOMATION: 'true'
+
+jobs:
+  # 바뀐 스택만 골라낸다. 매번 세 스택을 다 돌리면 느리고,
+  # 관계없는 스택의 drift가 PR에 섞여 리뷰가 흐려진다.
+  changed:
+    runs-on: ubuntu-latest
+    outputs:
+      stacks: ${{ steps.detect.outputs.stacks }}
+      any: ${{ steps.detect.outputs.any }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: detect
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          # 최초 푸시 등으로 기준 커밋을 못 찾으면 전부 대상으로 삼는다.
+          if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
+            CHANGED="infra/"
+          else
+            CHANGED=$(git diff --name-only "$BASE" HEAD -- infra/ || echo "infra/")
+          fi
+
+          STACKS=()
+          # 의존 순서를 지켜 나열한다. 01의 출력을 02가, 01을 03이 참조한다.
+          for s in 01-network 02-eks 03-data; do
+            # 아직 코드가 없는 스택은 건너뛴다. 이 확인이 없으면 최초 푸시처럼
+            # 기준 커밋을 못 찾는 경우에 빈 디렉토리를 apply하려다 실패한다.
+            if ! ls "infra/$s"/*.tf >/dev/null 2>&1; then
+              continue
+            fi
+            if echo "$CHANGED" | grep -q "infra/$s/" || [ "$CHANGED" = "infra/" ]; then
+              STACKS+=("$s")
+            fi
+          done
+
+          if [ ${#STACKS[@]} -eq 0 ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "stacks=[]" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+            printf -v JOINED '"%s",' "${STACKS[@]}"
+            echo "stacks=[${JOINED%,}]" >> "$GITHUB_OUTPUT"
+          fi
+          echo "대상 스택: ${STACKS[*]:-없음}"
+
+  plan:
+    needs: changed
+    if: github.event_name == 'pull_request' && needs.changed.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: ${{ fromJSON(needs.changed.outputs.stacks) }}
+    defaults:
+      run:
+        working-directory: infra/${{ matrix.stack }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # plan에도 AWS 접근이 필요하다(기존 상태를 읽어야 하므로).
+      # 읽기 전용 역할을 따로 두면 더 좋지만, plan은 refresh 중 일부 쓰기를
+      # 요구하는 경우가 있어 여기서는 같은 역할을 쓰되 승인 게이트로 막는다.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TF_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - run: terraform init -input=false
+
+      - name: 포맷 검사
+        run: terraform fmt -check -recursive
+
+      - run: terraform validate -no-color
+
+      - name: plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan > plan.txt 2>&1
+          CODE=$?
+          set -e
+          # 출력이 길면 PR 코멘트 한도를 넘긴다. 앞부분만 싣고 전문은 로그로 넘긴다.
+          {
+            echo "### \`${{ matrix.stack }}\` plan"
+            echo '```terraform'
+            tail -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat plan.txt
+          exit $CODE
+
+      - name: PR에 결과 남기기
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          STACK: ${{ matrix.stack }}
+          OUTCOME: ${{ steps.plan.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            let body = `plan 실행에 실패했습니다. 로그를 확인해 주세요.`;
+            try {
+              const raw = fs.readFileSync('infra/' + process.env.STACK + '/plan.txt', 'utf8');
+              body = raw.length > 55000 ? raw.slice(-55000) : raw;
+            } catch (e) { /* 파일이 없으면 기본 메시지를 쓴다 */ }
+            const mark = process.env.OUTCOME === 'success' ? '✅' : '❌';
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `${mark} **terraform plan — \`${process.env.STACK}\`**\n\n<details><summary>결과 펼치기</summary>\n\n\`\`\`terraform\n${body}\n\`\`\`\n\n</details>`,
+            });
+
+  apply:
+    needs: changed
+    if: github.event_name != 'pull_request' && needs.changed.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # 이 환경에 "required reviewers"를 걸어두면 사람이 승인할 때까지 잡이 멈춘다.
+    # 저장소 Settings → Environments → infra 에서 설정한다.
+    # 이 설정을 빼먹으면 승인 게이트 없이 그냥 apply된다.
+    environment: infra
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TF_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 스택을 의존 순서대로 하나씩 적용한다. 병렬로 돌리면
+      # 02가 아직 없는 01의 출력을 참조하다 실패한다.
+      - name: apply
+        run: |
+          for stack in $(echo '${{ needs.changed.outputs.stacks }}' | tr -d '[]"' | tr ',' ' '); do
+            echo "::group::$stack"
+            terraform -chdir="infra/$stack" init -input=false
+            terraform -chdir="infra/$stack" apply -input=false -auto-approve -lock-timeout=10m
+            echo "::endgroup::"
+          done

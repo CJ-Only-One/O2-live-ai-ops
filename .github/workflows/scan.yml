@@ -1,0 +1,63 @@
+name: scan
+
+# 시크릿이 커밋에 섞여 들어가는 걸 잡는다.
+# 한 번 푸시된 크레덴셜은 나중에 지워도 히스토리와 포크에 남으므로,
+# 머지 전에 잡는 것이 사실상 유일한 방어선이다.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # 주 1회 전체 히스토리를 다시 훑는다.
+    # 룰셋이 갱신되면 과거 커밋에서 새로 걸리는 것이 나온다.
+    - cron: '0 18 * * 0'
+
+concurrency:
+  group: scan-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: '8.28.0'
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # PR에서는 변경분만 보면 되지만, 전체 히스토리를 받아야
+          # 과거 커밋에 묻힌 시크릿까지 검사할 수 있다.
+          fetch-depth: 0
+
+      # 공식 액션(gitleaks-action)은 조직 계정에서 라이선스 키를 요구한다.
+      # 바이너리를 직접 받아 쓰면 그 제약이 없고 버전도 우리가 고정한다.
+      - name: gitleaks 설치
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: 스캔
+        run: |
+          gitleaks detect \
+            --source . \
+            --config .gitleaks.toml \
+            --redact \
+            --report-format sarif \
+            --report-path gitleaks.sarif \
+            --exit-code 1
+        # --redact: 실제 시크릿 값이 로그에 찍히지 않게 한다.
+        #           public 레포에서는 로그도 공개이므로 반드시 필요하다.
+
+      - name: 결과 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks.sarif
+          retention-days: 30
+          if-no-files-found: ignore

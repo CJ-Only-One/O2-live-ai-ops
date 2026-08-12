@@ -1,0 +1,25 @@
+# gitleaks 설정. 기본 룰셋을 상속하고 이 저장소 사정만 덧붙인다.
+title = "O2 live ai ops"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "오탐 예외"
+
+paths = [
+  # Terraform 락 파일에는 프로바이더 해시가 들어 있다. 시크릿이 아니다.
+  '''\.terraform\.lock\.hcl$''',
+  # 문서의 예시 값까지 잡으면 스캔이 소음이 된다.
+  '''^docs/.*\.md$''',
+]
+
+regexes = [
+  # 플레이스홀더. 실제 값이 아니라는 것이 문자열 자체로 드러나는 형태만 허용한다.
+  '''(?i)(example|placeholder|dummy|changeme|<[a-z_-]+>|xxx+)''',
+  # AWS 계정번호는 ARN에 항상 들어가며 자격증명이 아니다.
+  '''066107819912''',
+]
+
+# NOTE: 여기에 예외를 추가할 때는 "왜 안전한가"를 주석으로 남길 것.
+# 근거 없는 예외가 쌓이면 스캐너가 통과 도장으로 전락한다.
