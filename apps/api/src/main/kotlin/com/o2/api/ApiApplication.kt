@@ -14,6 +14,8 @@ class HelloController {
     fun hello(): Map<String, String> = mapOf(
         "service" to "o2-api",
         "message" to "hello",
+        // PR 경로와 브랜치 보호 아래에서의 배포를 확인하려고 넣은 값이다.
+        "via" to "pull-request",
     )
 }
 
