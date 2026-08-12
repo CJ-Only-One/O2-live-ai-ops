@@ -49,11 +49,14 @@ jobs:
           else
             BASE="${{ github.event.before }}"
           fi
-          # 최초 푸시 등으로 기준 커밋을 못 찾으면 전부 대상으로 삼는다.
-          if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
-            CHANGED="infra/"
-          else
+          # 최초 푸시에서 before는 전부 0인 SHA다. rev-parse는 형식만 보고
+          # 이것을 통과시키므로, 객체가 실제로 존재하는지까지 확인해야 한다.
+          # (확인을 생략하면 뒤의 git diff가 exit 128로 죽는다)
+          # 기준 커밋을 못 찾으면 전부 대상으로 삼는다.
+          if [ -n "${BASE//0/}" ] && git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
             CHANGED=$(git diff --name-only "$BASE" HEAD -- infra/ || echo "infra/")
+          else
+            CHANGED="infra/"
           fi
 
           STACKS=()

@@ -49,10 +49,12 @@ jobs:
           else
             BASE="${{ github.event.before }}"
           fi
-          if git rev-parse --verify --quiet "$BASE" >/dev/null; then
+          # 최초 푸시에서 before는 전부 0인 SHA다. rev-parse는 형식만 보고
+          # 이것을 통과시키므로, 객체가 실제로 존재하는지까지 확인해야 한다.
+          # (확인을 생략하면 뒤의 git diff가 exit 128로 죽는다)
+          CHANGED=""
+          if [ -n "${BASE//0/}" ] && git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
             CHANGED=$(git diff --name-only "$BASE" HEAD -- apps/)
-          else
-            CHANGED=""
           fi
 
           SERVICES=()
