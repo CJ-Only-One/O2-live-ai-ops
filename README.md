@@ -137,4 +137,6 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 - [x] state를 팀 버킷(`o2-tfstate-066107819912`) 하나로 통일 (D-010)
 - [ ] `infra/03-data` — Redis, RDS
 - [x] OIDC 프로바이더 소유권을 `00-cicd` 로 정리 (D-009)
+- [x] 배포 저장소 ruleset이 태그 갱신 커밋을 막던 문제 해결 (D-012)
+- [x] `apps/testpage` — 파이프라인 검증용 정적 페이지, ALB Ingress로 노출 (D-013)
 - [ ] `infra/03-data` — 팀 버킷에 `data/terraform.tfstate` 가 이미 있다. 코드를 찾아 흡수할 것

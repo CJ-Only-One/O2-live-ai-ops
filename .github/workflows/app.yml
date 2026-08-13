@@ -107,8 +107,15 @@ jobs:
           # 포크 PR이 캐시를 오염시키지 못하게 한다.
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
+      # 모든 서비스가 JVM은 아니다. 정적 페이지처럼 빌드할 것이 없는 서비스는
+      # 여기서 할 일이 없다. 없는 것을 빌드하려 들면 잡 전체가 실패한다.
       - name: 빌드 + 테스트
-        run: gradle build --no-daemon
+        run: |
+          if [ ! -f build.gradle.kts ]; then
+            echo "gradle 프로젝트가 아님 — 빌드 건너뜀 (이미지 빌드에서 검증된다)"
+            exit 0
+          fi
+          gradle build --no-daemon
 
       - name: 테스트 리포트
         if: always()
