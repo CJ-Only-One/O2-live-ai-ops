@@ -334,3 +334,27 @@ o2-tfstate-066107819912/
 **참고:** 팀 버킷에 `data/terraform.tfstate` 가 이미 있다.
 `03-data` 에 해당하는 코드가 어딘가 존재한다는 뜻이므로, 그것도 저장소로
 흡수해야 한다.
+
+### D-008 보충: 헬름 릴리스를 둘로 나눈 이유
+
+`argo-cd` 차트의 `extraObjects` 에 Application을 함께 넣으려 했으나 실패했다.
+헬름은 렌더링한 객체를 적용 전에 클러스터 API와 대조하는데,
+그 시점에는 아직 CRD가 설치되지 않았기 때문이다.
+
+```
+no matches for kind "Application" in version "argoproj.io/v1alpha1"
+```
+
+같은 릴리스에서 CRD를 설치하면서 그 CRD의 인스턴스를 만들 수는 없다.
+`argocd-apps` 차트를 두 번째 릴리스로 두고 `depends_on` 으로 순서를 강제한다.
+
+### D-008 보충: 클러스터 생성자는 access entry 대상이 아니다
+
+`cluster_admin_arns` 에 클러스터 생성자를 넣었더니 apply가 실패했다.
+
+```
+ResourceInUseException: The specified access entry resource is already in use
+```
+
+EKS가 클러스터 생성 시점에 생성자에게 관리자 access entry를 자동 부여한다.
+EKS가 관리하는 것을 Terraform이 또 만들려 하면 충돌한다. 목록에서 제외한다.

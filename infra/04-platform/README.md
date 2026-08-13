@@ -9,8 +9,23 @@ Argo CD와 그 위의 모든 것이 자동으로 복원된다.
 |---|---|---|
 | 클러스터 접근 권한 | 손으로 `aws eks create-access-entry` | `cluster_admin_arns` 변수 |
 | Argo CD 설치 | README 절차를 손으로 따라감 | `helm_release` |
-| Argo Application 등록 | `kubectl apply -f bootstrap/...` | 차트의 `extraObjects` |
+| Argo Application 등록 | `kubectl apply -f bootstrap/...` | `argocd-apps` 차트 |
 | Load Balancer Controller | `terraform output` 을 복사해 실행 | `helm_release` |
+
+## 헬름 릴리스가 둘인 이유
+
+`argo-cd` 가 CRD를 설치하고, `argocd-apps` 가 Application을 만든다.
+
+처음에는 `argo-cd` 차트의 `extraObjects` 에 Application을 함께 넣었으나 실패했다.
+헬름은 렌더링한 객체를 적용 전에 클러스터 API와 대조하는데, 그 시점에는
+아직 CRD가 없기 때문이다.
+
+```
+no matches for kind "Application" in version "argoproj.io/v1alpha1"
+```
+
+**같은 릴리스에서 CRD를 설치하면서 그 CRD의 인스턴스를 만들 수는 없다.**
+`argocd-apps` 는 정확히 이 용도의 얇은 차트다.
 
 ## 적용
 

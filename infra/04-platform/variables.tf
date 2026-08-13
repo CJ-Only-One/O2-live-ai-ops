@@ -43,8 +43,10 @@ variable "cluster_admin_arns" {
   type        = list(string)
   default = [
     "arn:aws:iam::066107819912:user/LSM",
-    "arn:aws:iam::066107819912:user/JYC",
   ]
+  # 클러스터를 만든 주체(현재 user/JYC)는 EKS가 생성 시점에 자동으로
+  # 관리자 access entry를 부여한다. 여기 넣으면 이미 있는 것을 또 만들려다
+  # ResourceInUseException 으로 실패한다. EKS가 관리하는 것은 건드리지 않는다.
 }
 
 # ── Argo CD ───────────────────────────────────────────────────
@@ -75,4 +77,10 @@ variable "enable_lbc" {
 variable "lbc_chart_version" {
   type    = string
   default = "3.5.0"
+}
+
+variable "argocd_apps_chart_version" {
+  description = "argocd-apps 차트. Application 리소스만 담는 얇은 차트다"
+  type        = string
+  default     = "2.0.5"
 }

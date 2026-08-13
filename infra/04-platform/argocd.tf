@@ -1,9 +1,16 @@
 # Argo CD 설치와, 이 클러스터가 무엇을 배포해야 하는지 알려주는 Application.
 #
-# 둘을 한 릴리스에 담는다. 차트가 CRD를 먼저 설치(crds.install=true)한 뒤
-# extraObjects를 적용하므로, Application CRD가 없어서 실패하는 일이 없다.
-# 별도로 kubectl apply를 돌리면 kubeconfig가 필요해지는데, 그러면
-# "터미널에서 사람이 한 번 쳐야 하는 단계"가 다시 생긴다.
+# 릴리스를 둘로 나눈다. 처음에는 argo-cd 차트의 extraObjects에 Application을
+# 함께 넣었는데, 헬름이 렌더링한 객체를 적용 전에 클러스터 API와 대조하는
+# 시점에는 아직 CRD가 없어 실패했다:
+#
+#   no matches for kind "Application" in version "argoproj.io/v1alpha1"
+#
+# 같은 릴리스에서 CRD를 설치하면서 그 CRD의 인스턴스를 만들 수는 없다.
+# argocd-apps 차트가 정확히 이 용도이므로 그것을 두 번째 릴리스로 둔다.
+#
+# kubectl apply로 처리하면 kubeconfig가 필요해져서
+# "사람이 터미널에서 한 번 쳐야 하는 단계"가 다시 생긴다. 그래서 헬름으로 푼다.
 
 resource "helm_release" "argocd" {
   name             = "argocd"
@@ -77,58 +84,67 @@ resource "helm_release" "argocd" {
       }
     }
 
-    # ── 이 클러스터가 배포할 것 ────────────────────────────
-    extraObjects = [
-      {
-        apiVersion = "argoproj.io/v1alpha1"
-        kind       = "Application"
-        metadata = {
-          name      = "o2-dev"
-          namespace = "argocd"
-          finalizers = [
-            # Application을 지울 때 배포된 리소스도 함께 정리한다.
-            "resources-finalizer.argocd.argoproj.io",
-          ]
-        }
-        spec = {
-          project = "default"
-          source = {
-            # 매니페스트 전용 저장소. public이라 자격증명이 필요 없다.
-            # 앱 저장소와 나눈 이유는 docs/decisions.md D-006 참고.
-            repoURL        = var.manifest_repo_url
-            targetRevision = "main"
-            path           = "."
-            directory = {
-              recurse = false
-              exclude = "README.md"
-            }
-          }
-          destination = {
-            server    = "https://kubernetes.default.svc"
-            namespace = "o2-dev"
-          }
-          syncPolicy = {
-            automated = {
-              # Git에 없는 리소스를 클러스터에서 지운다.
-              prune = true
-              # kubectl로 손댄 것을 되돌린다. Git을 유일한 진실로 만드는 스위치.
-              selfHeal = true
-            }
-            syncOptions = ["CreateNamespace=true"]
-            retry = {
-              limit = 3
-              backoff = {
-                duration    = "10s"
-                factor      = 2
-                maxDuration = "2m"
-              }
-            }
-          }
-        }
-      },
-    ]
   })]
 
   # access entry가 먼저 있어야 helm 프로바이더가 클러스터에 인증할 수 있다.
   depends_on = [aws_eks_access_policy_association.admin]
+}
+
+# ── 이 클러스터가 배포할 것 ──────────────────────────────────
+# Argo CD가 CRD를 설치한 뒤에 적용되어야 하므로 별도 릴리스로 둔다.
+resource "helm_release" "argocd_apps" {
+  name      = "argocd-apps"
+  namespace = "argocd"
+
+  repository = "https://argoproj.github.io/argo-helm"
+  chart      = "argocd-apps"
+  version    = var.argocd_apps_chart_version
+
+  values = [yamlencode({
+    applications = {
+      "o2-dev" = {
+        namespace = "argocd"
+        finalizers = [
+          # Application을 지울 때 배포된 리소스도 함께 정리한다.
+          "resources-finalizer.argocd.argoproj.io",
+        ]
+        project = "default"
+        source = {
+          # 매니페스트 전용 저장소. public이라 자격증명이 필요 없다.
+          # 앱 저장소와 나눈 이유는 docs/decisions.md D-006 참고.
+          repoURL        = var.manifest_repo_url
+          targetRevision = "main"
+          path           = "."
+          directory = {
+            recurse = false
+            exclude = "README.md"
+          }
+        }
+        destination = {
+          server    = "https://kubernetes.default.svc"
+          namespace = "o2-dev"
+        }
+        syncPolicy = {
+          automated = {
+            # Git에 없는 리소스를 클러스터에서 지운다.
+            prune = true
+            # kubectl로 손댄 것을 되돌린다. Git을 유일한 진실로 만드는 스위치.
+            selfHeal = true
+          }
+          syncOptions = ["CreateNamespace=true"]
+          retry = {
+            limit = 3
+            backoff = {
+              duration    = "10s"
+              factor      = 2
+              maxDuration = "2m"
+            }
+          }
+        }
+      }
+    }
+  })]
+
+  # CRD가 먼저 있어야 Application을 만들 수 있다.
+  depends_on = [helm_release.argocd]
 }
