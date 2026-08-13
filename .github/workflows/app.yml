@@ -96,37 +96,150 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v5
+      # 서비스마다 언어가 다르다. 워크플로에 목록을 박아두면 서비스를 추가할
+      # 때마다 여기를 고쳐야 하므로, 디렉터리에 있는 파일을 보고 판단한다.
+      #
+      # 판별에 실패하면 건너뛴다. 정적 페이지처럼 빌드할 것이 없는 서비스가
+      # 있고, 없는 것을 빌드하려 들면 잡 전체가 실패하기 때문이다.
+      # 다만 건너뛴 서비스는 이미지가 빌드된다는 것 외에는 아무것도
+      # 검증되지 않는다는 뜻이므로, 로그에 분명히 남긴다.
+      - id: kind
+        run: |
+          if [ -f pyproject.toml ] || [ -f requirements.txt ]; then
+            LANG=python
+          elif [ -f package.json ]; then
+            LANG=node
+          elif [ -f build.gradle.kts ]; then
+            # TODO: apps/api 가 FastAPI로 교체되면 이 분기를 지운다.
+            # 지금 지우면 교체 전까지 그 서비스가 무검증 상태가 된다.
+            LANG=gradle
+          else
+            LANG=none
+            echo "::warning::${{ matrix.service }} 의 언어를 판별하지 못했습니다. 검증을 건너뜁니다."
+          fi
+          echo "lang=$LANG" >> "$GITHUB_OUTPUT"
+          echo "판별: $LANG"
+
+      # ── Python (FastAPI) ──────────────────────────────────
+      - if: steps.kind.outputs.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          # 컨테이너의 파이썬과 같은 버전이어야 한다. Dockerfile을 바꾸면
+          # 여기도 같이 바꿀 것. 다르면 여기서 통과한 코드가 런타임에 깨진다.
+          python-version: '3.12'
+
+      - name: Python 의존성 설치
+        if: steps.kind.outputs.lang == 'python'
+        run: |
+          # 잠금 파일이 있으면 그것을 쓴다. 없으면 빌드마다 다른 버전이
+          # 들어와 CI 통과와 운영 동작이 어긋난다.
+          if [ -f uv.lock ]; then
+            pip install uv
+            uv sync --frozen
+            echo "RUN=uv run" >> "$GITHUB_ENV"
+          elif [ -f poetry.lock ]; then
+            pip install poetry
+            poetry install --no-interaction
+            echo "RUN=poetry run" >> "$GITHUB_ENV"
+          else
+            echo "::warning::잠금 파일이 없습니다. 빌드 재현성이 보장되지 않습니다."
+            pip install -r requirements.txt
+            # `[ -f x ] && pip install` 로 쓰지 않는다. 파일이 없을 때 그 줄이
+            # 마지막이면 스텝 전체가 실패한다. (bash -e 로 돌기 때문)
+            if [ -f requirements-dev.txt ]; then
+              pip install -r requirements-dev.txt
+            fi
+            echo "RUN=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Python 린트
+        if: steps.kind.outputs.lang == 'python'
+        run: |
+          # 설정이 없으면 도구를 강요하지 않는다. 있으면 반드시 통과해야 한다.
+          if $RUN ruff --version >/dev/null 2>&1; then
+            $RUN ruff check .
+            $RUN ruff format --check .
+          else
+            echo "ruff 없음 — 건너뜀"
+          fi
+
+      - name: Python 테스트
+        if: steps.kind.outputs.lang == 'python'
+        run: |
+          if $RUN pytest --version >/dev/null 2>&1; then
+            $RUN pytest -q
+          else
+            echo "::warning::pytest가 없습니다. 테스트 없이 배포됩니다."
+          fi
+
+      # ── Node (React) ──────────────────────────────────────
+      - if: steps.kind.outputs.lang == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/${{ matrix.service }}/package-lock.json
+
+      - name: Node 의존성 설치
+        if: steps.kind.outputs.lang == 'node'
+        run: |
+          # npm ci 는 package-lock.json 을 그대로 재현한다.
+          # npm install 은 잠금 파일을 갱신해버려 CI에서 쓰면 안 된다.
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "::warning::package-lock.json 이 없습니다. 빌드 재현성이 보장되지 않습니다."
+            npm install
+          fi
+
+      - name: Node 검사
+        if: steps.kind.outputs.lang == 'node'
+        run: |
+          # package.json 에 있는 스크립트만 돌린다. 없는 것을 부르면 실패한다.
+          #
+          # `has x && npm run x || echo` 로 쓰면 안 된다. 스크립트가 존재하는데
+          # 실패한 경우까지 || 가 삼켜서 검사가 통과한 것처럼 보인다.
+          has() { node -e "process.exit(require('./package.json').scripts?.['$1']?0:1)"; }
+
+          if has lint; then npm run lint; else echo "lint 스크립트 없음 — 건너뜀"; fi
+          if has test; then npm test;     else echo "::warning::test 스크립트가 없습니다. 테스트 없이 배포됩니다."; fi
+
+          # 빌드는 반드시 돈다. 프론트는 여기서 깨지는 것을 잡는 게 핵심이다.
+          npm run build
+
+      # ── Gradle (교체 예정) ────────────────────────────────
+      - if: steps.kind.outputs.lang == 'gradle'
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - if: steps.kind.outputs.lang == 'gradle'
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.14'
           # 포크 PR이 캐시를 오염시키지 못하게 한다.
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
-      # 모든 서비스가 JVM은 아니다. 정적 페이지처럼 빌드할 것이 없는 서비스는
-      # 여기서 할 일이 없다. 없는 것을 빌드하려 들면 잡 전체가 실패한다.
-      - name: 빌드 + 테스트
-        run: |
-          if [ ! -f build.gradle.kts ]; then
-            echo "gradle 프로젝트가 아님 — 빌드 건너뜀 (이미지 빌드에서 검증된다)"
-            exit 0
-          fi
-          gradle build --no-daemon
+      - name: Gradle 빌드 + 테스트
+        if: steps.kind.outputs.lang == 'gradle'
+        run: gradle build --no-daemon
 
+      # 언어마다 리포트가 나오는 위치가 다르다. 전부 적고 없는 것은 무시한다.
       - name: 테스트 리포트
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-${{ matrix.service }}
-          path: apps/${{ matrix.service }}/build/reports/tests/
+          path: |
+            apps/${{ matrix.service }}/build/reports/tests/
+            apps/${{ matrix.service }}/htmlcov/
+            apps/${{ matrix.service }}/junit.xml
+            apps/${{ matrix.service }}/coverage/
           retention-days: 7
           if-no-files-found: ignore
 
-  # ── 이미지 빌드 · ECR ────────────────────────────────────
+  # ── 이미지 빌드 · 스캔 · ECR ─────────────────────────────
   image:
     needs: [changed, verify]
     if: github.event_name != 'pull_request' && needs.changed.outputs.any == 'true'
@@ -135,6 +248,7 @@ jobs:
     permissions:
       contents: read
       id-token: write        # OIDC로 AWS 역할을 빌린다
+      security-events: write # 스캔 결과를 Code Scanning에 올린다
     strategy:
       fail-fast: false
       matrix:
@@ -152,17 +266,96 @@ jobs:
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # 아래 세 단계가 같은 이름을 쓴다. 한 곳에서 정해두고 참조한다.
+      - name: 이미지 이름 확정
+        run: |
+          echo "IMAGE=${{ steps.ecr.outputs.registry }}/o2/${{ matrix.service }}:${{ github.sha }}" >> "$GITHUB_ENV"
+
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/build-push-action@v6
+      # 빌드와 푸시를 나눈 이유는 스캔을 그 사이에 끼우기 위해서다.
+      # push: true 로 한 번에 끝내면 스캔 결과를 이미지가 ECR에 올라간
+      # 뒤에 보게 되어, 막을 기회 자체가 사라진다.
+      #
+      # load: true 는 만든 이미지를 러너의 도커 데몬에 올린다. 그래야
+      # Trivy가 레지스트리를 거치지 않고 로컬에서 바로 열어볼 수 있다.
+      - name: 빌드
+        uses: docker/build-push-action@v6
         with:
           context: apps/${{ matrix.service }}
-          push: true
+          push: false
+          load: true
           # 커밋 SHA 태그 하나만 민다. latest는 아무도 참조하지 않는데
           # 저장소를 IMMUTABLE로 바꾸는 순간 두 번째 푸시부터 실패한다.
-          tags: ${{ steps.ecr.outputs.registry }}/o2/${{ matrix.service }}:${{ github.sha }}
+          tags: ${{ env.IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # ECR에도 스캔(scan_on_push)이 켜져 있지만 그쪽은 BASIC이라
+      # Alpine 패키지만 본다. 정작 위험이 모이는 곳은 app.jar 안의 Java
+      # 의존성인데 거기는 열어보지 않는다. Trivy는 JAR을 풀어 그 안까지
+      # 본다 — Log4Shell 같은 것이 걸리는 자리가 여기다.
+      - name: 이미지 취약점 스캔
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          # 시크릿 검사는 gitleaks(scan.yml)가 이미 한다. 중복을 피한다.
+          scanners: vuln
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          # 아직 패치가 없는 취약점으로 배포를 막으면 손쓸 방법이 없다.
+          # 올릴 버전이 존재하는 것만 본다.
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+          # 이게 없으면 severity로 걸러도 SARIF에는 LOW/MEDIUM까지 전부
+          # 들어가 Security 탭이 잠긴다. 기본값이 꺼짐이라 명시해야 한다.
+          limit-severities-for-sarif: true
+          # 이 단계는 보고만 한다. 차단은 아래 단계가 따로 맡는다.
+          exit-code: '0'
+
+      # 결과를 워크플로 아티팩트로 두면 zip을 받아 열어봐야 해서 아무도
+      # 보지 않는다. Code Scanning에 올리면 Security 탭에 쌓이고 PR에
+      # 인라인으로 붙으며, 고쳐지면 알아서 닫힌다. public 저장소라 무료다.
+      - name: 스캔 결과를 Code Scanning으로
+        # 스캔이 취약점을 찾아 실패하더라도 결과는 올려야 한다.
+        # 파일 존재를 함께 보는 이유는 빌드가 깨진 경우 SARIF가 없어서다.
+        if: always() && hashFiles(format('trivy-{0}.sarif', matrix.service)) != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          # 서비스마다 category를 나눈다. 같은 값으로 올리면 매트릭스
+          # 잡들이 서로의 결과를 덮어써 마지막 하나만 남는다.
+          category: trivy-${{ matrix.service }}
+
+      # ── 차단 ────────────────────────────────────────────
+      # 보고와 차단을 나눈 이유는 기준이 다르기 때문이다.
+      #
+      # 보고는 HIGH까지 본다. 지금 베이스 이미지에 HIGH가 몇 건 있고,
+      # 그건 우리가 고칠 수 있는 것이 아니라 temurin이 갱신해야 사라진다.
+      # 그것으로 배포를 막으면 우리가 손쓸 수 없는 이유로 배포가 서고,
+      # 결국 스캔을 끄는 쪽으로 간다.
+      #
+      # 차단은 CRITICAL만 본다. 이건 대개 의존성 한 줄로 고쳐진다.
+      #
+      # 한 단계로 합칠 수도 있지만, 그러면 limit-severities-for-sarif
+      # 때문에 Security 탭에서 HIGH가 통째로 사라진다. 보이는 것과
+      # 막는 것을 같은 값으로 묶을 수 없어 단계를 나눈다.
+      - name: CRITICAL 취약점 차단
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          format: table
+          ignore-unfixed: true
+          severity: CRITICAL
+          exit-code: '1'
+          # 위 단계가 이미 설치하고 DB도 받아뒀다. 다시 받지 않는다.
+          skip-setup-trivy: true
+
+      # 여기까지 왔다는 것은 CRITICAL이 없다는 뜻이다.
+      # 위 단계가 실패하면 이 단계는 실행되지 않아 이미지가 ECR에 올라가지 않는다.
+      - name: ECR에 푸시
+        run: docker push "$IMAGE"
 
   # ── 배포 요청 ────────────────────────────────────────────
   # 여기가 GitOps의 이음매다. 이 커밋이 곧 배포 요청이 된다.

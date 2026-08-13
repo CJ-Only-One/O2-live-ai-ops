@@ -20,9 +20,32 @@ plan.txt
 build/
 *.class
 
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
 # ── Node ─────────────────────────────────────────────────
 node_modules/
 dist/
+.vite/
+coverage/
+
+# 잠금 파일(uv.lock · poetry.lock · package-lock.json)은 반드시 커밋한다.
+# 빌드 재현성이 거기서 나오고, Trivy 스캔 결과도 그것을 기준으로 안정된다.
+
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.pyc
+.venv/
+venv/
 
 # ── 부하 테스트 산출물 ───────────────────────────────────
 loadtest/results/

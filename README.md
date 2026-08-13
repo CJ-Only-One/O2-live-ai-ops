@@ -36,7 +36,7 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 
 | | 트리거 | 하는 일 |
 |---|---|---|
-| `app.yml` | `apps/**` 변경 | 이미지 빌드 → ECR → 매니페스트 저장소에 태그 갱신 |
+| `app.yml` | `apps/**` 변경 | 이미지 빌드 → 취약점 스캔 → ECR → 매니페스트 저장소에 태그 갱신 |
 | `tf.yml` | `infra/**` PR | plan만 — 무엇이 바뀔지 보여준다. apply는 로컬 |
 | `scan.yml` | 모든 PR·푸시, 주 1회 | 시크릿 유출 검사 |
 
@@ -98,10 +98,15 @@ PR 하나가 곧 인프라 변경 수단이 된다. (D-011)
 ```
 푸시 → app.yml
         ├ verify   바뀐 서비스만 gradle build + test
-        ├ image    이미지 빌드 → ECR (태그: 커밋 SHA)
+        ├ image    이미지 빌드 → Trivy 스캔 → ECR (태그: 커밋 SHA)
         └ deploy   O2-live-deploy 의 <service>-deployment.yaml 태그 갱신 후 커밋
                      → Argo CD가 감지 → 클러스터에 반영
 ```
+
+스캔은 **푸시 전에** 돈다. 올라간 뒤에 보면 통보일 뿐 게이트가 아니기 때문이다.
+**CRITICAL이 하나라도 있으면 ECR 푸시가 막힌다.** HIGH는 막지 않고 기록만 한다 —
+대개 베이스 이미지의 것이라 우리가 고칠 수 없고, 손쓸 수 없는 이유로 배포가 서면
+결국 스캔을 끄게 되기 때문이다. 결과는 저장소 **Security 탭**에 쌓인다. 근거는 D-014.
 
 `app.yml` 은 **EKS를 직접 건드리지 않는다.** 배포 요청을 커밋으로 남기는 데서 끝난다.
 CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004에 있다.
@@ -140,3 +145,8 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 - [x] 배포 저장소 ruleset이 태그 갱신 커밋을 막던 문제 해결 (D-012)
 - [x] `apps/testpage` — 파이프라인 검증용 정적 페이지, ALB Ingress로 노출 (D-013)
 - [ ] `infra/03-data` — 팀 버킷에 `data/terraform.tfstate` 가 이미 있다. 코드를 찾아 흡수할 것
+- [x] `app.yml` — Trivy 이미지 스캔, 결과를 Code Scanning으로 (D-014)
+- [x] Trivy를 CRITICAL 차단으로 승격 (D-014)
+- [ ] `tf.yml` — `trivy config` 로 Terraform 미스컨피그 검사 (게이트 없이 리포트만)
+- [ ] `scan.yml` — gitleaks 결과도 Code Scanning으로 이전
+- [ ] 주 1회 ECR 최신 이미지 재스캔 — CI 스캔은 빌드 시점만 본다

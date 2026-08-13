@@ -148,7 +148,8 @@ Argo가 볼 Git 내용이 안 바뀌고 클러스터는 옛 버전을 계속 돌
 ### IAM Role의 `description`에 한글을 쓸 수 없다
 
 AWS가 `[	
- -~¡-ÿ]` 만 허용한다.
+
+ -~¡-ÿ]` 만 허용한다.
 한글은 물론 em-dash(`—`)도 범위 밖이라 `ValidationError` 로 apply가 실패한다.
 Terraform 변수나 출력의 `description` 은 AWS로 전달되지 않으므로 한글이어도 무방하다.
 
@@ -476,3 +477,74 @@ D-011에서 `02-eks/ecr.tf` 를 지우며 코드 밖으로 떨어져 나온 `o2/
 
 외부 노출은 ALB Ingress로 한다. 서비스는 `ClusterIP` 그대로 두고 Ingress만
 붙인다 — 서비스마다 `LoadBalancer` 타입을 쓰면 서비스 수만큼 NLB가 생긴다.
+
+---
+
+## D-014. 이미지 취약점은 푸시 전에 본다 (Trivy)
+
+ECR에 `scan_on_push` 가 켜져 있어 스캔이 이미 있다고 볼 수도 있지만, 이 계정의
+레지스트리 스캔은 `BASIC` 이다. BASIC은 **OS 패키지만** 본다 — 우리 런타임
+이미지에서는 Alpine의 `apk` 목록이 전부다.
+
+정작 위험이 모이는 곳은 `app.jar` 안이다. Spring Boot fat JAR에 들어간 Java
+라이브러리는 BASIC 스캔의 시야 밖이라, Log4Shell 같은 것이 터져도 ECR은
+조용하다. Trivy는 JAR을 풀어 그 안의 의존성까지 본다. 결제·쿠폰이 붙기 전에
+이 구멍을 닫아둔다.
+
+Inspector로 올리면(`ENHANCED`) 레지스트리 스캔도 의존성을 보지만 유료다.
+CI에서 무료로 같은 것을 보고, ECR BASIC은 그대로 둔다 — 저장된 이미지를
+계속 지켜보는 역할은 남는다.
+
+### 빌드와 푸시를 나눈다
+
+`push: true` 로 한 번에 끝내면 스캔 결과를 **이미지가 이미 ECR에 올라간 뒤에**
+보게 된다. 그러면 스캔은 통보이지 게이트가 아니다.
+
+`load: true` 로 러너의 도커 데몬에 올리고, 스캔한 다음, `docker push` 한다.
+레이어 캐시(`type=gha`)는 그대로 쓰므로 빌드 시간은 거의 늘지 않는다.
+
+### 막는 기준과 보는 기준을 다르게 둔다
+
+`exit-code: 0` 으로 시작해 리포트만 받았다. 첫 실행에서 CRITICAL 0건이
+확인된 뒤 차단으로 올렸다. 첫날부터 막았으면 그때 있던 CRITICAL 5건 때문에
+배포가 섰을 것이고, 그러면 사람들이 스캔을 끄는 쪽으로 갔을 것이다.
+
+차단은 **CRITICAL만** 본다. HIGH는 기록만 한다. 지금 남은 HIGH는 전부
+베이스 이미지(alpine)의 것이고 우리가 고칠 수 없다 — `eclipse-temurin` 이
+갱신해야 사라진다. 손쓸 수 없는 이유로 배포가 서면 결국 스캔을 끄게 된다.
+반면 CRITICAL은 대개 의존성 한 줄로 고쳐진다.
+
+그래서 단계를 둘로 나눴다. 하나로 합치면 `limit-severities-for-sarif` 때문에
+**Security 탭에서 HIGH가 통째로 사라진다.** 보이는 것과 막는 것을 같은 값으로
+묶을 수 없다.
+
+- 보고 단계 — `severity: CRITICAL,HIGH`, `exit-code: 0`, SARIF 출력
+- 차단 단계 — `severity: CRITICAL`, `exit-code: 1`, `skip-setup-trivy: true`
+
+차단 단계가 실패하면 그 뒤의 `docker push` 가 실행되지 않아 이미지가 ECR에
+올라가지 않는다. SARIF 업로드는 차단보다 앞이라, 막힌 경우에도 무엇 때문에
+막혔는지 Security 탭에서 볼 수 있다.
+
+`ignore-unfixed: true` 는 처음부터 켠다. 아직 패치가 없는 취약점으로 배포가
+막히면 손쓸 방법이 없어, 결국 예외 목록만 길어진다.
+
+### 결과는 Code Scanning으로 보낸다
+
+`scan.yml` 의 gitleaks는 SARIF를 만들어 워크플로 아티팩트로 던지고 끝냈다.
+보려면 Actions 탭에서 zip을 받아 열어야 하니 아무도 보지 않았다.
+
+이 저장소는 public이라 Code Scanning이 무료로 열려 있다. 올리면 Security 탭에
+쌓이고, PR에 해당 줄로 붙고, 고쳐지면 알아서 닫힌다. gitleaks도 이쪽으로
+옮길 것.
+
+주의: 매트릭스 잡에서는 `category` 를 서비스마다 달리해야 한다. 같은 값으로
+올리면 뒤에 끝난 잡이 앞의 결과를 덮어써 하나만 남는다.
+
+또 하나, `limit-severities-for-sarif` 는 기본이 꺼짐이다. 켜지 않으면
+`severity: CRITICAL,HIGH` 로 걸러도 SARIF에는 LOW/MEDIUM까지 전부 실려
+Security 탭이 잠긴다.
+
+### 시크릿 검사는 넣지 않는다
+
+Trivy에도 시크릿 스캐너가 있지만 `scanners: vuln` 로 껐다. gitleaks가 이미
+그 일을 하고 있고, 둘이 같은 것을 잡으면 중복 알림만 늘어난다.
