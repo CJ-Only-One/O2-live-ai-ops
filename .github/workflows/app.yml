@@ -54,15 +54,27 @@ jobs:
           # (확인을 생략하면 뒤의 git diff가 exit 128로 죽는다)
           CHANGED=""
           if [ -n "${BASE//0/}" ] && git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
-            CHANGED=$(git diff --name-only "$BASE" HEAD -- apps/)
+            CHANGED=$(git diff --name-only "$BASE" HEAD -- apps/ .github/workflows/app.yml)
+          fi
+
+          # 이 워크플로 파일 자체가 바뀌면 모든 서비스의 빌드 방식에 영향을
+          # 줄 수 있다 (예: build-args 추가). apps/ 안의 개별 파일 매칭으로는
+          # 이걸 못 잡으니, 이 경우 전체 재빌드로 취급한다. 이걸 놓쳐서
+          # frontend용 build-arg를 추가했는데 apps/frontend가 안 바뀌었다는
+          # 이유로 frontend가 재빌드 안 된 적이 있다 (수동 workflow_dispatch로
+          # 넘겼음).
+          WORKFLOW_CHANGED=""
+          if echo "$CHANGED" | grep -q "^\.github/workflows/app\.yml$"; then
+            WORKFLOW_CHANGED=1
           fi
 
           SERVICES=()
           for dir in apps/*/; do
             [ -d "$dir" ] || continue
             svc=$(basename "$dir")
-            # 기준 커밋을 못 찾거나(최초 푸시) 수동 실행이면 전부 대상으로 삼는다.
-            if [ -z "$CHANGED" ] && [ "${{ github.event_name }}" != "pull_request" ]; then
+            # 기준 커밋을 못 찾거나(최초 푸시), 수동 실행이거나, 워크플로
+            # 자체가 바뀌었으면 전부 대상으로 삼는다.
+            if { [ -z "$CHANGED" ] && [ "${{ github.event_name }}" != "pull_request" ]; } || [ -n "$WORKFLOW_CHANGED" ]; then
               SERVICES+=("$svc")
             elif echo "$CHANGED" | grep -q "^apps/$svc/"; then
               SERVICES+=("$svc")
