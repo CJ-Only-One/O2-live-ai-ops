@@ -22,6 +22,12 @@ terraform {
       # 3.x에서 kubernetes 설정 블록 문법이 바뀌었다. 2.x 문법으로 작성했으므로 고정한다.
       version = "~> 2.17"
     }
+    # CRD를 같은 apply에서 설치한 뒤 ExternalSecret을 적용하려면,
+    # 계획 시점에 CRD 스키마를 요구하지 않는 provider가 필요하다.
+    kubectl = {
+      source  = "gavinbunney/kubectl"
+      version = "~> 1.19"
+    }
   }
 
   backend "s3" {
@@ -82,6 +88,15 @@ provider "helm" {
     cluster_ca_certificate = base64decode(data.aws_eks_cluster.this.certificate_authority[0].data)
     token                  = data.aws_eks_cluster_auth.this.token
   }
+}
+
+# External Secrets CRD는 ESO Helm chart가 설치한다. kubernetes_manifest는 plan 시점에
+# 아직 없는 CRD의 OpenAPI 스키마를 읽으려 해 첫 apply가 실패하므로 사용하지 않는다.
+provider "kubectl" {
+  host                   = data.aws_eks_cluster.this.endpoint
+  cluster_ca_certificate = base64decode(data.aws_eks_cluster.this.certificate_authority[0].data)
+  token                  = data.aws_eks_cluster_auth.this.token
+  load_config_file       = false
 }
 
 # ── 클러스터 접근 권한 ────────────────────────────────────────

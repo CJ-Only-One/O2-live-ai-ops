@@ -11,6 +11,7 @@ Argo CD와 그 위의 모든 것이 자동으로 복원된다.
 | Argo CD 설치 | README 절차를 손으로 따라감 | `helm_release` |
 | Argo Application 등록 | `kubectl apply` 수동 | `argocd-apps` 차트 |
 | Load Balancer Controller | `terraform output` 을 복사해 실행 | `helm_release` |
+| Datadog EKS 메트릭 | 미설치 | `helm_release` (API/App Key는 Kubernetes Secret) |
 
 ## 헬름 릴리스가 둘인 이유
 
@@ -74,6 +75,70 @@ terraform output argocd_initial_password_command
 
 **첫 로그인 후 비밀번호를 바꾸고 `argocd-initial-admin-secret` 을 삭제할 것.**
 Argo CD는 클러스터 전체에 대한 배포 권한을 가지므로 이 계정이 뚫리면 전부 뚫린다.
+
+## Datadog EKS 메트릭 설치
+
+Datadog은 기본적으로 꺼져 있다. API/App Key 원문은 Terraform state나 Kubernetes
+매니페스트에 넣지 않는다. AWS Secrets Manager의 JSON Secret(`o2/dev/datadog`)에만
+보관하고, External Secrets Operator(ESO)가 `datadog/datadog-secret`으로 동기화한다.
+따라서 EKS/platform stack을 destroy한 뒤 다시 apply해도 원본 키를 다시 입력할 필요가 없다.
+
+### 최초 1회: 키와 AWS Secrets Manager 원본 만들기
+
+1. Datadog의 **Organization Settings > API Keys**에서 `o2-eks-agent` 같은 Agent 전용
+   API Key를 새로 만든다. `AWS-Integration` 키는 AWS 계정 연동용이므로 사용하지 않는다.
+2. **Organization Settings > Application Keys**에서 App Key를 새로 만든다. 이 키는 EKS
+   control plane monitoring에 필요하다.
+3. AWS Secrets Manager 콘솔에서 **Other type of secret**을 선택하고 다음 두 key/value를
+   입력한다. 이름은 `o2/dev/datadog`으로 한다. 기본 AWS managed key를 쓸 경우 별도 KMS
+   권한은 필요 없다.
+
+| Key | Value |
+|---|---|
+| `api-key` | 새로 만든 `o2-eks-agent` API Key |
+| `app-key` | 새로 만든 Datadog App Key |
+
+이 Secret은 `04-platform` Terraform이 소유하지 않는다. 플랫폼을 destroy해도 원본 키가
+유지되도록 한 의도적인 분리다.
+
+그 다음 `terraform.tfvars`에 아래 한 줄을 추가하고 적용한다.
+
+```hcl
+enable_datadog = true
+```
+
+```bash
+terraform init
+terraform plan
+terraform apply
+```
+
+설치 구성은 ESO, EKS Pod Identity, 노드·파드·컨테이너 메트릭(kubelet/cAdvisor),
+Kubernetes 상태 메트릭, 제한된 Kubernetes 이벤트, EKS control plane(API Server,
+Controller Manager, Scheduler)을 수집한다. 로그, APM, 프로세스 목록 수집은 비용과
+데이터 범위를 분리하기 위해 활성화하지 않았다.
+
+```bash
+kubectl -n datadog get pods
+kubectl get clustersecretstore aws-secrets-manager
+kubectl -n datadog get externalsecret datadog
+kubectl -n datadog get secret datadog-secret
+kubectl -n datadog exec deploy/datadog-cluster-agent -- agent clusterchecks
+```
+
+마지막 명령 출력에 `kube_apiserver_metrics`, `kube_controller_manager`,
+`kube_scheduler`가 나타나면 EKS control plane 수집까지 정상이다. Datadog UI에서는
+Infrastructure > Kubernetes 또는 Containers에서 `kube_cluster_name:o2-eks`로
+필터링한다.
+
+키 교체 시에는 Secrets Manager에서 값을 변경한다. ESO는 최대 1시간 이내에 Kubernetes
+Secret을 갱신한다. 환경변수로 키를 읽는 Agent에 새 키를 반영하려면 동기화 확인 후 아래를
+실행한다.
+
+```bash
+kubectl -n datadog rollout restart daemonset/datadog
+kubectl -n datadog rollout restart deployment/datadog-cluster-agent
+```
 
 ## 배포되는 것
 

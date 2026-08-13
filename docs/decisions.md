@@ -477,6 +477,7 @@ D-011에서 `02-eks/ecr.tf` 를 지우며 코드 밖으로 떨어져 나온 `o2/
 
 외부 노출은 ALB Ingress로 한다. 서비스는 `ClusterIP` 그대로 두고 Ingress만
 붙인다 — 서비스마다 `LoadBalancer` 타입을 쓰면 서비스 수만큼 NLB가 생긴다.
+
 ---
 
 ## D-014. 이미지 취약점은 푸시 전에 본다 (Trivy)

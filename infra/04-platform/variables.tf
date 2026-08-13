@@ -109,3 +109,59 @@ variable "argocd_apps_chart_version" {
   type        = string
   default     = "2.0.5"
 }
+
+# ── Datadog ────────────────────────────────────────────────────
+variable "enable_datadog" {
+  description = "Datadog Agent와 External Secrets Operator를 설치할지 여부. Secrets Manager 원본 키를 먼저 만들고 true로 바꿀 것"
+  type        = bool
+  default     = false
+}
+
+variable "datadog_chart_version" {
+  description = "Datadog Helm chart. EKS control plane monitoring 지원 최소 버전은 3.152.0"
+  type        = string
+  default     = "3.152.0"
+}
+
+variable "datadog_namespace" {
+  description = "Datadog Agent 전용 네임스페이스"
+  type        = string
+  default     = "datadog"
+}
+
+variable "datadog_kubernetes_secret_name" {
+  description = "ESO가 생성하고 Datadog Helm chart가 참조하는 Kubernetes Secret 이름"
+  type        = string
+  default     = "datadog-secret"
+}
+
+variable "datadog_secrets_manager_secret_name" {
+  description = "api-key와 app-key JSON을 보관하는 AWS Secrets Manager 원본 Secret 이름. 이 리소스는 platform stack이 소유하지 않는다"
+  type        = string
+  default     = "o2/dev/datadog"
+}
+
+variable "datadog_secret_refresh_interval" {
+  description = "ESO가 Secrets Manager에서 Datadog 키 변경을 확인하는 주기"
+  type        = string
+  default     = "1h"
+}
+
+variable "datadog_site" {
+  description = "Datadog site. 현재 계정은 AP1 사이트를 사용한다"
+  type        = string
+  default     = "ap1.datadoghq.com"
+}
+
+# ── External Secrets Operator ───────────────────────────────────
+variable "external_secrets_namespace" {
+  description = "External Secrets Operator 전용 네임스페이스"
+  type        = string
+  default     = "external-secrets"
+}
+
+variable "external_secrets_chart_version" {
+  description = "External Secrets Operator Helm chart. 보안 패치는 해당 차트의 최신 지원 minor로 올릴 것"
+  type        = string
+  default     = "2.8.0"
+}
