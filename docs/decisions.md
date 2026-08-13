@@ -268,3 +268,69 @@ access entry를 `02-eks` 로 옮기면 이 어색함은 사라진다.
 Argo CD 차트 기본값에는 **resource requests가 없다.** 그러면 파드가 BestEffort QoS가 되어
 노드 메모리가 압박받을 때 가장 먼저 축출된다. 배포 시스템이 부하 상황에서 먼저 죽으면
 복구 수단을 잃으므로, 주요 컴포넌트에 requests를 지정했다.
+
+---
+
+## D-009. CI/CD 자격증명의 소유자는 `00-cicd` 하나다
+
+`02-eks/github_oidc.tf` 를 제거했다. 팀원과 합의된 변경이다.
+
+### 겹쳤던 것
+
+GitHub OIDC 프로바이더는 **AWS 계정당 하나만 존재할 수 있는데**,
+`00-cicd` 와 `02-eks` 가 둘 다 이것을 `resource` 로 선언하고 있었다.
+`02-eks` 쪽은 `enable_github_oidc = false` 라 만들어지지 않아 조용했지만,
+누가 그 값을 켜는 순간 `EntityAlreadyExists` 로 apply가 깨진다.
+
+더 위험한 것은 그걸 해결하겠다고 `import` 하는 경우다.
+두 state가 하나의 리소스를 소유하게 되어, 한쪽 destroy가 다른 쪽을 조용히 부순다.
+
+### 왜 `02-eks` 쪽을 지웠나
+
+중복이어서가 아니라 **더 이상 쓰지 않는 아키텍처의 잔재이기 때문이다.**
+
+그 파일은 CI에게 EKS access entry를 주고 있었다
+(`AmazonEKSEditPolicy` + `app` 네임스페이스). 이는 **GitHub Actions가 직접
+`kubectl` 로 배포하는 push 방식**을 전제한 설계다.
+
+우리는 GitOps로 갔다(D-004). Actions는 ECR까지만 하고 배포는 Argo CD가
+클러스터 안에서 당겨온다. **CI는 클러스터 접근 권한이 아예 필요 없다.**
+
+### 남긴 것
+
+`cluster.tf` 의 `aws_iam_openid_connect_provider.eks` 는 그대로 두었다.
+이름이 비슷하지만 **클러스터 자신의 IRSA용**이고, `lbc_irsa.tf` 가 참조한다.
+GitHub용과 전혀 다른 것이다.
+
+### 배울 점 하나
+
+팀원 코드는 CI 권한을 `AmazonEKSEditPolicy` + 네임스페이스 스코프로 좁혀 두었다.
+반면 `00-cicd` 의 `o2-live-github-tf` 는 `AdministratorAccess` 다.
+Terraform이 관리할 대상이 확정되면 그 감각대로 좁혀야 한다(코드에 TODO로 남김).
+
+---
+
+## D-010. Terraform state는 버킷 하나에 모은다
+
+`s3://o2-tfstate-066107819912` 로 통일했다.
+
+`00-cicd` 만 별도 버킷(`o2-live-tfstate`)에 있었다. 그 스택을 만들 당시
+팀 버킷의 존재를 몰랐기 때문이다. 한 프로젝트의 state가 두 곳에 흩어지면
+백업·권한·수명주기 정책을 두 벌 관리해야 하고, 새로 온 사람이 한쪽만 보고
+전부인 줄 알기 쉽다.
+
+```
+o2-tfstate-066107819912/
+  cicd/terraform.tfstate       ← 옮겨옴
+  network/terraform.tfstate
+  eks/terraform.tfstate
+  data/terraform.tfstate
+  platform/terraform.tfstate   ← 04-platform (아직 미적용)
+```
+
+이전 후 `terraform plan` 이 `No changes` 로 나오는 것을 확인했고,
+빈 버킷은 삭제했다.
+
+**참고:** 팀 버킷에 `data/terraform.tfstate` 가 이미 있다.
+`03-data` 에 해당하는 코드가 어딘가 존재한다는 뜻이므로, 그것도 저장소로
+흡수해야 한다.

@@ -113,32 +113,6 @@ variable "cluster_public_access_cidrs" {
   default     = ["0.0.0.0/0"]
 }
 
-variable "enable_github_oidc" {
-  description = <<-EOT
-    GitHub Actions용 OIDC Provider + IAM 역할 + EKS access entry 생성 여부.
-    기본 false. 지금은 수동 배포(scripts/deploy.sh)만 쓴다.
-
-    나중에 켤 때 할 일:
-      1) 이 값을 true로, github_repository를 실제 저장소로 설정
-      2) terraform apply (약 30초, 기존 리소스 영향 없음)
-      3) 출력된 role ARN을 GitHub Secrets의 AWS_ROLE_ARN에 등록
-    ECR 저장소와 Deployment는 지금 만들어 두므로 마이그레이션 작업이 없다.
-  EOT
-  type        = bool
-  default     = false
-}
-
-variable "github_repository" {
-  description = "OIDC 신뢰 대상. 형식: <org-or-user>/<repo>. enable_github_oidc=true 일 때만 사용"
-  type        = string
-  default     = ""
-
-  validation {
-    condition     = !var.enable_github_oidc || can(regex("^[^/]+/[^/]+$", var.github_repository))
-    error_message = "enable_github_oidc = true 이면 github_repository를 'org/repo' 형식으로 지정해야 한다."
-  }
-}
-
 variable "control_plane_log_types" {
   description = <<-EOT
     CloudWatch Logs 과금 대상.

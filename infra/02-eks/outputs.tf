@@ -23,11 +23,6 @@ output "ecr_repository_url" {
   value = aws_ecr_repository.app.repository_url
 }
 
-output "github_actions_role_arn" {
-  description = "GitHub Actions 워크플로의 role-to-assume 값. enable_github_oidc=false 이면 null"
-  value       = try(aws_iam_role.github_actions[0].arn, null)
-}
-
 output "kubeconfig_command" {
   value = "aws eks update-kubeconfig --region ${var.region} --name ${aws_eks_cluster.this.name}"
 }

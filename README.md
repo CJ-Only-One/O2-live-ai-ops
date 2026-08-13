@@ -141,6 +141,7 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 - [x] Terraform state를 S3로 이전 (`s3://o2-live-tfstate`, 버전 관리·암호화·잠금)
 - [x] `infra/01-network`, `02-eks` — 팀 코드 반영 (D-007)
 - [x] `infra/04-platform` — 클러스터 안의 구성을 코드로 (D-008)
-- [ ] `infra/00-cicd` state를 팀 버킷(`o2-tfstate-066107819912`)으로 이전
+- [x] state를 팀 버킷(`o2-tfstate-066107819912`) 하나로 통일 (D-010)
 - [ ] `infra/03-data` — Redis, RDS
-- [ ] `02-eks`의 `github_oidc.tf` 와 `00-cicd` 의 OIDC 프로바이더 소유권 정리
+- [x] OIDC 프로바이더 소유권을 `00-cicd` 로 정리 (D-009)
+- [ ] `infra/03-data` — 팀 버킷에 `data/terraform.tfstate` 가 이미 있다. 코드를 찾아 흡수할 것

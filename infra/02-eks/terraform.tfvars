@@ -22,8 +22,7 @@ node_desired_size   = 2
 node_min_size       = 2
 node_max_size       = 3
 
-# CI/CD는 나중에. true로 바꾸고 github_repository만 채우면 apply 30초로 붙는다.
-enable_github_oidc = false
-github_repository  = ""
+# CI/CD 자격증명은 infra/00-cicd 스택이 소유한다.
+# 배포는 Argo CD(GitOps)라 CI가 클러스터에 접근할 필요가 없다. (docs/decisions.md D-009)
 
 cluster_public_access_cidrs = ["0.0.0.0/0"]

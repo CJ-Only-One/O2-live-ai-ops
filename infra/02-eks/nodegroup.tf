@@ -18,9 +18,9 @@ resource "aws_iam_role" "node" {
 resource "aws_iam_role_policy_attachment" "node" {
   for_each = toset([
     "AmazonEKSWorkerNodePolicy",
-    "AmazonEKS_CNI_Policy",           # Phase 2에서 IRSA로 분리 권장 (노드 전체 권한 축소)
+    "AmazonEKS_CNI_Policy",               # Phase 2에서 IRSA로 분리 권장 (노드 전체 권한 축소)
     "AmazonEC2ContainerRegistryPullOnly", # ReadOnly보다 좁다. 노드는 pull만 하면 된다
-    "AmazonSSMManagedInstanceCore",   # SSH 키/Bastion 없이 Session Manager로 노드 진입
+    "AmazonSSMManagedInstanceCore",       # SSH 키/Bastion 없이 Session Manager로 노드 진입
   ])
 
   role       = aws_iam_role.node.name

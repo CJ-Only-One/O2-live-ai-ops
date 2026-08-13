@@ -28,8 +28,12 @@ terraform {
   # 버킷은 손으로 만들었다 — state를 보관할 곳을 만드는 데 state가 필요한
   # 순환을 피하기 위해서다. 이 스택 하나만 그렇고 나머지는 처음부터 S3를 쓴다.
   backend "s3" {
-    bucket = "o2-live-tfstate"
-    key    = "00-cicd/terraform.tfstate"
+    # 팀 공용 버킷. 처음에는 이 버킷의 존재를 모르고 별도 버킷을 만들었으나,
+    # 한 프로젝트의 state가 두 곳에 흩어지면 백업·권한·수명주기를 두 벌
+    # 관리해야 하고 새로 온 사람이 한쪽만 보고 전부인 줄 알기 쉽다.
+    # 키 이름은 다른 스택(network/, eks/, platform/)의 규칙을 따른다.
+    bucket = "o2-tfstate-066107819912"
+    key    = "cicd/terraform.tfstate"
     region = "ap-northeast-2"
 
     encrypt = true
