@@ -548,3 +548,57 @@ Security 탭이 잠긴다.
 
 Trivy에도 시크릿 스캐너가 있지만 `scanners: vuln` 로 껐다. gitleaks가 이미
 그 일을 하고 있고, 둘이 같은 것을 잡으면 중복 알림만 늘어난다.
+---
+
+## D-015. `data/terraform.tfstate` 는 데이터 계층이 아니다
+
+D-010에서 "팀 버킷에 `data/terraform.tfstate` 가 이미 있으니 `03-data` 에
+해당하는 코드를 찾아 흡수할 것"이라고 남겼다. 그 전제가 틀렸다.
+열어보니 RDS·ElastiCache가 아니라 **AI 에이전트용 백데이터 파이프라인**이다.
+
+```
+Kinesis     stream-business, stream-client
+Firehose    o2-business-to-s3, o2-client-to-s3
+S3          o2-data-lake-066107819912
+Lambda      o2-agg, o2-warm-api
+DynamoDB    o2-agent-context
+Glue        o2-ml-data-prep-job
+IAM         o2-producer-irsa-role                 (SA: data-stream/o2-producer)
+```
+
+관리 리소스 30개. RDS와 ElastiCache는 계정에 **하나도 없다** —
+데이터 계층은 아직 백지다.
+
+### 왜 위험했나
+
+`03-data` 를 쓰면서 backend key를 `data/terraform.tfstate` 로 두려던 참이었다.
+그렇게 했으면 Terraform이 위 30개를 자기 것으로 인식하고, 다음 destroy에
+전부 날아간다. **state 키는 이름이 비슷하다는 이유로 재사용하면 안 된다.**
+
+`03-data` 의 backend key는 `datastore/terraform.tfstate` 로 간다.
+이 스택의 키는 그대로 둔다.
+
+### 다른 파트의 작업 영역이다
+
+이 스택은 **AI 에이전트용 백데이터·데이터 스트림 파트**가 맡고 있다.
+`stream-business` / `stream-client` → Firehose → S3 → Glue 라는 경로가
+그 용도와 정확히 맞는다.
+
+**이 저장소의 관심사가 아니다.** 흡수 대상도 아니고, 존치나 사양은 담당자가
+정한다. state와 리소스 모두 **건드리지 않는다.**
+
+D-007(`01-network`·`02-eks` 흡수)과 겉모습이 비슷해 흡수 대상으로 오해하기
+쉬우나 다르다. 그쪽은 이 저장소가 책임지는 인프라였고, 이쪽은 아니다.
+
+### 설계 문서의 D-09와 충돌하지 않는다
+
+`live-commerce-architecture-decisions.md` 의 D-09는 "Kafka와 Kinesis 모두
+도입하지 않는다"이다. 그 판단의 대상은 **커머스 이벤트 경로**(주문·재고·
+캐시 무효화)이고, 거기에는 여전히 SQS와 Valkey Pub/Sub만 쓴다.
+백데이터 파이프라인이 무엇을 쓰는지는 D-09의 범위 밖이다.
+
+### 이 저장소가 지킬 것은 하나뿐이다
+
+**state 키를 침범하지 않는다.** `data/` 는 그쪽이 쓰고 있으므로
+`03-data` 의 backend key 는 `datastore/terraform.tfstate` 로 간다.
+D-010의 각주("코드를 찾아 흡수할 것")는 이 결정으로 대체된다.
