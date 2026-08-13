@@ -426,3 +426,53 @@ main으로 직접 들어오기 때문이다.
   `IMMUTABLE` 로 바꾸면 두 번째 푸시부터 실패한다.
 - 태그 갱신 커밋의 `git push` 에 rebase 재시도를 붙였다. 사람이 그 사이
   매니페스트를 고치면 non-fast-forward로 배포가 실패했다.
+
+## D-012. 배포 저장소의 브랜치 규칙이 배포를 막았다
+
+`O2-live-deploy` 의 `main` 에 ruleset(`pull_request` 필수)이 걸리면서
+`app.yml` 의 `deploy` 잡이 죽었다.
+
+```
+remote: error: GH013: Repository rule violations found for refs/heads/main.
+remote: - Changes must be made through a pull request.
+ ! [remote rejected] main -> main (push declined due to repository rule violations)
+```
+
+D-006에서 앱 저장소의 브랜치 보호를 피하려고 매니페스트를 옮겼는데,
+같은 규칙이 옮겨간 저장소에도 걸린 것이다. 증상이 고약한 이유는
+**앞 구간이 전부 성공한 뒤에 끊긴다**는 데 있다. 이미지는 ECR에 올라가고
+클러스터는 예전 이미지로 계속 잘 돌아, 대시보드를 보지 않으면 배포가
+멈춘 줄 모른다.
+
+ruleset의 `bypass_actors` 에 저장소 admin 역할을 넣어 푼다. 사람에게는
+PR 규칙이 그대로 남고, 태그 갱신 커밋만 통과한다.
+
+워크플로가 PR을 열고 auto-merge하게 바꾸는 방법도 있었으나, 배포마다
+PR이 하나씩 쌓이는 대가에 비해 얻는 것이 없다. 이 저장소에 들어오는
+사람 커밋은 매니페스트 변경뿐이고 그것은 여전히 PR을 거친다.
+
+### 남은 위험
+
+`bypass_actors` 는 **역할** 단위다. 개인을 지정할 수 없어 저장소 admin 전체가
+직접 push할 수 있게 된다. `DEPLOY_REPO_TOKEN` 의 소유자가 admin이 아니게 되면
+그날로 배포가 다시 멈추므로, PAT 만료와 함께 확인 대상이다.
+
+## D-013. 파이프라인 검증용 페이지를 서비스로 둔다
+
+`apps/testpage/` — nginx 정적 페이지 하나. 커밋에서 브라우저까지가
+실제로 이어지는지 보는 것이 목적이다.
+
+`api` 는 이 확인에 쓰기 나쁘다. JVM이라 빌드가 느리고, 무엇이 깨졌을 때
+앱 문제인지 파이프라인 문제인지 구분이 안 된다. 빌드할 것이 없는 페이지는
+실패하면 원인이 파이프라인뿐이다.
+
+D-011에서 `02-eks/ecr.tf` 를 지우며 코드 밖으로 떨어져 나온 `o2/testpage`
+저장소를 `terraform import` 로 `00-cicd` 에 흡수했다. 용도가 원래 같았고,
+남겨두면 수명주기 정책도 스캔 설정도 붙지 않는다.
+
+`verify` 잡은 `build.gradle.kts` 가 없으면 건너뛴다. 모든 서비스가 JVM이라는
+전제가 워크플로에 박혀 있었고, 정적 페이지 하나에 gradle 프로젝트를 흉내내게
+하는 것보다 전제를 걷어내는 쪽이 맞다. 빌드 검증은 이미지 빌드가 대신한다.
+
+외부 노출은 ALB Ingress로 한다. 서비스는 `ClusterIP` 그대로 두고 Ingress만
+붙인다 — 서비스마다 `LoadBalancer` 타입을 쓰면 서비스 수만큼 NLB가 생긴다.
