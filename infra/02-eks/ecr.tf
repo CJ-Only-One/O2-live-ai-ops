@@ -1,33 +1,9 @@
-resource "aws_ecr_repository" "app" {
-  name                 = "${var.project}/testpage"
-  image_tag_mutability = "IMMUTABLE" # 커밋 SHA 태그 재사용 방지. 배포 추적성 확보
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  # 3주 프로젝트 종료 시 이미지가 남아 destroy를 막지 않도록
-  force_delete = true
-}
-
-# CI가 커밋마다 이미지를 밀어넣으므로 방치하면 계속 쌓인다.
-# $0.10/GB-월이라 금액은 작지만, 정리 정책이 없는 레지스트리는
-# Phase 3 부하테스트 반복 배포 때 수십 GB가 된다.
-resource "aws_ecr_lifecycle_policy" "app" {
-  repository = aws_ecr_repository.app.name
-
-  policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1
-        description  = "Keep last 10 images"
-        selection = {
-          tagStatus   = "any"
-          countType   = "imageCountMoreThan"
-          countNumber = 10
-        }
-        action = { type = "expire" }
-      },
-    ]
-  })
-}
+# ECR 저장소는 `00-cicd` 가 소유한다 (services 변수 기준으로 서비스마다 하나).
+#
+# 여기 있던 `o2/testpage` 는 클러스터 검증용 테스트 페이지를 담던 저장소로,
+# 파이프라인이 쓰지 않는다. 두 스택이 각자 ECR을 만들면 어느 쪽이 진짜인지
+# 알 수 없고, `02-eks` 의 ecr_repository_url 출력이 앱 저장소를 가리키는 줄
+# 알기 쉬웠다. 소유자를 한쪽으로 모은다. (D-009 와 같은 이유)
+#
+# 이 파일을 지운 apply는 `o2/testpage` 저장소와 그 안의 이미지를 삭제한다
+# (force_delete = true 였다). 아직 쓰는 것이 있다면 apply 전에 확인할 것.

@@ -119,23 +119,6 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # 부트스트랩 매니페스트가 문법적으로 유효한지 본다.
-  # 서비스 매니페스트는 배포 저장소로 옮겨갔고, 그쪽에서 자체 검증한다.
-  bootstrap:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v5
-      - name: YAML 검증
-        run: |
-          fail=0
-          for f in bootstrap/*.yaml; do
-            [ -e "$f" ] || continue
-            python3 -c "import yaml,sys; list(yaml.safe_load_all(open('$f')))" \
-              && echo "OK   $f" || { echo "FAIL $f"; fail=1; }
-          done
-          exit $fail
-
   # ── 이미지 빌드 · ECR ────────────────────────────────────
   image:
     needs: [changed, verify]
@@ -168,11 +151,9 @@ jobs:
         with:
           context: apps/${{ matrix.service }}
           push: true
-          # 커밋 SHA가 진짜 태그다. latest는 사람이 보기 편한 별칭일 뿐이고,
-          # 매니페스트가 latest를 참조하면 롤백이 불가능해진다.
-          tags: |
-            ${{ steps.ecr.outputs.registry }}/o2/${{ matrix.service }}:${{ github.sha }}
-            ${{ steps.ecr.outputs.registry }}/o2/${{ matrix.service }}:latest
+          # 커밋 SHA 태그 하나만 민다. latest는 아무도 참조하지 않는데
+          # 저장소를 IMMUTABLE로 바꾸는 순간 두 번째 푸시부터 실패한다.
+          tags: ${{ steps.ecr.outputs.registry }}/o2/${{ matrix.service }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -249,4 +230,6 @@ jobs:
           git commit -m "deploy: 이미지를 ${GITHUB_SHA::7}로 갱신" \
                      -m "출처: ${GITHUB_REPOSITORY}@${GITHUB_SHA}" \
                      -m "실행: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          git push
+          # 사람이 그 사이에 매니페스트를 고치면 push가 거절된다.
+          # 태그 한 줄만 바꾸므로 rebase로 얹으면 그만이다.
+          git push || { git pull --rebase && git push; }

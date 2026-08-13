@@ -9,7 +9,7 @@ Argo CD와 그 위의 모든 것이 자동으로 복원된다.
 |---|---|---|
 | 클러스터 접근 권한 | 손으로 `aws eks create-access-entry` | `cluster_admin_arns` 변수 |
 | Argo CD 설치 | README 절차를 손으로 따라감 | `helm_release` |
-| Argo Application 등록 | `kubectl apply -f bootstrap/...` | `argocd-apps` 차트 |
+| Argo Application 등록 | `kubectl apply` 수동 | `argocd-apps` 차트 |
 | Load Balancer Controller | `terraform output` 을 복사해 실행 | `helm_release` |
 
 ## 헬름 릴리스가 둘인 이유

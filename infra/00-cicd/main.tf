@@ -161,15 +161,18 @@ resource "aws_iam_role_policy" "app_ecr" {
 }
 
 # ── Terraform용 역할 ─────────────────────────────────────────
-# 이 구성에서 권한이 가장 넓은 대상이다. VPC·EKS·RDS·IAM을 만들어야 하므로
-# 사실상 관리자다. 그래서 두 가지로 방어한다.
-#   1) sub를 PR(plan)과 environment:infra(apply) 두 가지로만 좁힌다
-#   2) apply는 GitHub Environment의 required reviewers로 사람이 승인해야 돈다
+# apply는 각자 로컬에서 자기 자격증명으로 한다(D-005). CI는 PR에서 plan만
+# 돌리므로 이 역할은 읽기 전용이면 충분하다.
+#
+# 예전에는 AdministratorAccess였다. 그런데 `terraform plan` 은 임의 코드를
+# 실행할 수 있다 — external data source, 커스텀 provider가 plan 단계에서 돈다.
+# 그 상태로 PR 하나면 계정 관리자 자격을 얻을 수 있었다. (D-011)
+#
 # app 역할과 반드시 분리한다 — 자주 도는 앱 워크플로가 이 권한을 쓰면
-# 토큰 유출 시 잃는 것이 계정 전체가 된다.
+# 토큰 유출 시 잃는 범위가 인프라 전체로 넓어진다.
 resource "aws_iam_role" "tf" {
   name        = "o2-live-github-tf"
-  description = "tf.yml - infrastructure plan and apply"
+  description = "tf.yml - infrastructure plan only (read-only)"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -182,24 +185,20 @@ resource "aws_iam_role" "tf" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = concat(
-            # PR의 plan 잡. 승인 게이트가 없으므로 여기가 더 넓은 구멍이다.
-            # 장기적으로는 읽기 전용 역할로 분리하는 편이 낫다.
-            [for s in local.repo_subs : "${s}:pull_request"],
-            # apply 잡. environment를 쓰면 sub에 그 이름이 박힌다.
-            [for s in local.repo_subs : "${s}:environment:infra"],
-          )
+          # PR의 plan 잡 하나뿐이다. apply 잡은 없앴으므로
+          # environment:infra 는 아무도 쓰지 않는 경로였다.
+          "token.actions.githubusercontent.com:sub" = [
+            for s in local.repo_subs : "${s}:pull_request"
+          ]
         }
       }
     }]
   })
 }
 
-# TODO: 관리 대상이 확정되면 필요한 서비스로 좁힌다.
-# 지금은 VPC/EKS/RDS를 처음 만드는 단계라 범위를 미리 특정하기 어렵다.
-resource "aws_iam_role_policy_attachment" "tf_admin" {
+resource "aws_iam_role_policy_attachment" "tf_readonly" {
   role       = aws_iam_role.tf.name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
 }
 
 # ── 서비스별 ECR 저장소 ──────────────────────────────────────

@@ -17,8 +17,9 @@
 | `tf.yml` | 인프라가 어긋난 상태로 남을 수 있다 | 높다. state 복구가 필요할 수 있다 |
 | `scan.yml` | 시크릿이 히스토리에 남는다 | 되돌릴 수 없다. 키를 교체해야 한다 |
 
-되돌리는 비용이 다르면 승인 절차도 달라야 한다.
-그래서 `tf.yml`만 승인 게이트(`environment: infra`)를 갖는다.
+되돌리는 비용이 다르면 적용 방식도 달라야 한다.
+그래서 `tf.yml` 만 CI가 적용하지 않는다 — plan을 사람이 읽고 로컬에서 apply한다.
+(처음에는 `environment: infra` 승인 게이트를 붙인 apply 잡이었다. D-005, D-011)
 
 ---
 
@@ -30,8 +31,8 @@
 plan이 길어지면 사람이 읽지 않게 되고, 읽지 않는 plan은 승인 게이트의 의미를 없앤다.
 
 번호는 장식이 아니라 **의존 순서**다. `02`와 `03`은 `01`의 출력(VPC ID, 서브넷)을
-remote state로 참조한다. apply는 반드시 이 순서로 돌아야 하고,
-`tf.yml`의 apply 잡이 순서를 강제한다.
+remote state로 참조한다. apply는 반드시 이 순서로 돌아야 한다.
+apply는 로컬에서 하므로 순서를 지키는 것은 사람의 몫이다.
 
 수명도 다르다. 네트워크는 거의 안 바뀌고, 데이터 계층은 그다음이며,
 EKS는 버전 업그레이드로 가장 자주 손댄다. 수명이 다른 것을 한 state에 묶으면
@@ -71,12 +72,11 @@ GitOps에는 그 경로가 아예 없다.
 특히 HPA를 도입하면 매니페스트의 `replicas` 와 충돌하므로,
 그때는 `replicas` 필드를 매니페스트에서 제거해야 한다.
 
-### 왜 Application 매니페스트만 `deploy/` 밖에 있나
+### 왜 Application 매니페스트만 매니페스트 저장소 밖에 있나
 
-`bootstrap/argocd-application.yaml` 에 따로 뒀다.
-`deploy/` 안에 두면 Argo가 **자기 자신을 관리 대상으로 삼는다.**
-이 파일은 클러스터를 세울 때 한 번만 손으로 적용하는 부트스트랩이고,
-그 뒤로는 Argo가 `deploy/` 만 따라간다. 성격이 다르므로 자리도 나눈다.
+매니페스트 저장소 안에 두면 Argo가 **자기 자신을 관리 대상으로 삼는다.**
+처음에는 `bootstrap/argocd-application.yaml` 을 두고 한 번만 손으로 적용했으나,
+지금은 `infra/04-platform` 의 `argocd-apps` 헬름 릴리스가 소유한다 (D-008, D-011).
 
 ### 평면 배치에서 태그를 갱신하는 법
 
@@ -191,8 +191,9 @@ Dockerfile과 매니페스트가 같은 숫자 UID(여기서는 `10001`)를 가�
 
 ## D-005. 인프라는 로컬에서 검증한 뒤 올린다
 
-`infra/` 의 세 스택은 아직 비어 있다. 로컬에서 `plan` 으로 확인이 끝난 뒤
-저장소에 올린다.
+`infra/` 의 스택은 로컬에서 `plan` 과 `apply` 로 확인이 끝난 뒤 저장소에 올린다.
+CI는 적용하지 않는다 — PR에서 `plan` 만 돌려 무엇이 바뀔지 보여준다.
+(`03-data` 는 아직 코드가 없다)
 
 `tf.yml` 은 이를 견디도록 만들어져 있다 — `.tf` 파일이 없는 스택은
 감지 단계에서 건너뛰므로, 인프라 코드가 없는 상태에서도 워크플로가 실패하지 않는다.
@@ -224,10 +225,8 @@ Dockerfile과 매니페스트가 같은 숫자 UID(여기서는 `10001`)를 가�
 
 ### 남은 정리
 
-- `00-cicd` 의 state만 다른 버킷(`o2-live-tfstate`)에 있다. 팀 버킷으로 합쳐야 한다.
-- `02-eks/github_oidc.tf` 도 GitHub OIDC 프로바이더를 만든다(현재 `enable_github_oidc = false`).
-  `00-cicd` 가 이미 소유하고 있으므로, 누가 저 값을 켜면 apply가 충돌한다.
-  소유권을 한쪽으로 정해야 한다.
+- ~~`00-cicd` 의 state만 다른 버킷에 있다~~ → D-010에서 팀 버킷으로 합쳤다.
+- ~~`02-eks/github_oidc.tf` 도 GitHub OIDC 프로바이더를 만든다~~ → D-009에서 제거했다.
 
 ---
 
@@ -243,7 +242,7 @@ Dockerfile과 매니페스트가 같은 숫자 UID(여기서는 `10001`)를 가�
 |---|---|---|
 | 클러스터 접근 권한 | `aws eks create-access-entry` 수동 | `cluster_admin_arns` 변수 |
 | Argo CD 설치 | README 절차 수동 | `helm_release` (차트 10.2.2 = v3.4.6) |
-| Argo Application | `kubectl apply` 수동 | 차트의 `extraObjects` |
+| Argo Application | `kubectl apply` 수동 | `argocd-apps` 헬름 릴리스 |
 | Load Balancer Controller | `terraform output` 복사 실행 | `helm_release` |
 
 ### 왜 `02-eks` 와 나눴나
@@ -358,3 +357,72 @@ ResourceInUseException: The specified access entry resource is already in use
 
 EKS가 클러스터 생성 시점에 생성자에게 관리자 access entry를 자동 부여한다.
 EKS가 관리하는 것을 Terraform이 또 만들려 하면 충돌한다. 목록에서 제외한다.
+
+---
+
+## D-011. 파이프라인 점검에서 나온 정리
+
+apply 잡을 없앤 뒤(2484b48) 남아 있던 전제와, 소유자가 둘인 리소스를 정리했다.
+
+### PR의 plan은 읽기 전용 역할로 돈다
+
+`o2-live-github-tf` 가 `AdministratorAccess` 였다. apply 잡이 있던 시절의 권한인데,
+apply를 로컬로 옮긴 뒤에도 그대로 남아 **PR에서 도는 plan이 계정 관리자 자격을
+쥐고 있었다.**
+
+`terraform plan` 은 읽기 전용 동작이 아니다. `external` data source나 커스텀
+provider가 plan 단계에서 실행되므로, 저장소에 PR을 열 수 있는 사람이면 그
+자격증명으로 원하는 것을 할 수 있었다.
+
+- 정책을 `ReadOnlyAccess` 로 교체
+- 신뢰 정책의 `environment:infra` 제거 — 그 environment를 쓰는 잡이 없다
+- `tf.yml` 의 plan에 `-lock=false` 추가. 읽기 전용 역할은 S3에 잠금 파일을 쓸 수
+  없다. 상태를 바꾸지 않는 plan이라 잠금 없이 돌아도 안전하다
+
+### `04-platform` 은 CI에서 plan하지 않는다
+
+AWS 권한만 낮추면 구멍이 절반만 닫힌다. 이 스택은 헬름 릴리스를 관리해
+plan에도 클러스터 접근이 필요했고, 그래서 `cluster_admin_arns` 에
+`role/o2-live-github-tf` 를 넣어 **EKS 클러스터 관리자** 권한을 주고 있었다.
+plan이 임의 코드를 실행할 수 있는 이상, AWS는 읽기 전용인데 클러스터는
+관리자인 상태가 남는다.
+
+권한을 좁히는 방향도 봤지만 헬름은 릴리스 상태를 Secret에 저장하므로
+View 정책으로는 plan이 돌지 않는다. Secret을 읽을 수 있으면 argocd 관리자
+비밀번호까지 읽히므로 좁히는 실익도 적다.
+
+apply는 어차피 로컬이다. plan도 로컬로 옮기고 access entry를 회수한다.
+대가는 이 스택만 PR에서 diff를 못 본다는 것이다.
+
+### Argo CD Application의 소유자는 `04-platform` 하나다
+
+`bootstrap/argocd-application.yaml` 과 `04-platform` 의 `argocd-apps` 릴리스가
+같은 `Application/o2-dev` 를 만들고 있었다. 부트스트랩을 적용한 클러스터에
+`04-platform` 을 apply하면 헬름이 자기가 만들지 않은 리소스를 발견하고 멈춘다.
+
+D-008에서 이미 헬름으로 옮겼으므로 부트스트랩 파일이 잔재였다. 파일을 지우고,
+그것만 검사하던 `app.yml` 의 `bootstrap` 잡도 함께 지웠다.
+
+### ECR 저장소의 소유자는 `00-cicd` 하나다
+
+`02-eks/ecr.tf` 가 `o2/testpage` 를 따로 만들고 있었다. 파이프라인이 쓰지 않는
+검증용 저장소인데, `02-eks` 의 `ecr_repository_url` 출력이 그것을 가리켜
+앱 이미지 주소로 오해하기 쉬웠다. 둘 다 제거했다. (OIDC 프로바이더를 정리한
+D-009와 같은 이유 — 소유자가 둘인 리소스는 한쪽 destroy가 다른 쪽을 부순다)
+
+### 배포 저장소도 검증을 갖는다
+
+`O2-live-deploy` 에는 워크플로가 없었다. 매니페스트가 곧 클러스터 상태인데
+문법·스키마 오류를 걸러줄 곳이 없어, 잘못된 값은 Argo의 sync 실패로만 드러났다.
+
+`kubeconform -strict` 를 도는 워크플로를 추가했다. `-strict` 는 스키마에 없는
+필드를 오류로 본다 — 오타 난 필드는 조용히 무시되어 "적용은 됐는데 설정이 안
+먹는" 상태를 만들기 때문이다. push에서도 도는 이유는 태그 갱신 커밋이 PR 없이
+main으로 직접 들어오기 때문이다.
+
+### 그 밖에
+
+- `:latest` 태그를 더 이상 밀지 않는다. 참조하는 곳이 없는데, 저장소를
+  `IMMUTABLE` 로 바꾸면 두 번째 푸시부터 실패한다.
+- 태그 갱신 커밋의 `git push` 에 rebase 재시도를 붙였다. 사람이 그 사이
+  매니페스트를 고치면 non-fast-forward로 배포가 실패했다.
