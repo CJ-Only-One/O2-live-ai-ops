@@ -126,7 +126,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # ── 이미지 빌드 · ECR ────────────────────────────────────
+  # ── 이미지 빌드 · 스캔 · ECR ─────────────────────────────
   image:
     needs: [changed, verify]
     if: github.event_name != 'pull_request' && needs.changed.outputs.any == 'true'
@@ -135,6 +135,7 @@ jobs:
     permissions:
       contents: read
       id-token: write        # OIDC로 AWS 역할을 빌린다
+      security-events: write # 스캔 결과를 Code Scanning에 올린다
     strategy:
       fail-fast: false
       matrix:
@@ -152,17 +153,73 @@ jobs:
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # 아래 세 단계가 같은 이름을 쓴다. 한 곳에서 정해두고 참조한다.
+      - name: 이미지 이름 확정
+        run: |
+          echo "IMAGE=${{ steps.ecr.outputs.registry }}/o2/${{ matrix.service }}:${{ github.sha }}" >> "$GITHUB_ENV"
+
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/build-push-action@v6
+      # 빌드와 푸시를 나눈 이유는 스캔을 그 사이에 끼우기 위해서다.
+      # push: true 로 한 번에 끝내면 스캔 결과를 이미지가 ECR에 올라간
+      # 뒤에 보게 되어, 막을 기회 자체가 사라진다.
+      #
+      # load: true 는 만든 이미지를 러너의 도커 데몬에 올린다. 그래야
+      # Trivy가 레지스트리를 거치지 않고 로컬에서 바로 열어볼 수 있다.
+      - name: 빌드
+        uses: docker/build-push-action@v6
         with:
           context: apps/${{ matrix.service }}
-          push: true
+          push: false
+          load: true
           # 커밋 SHA 태그 하나만 민다. latest는 아무도 참조하지 않는데
           # 저장소를 IMMUTABLE로 바꾸는 순간 두 번째 푸시부터 실패한다.
-          tags: ${{ steps.ecr.outputs.registry }}/o2/${{ matrix.service }}:${{ github.sha }}
+          tags: ${{ env.IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # ECR에도 스캔(scan_on_push)이 켜져 있지만 그쪽은 BASIC이라
+      # Alpine 패키지만 본다. 정작 위험이 모이는 곳은 app.jar 안의 Java
+      # 의존성인데 거기는 열어보지 않는다. Trivy는 JAR을 풀어 그 안까지
+      # 본다 — Log4Shell 같은 것이 걸리는 자리가 여기다.
+      - name: 이미지 취약점 스캔
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          # 시크릿 검사는 gitleaks(scan.yml)가 이미 한다. 중복을 피한다.
+          scanners: vuln
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          # 아직 패치가 없는 취약점으로 배포를 막으면 손쓸 방법이 없다.
+          # 올릴 버전이 존재하는 것만 본다.
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+          # 이게 없으면 severity로 걸러도 SARIF에는 LOW/MEDIUM까지 전부
+          # 들어가 Security 탭이 잠긴다. 기본값이 꺼짐이라 명시해야 한다.
+          limit-severities-for-sarif: true
+          # 우선은 리포트만 한다. 몇 건이 나오는지 보고 CRITICAL 차단으로
+          # 올린다. 첫날부터 막으면 배포가 서고, 그러면 사람들이 스캔을
+          # 끄는 쪽으로 간다.
+          exit-code: '0'
+
+      # 결과를 워크플로 아티팩트로 두면 zip을 받아 열어봐야 해서 아무도
+      # 보지 않는다. Code Scanning에 올리면 Security 탭에 쌓이고 PR에
+      # 인라인으로 붙으며, 고쳐지면 알아서 닫힌다. public 저장소라 무료다.
+      - name: 스캔 결과를 Code Scanning으로
+        # 스캔이 취약점을 찾아 실패하더라도 결과는 올려야 한다.
+        # 파일 존재를 함께 보는 이유는 빌드가 깨진 경우 SARIF가 없어서다.
+        if: always() && hashFiles(format('trivy-{0}.sarif', matrix.service)) != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          # 서비스마다 category를 나눈다. 같은 값으로 올리면 매트릭스
+          # 잡들이 서로의 결과를 덮어써 마지막 하나만 남는다.
+          category: trivy-${{ matrix.service }}
+
+      # 스캔 뒤에 민다. 지금은 exit-code가 0이라 실제로 막지는 않지만,
+      # 차단으로 올리는 순간 이 단계가 자동으로 건너뛰어진다.
+      - name: ECR에 푸시
+        run: docker push "$IMAGE"
 
   # ── 배포 요청 ────────────────────────────────────────────
   # 여기가 GitOps의 이음매다. 이 커밋이 곧 배포 요청이 된다.
