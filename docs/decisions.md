@@ -203,3 +203,68 @@ Dockerfile과 매니페스트가 같은 숫자 UID(여기서는 `10001`)를 가�
 - state는 반드시 S3 백엔드로 둔다. RDS 비밀번호 같은 값이 state에 평문으로 들어가므로
   로컬에 두면 유출과 분실 위험을 동시에 진다.
 - 첫 apply는 반드시 `01` → `02` → `03` 순서다. `02`·`03`이 `01`의 출력을 참조한다.
+
+---
+
+## D-007. 인프라 코드를 저장소로 흡수한다
+
+`01-network` 와 `02-eks` 는 팀원이 작성해 로컬에서 돌리던 코드다.
+`~/Downloads` 에 있어 **버전 관리도, 리뷰도, 이력도 없었다.**
+실제 인프라가 그 코드로 바뀌는데 변경 근거가 어디에도 남지 않는 상태였다.
+
+옮기면서 두 가지를 지켰다.
+
+- **state 파일은 가져오지 않았다.** state는 S3(`o2-tfstate-066107819912`)에 있고,
+  로컬에 남아 있던 `terraform.tfstate` 는 이전 과정의 잔재였다.
+- **`terraform.tfvars` 는 커밋했다.** `.gitignore` 의 `*.tfvars` 규칙에 걸렸으나,
+  이 파일들은 비밀이 아니라 환경 정의 그 자체다. 없으면 재현이 불가능하다.
+  비밀이 필요해지면 tfvars가 아니라 Secrets Manager를 쓴다.
+
+이제 `tf.yml` 이 PR에서 `plan` 을 돌려 무엇이 바뀌는지 보여준다.
+
+### 남은 정리
+
+- `00-cicd` 의 state만 다른 버킷(`o2-live-tfstate`)에 있다. 팀 버킷으로 합쳐야 한다.
+- `02-eks/github_oidc.tf` 도 GitHub OIDC 프로바이더를 만든다(현재 `enable_github_oidc = false`).
+  `00-cicd` 가 이미 소유하고 있으므로, 누가 저 값을 켜면 apply가 충돌한다.
+  소유권을 한쪽으로 정해야 한다.
+
+---
+
+## D-008. 클러스터 안의 구성도 코드로 남긴다 (`04-platform`)
+
+클러스터를 지웠다 만들면 **그 안의 것은 전부 사라진다.** Argo CD, 네임스페이스,
+파드, access entry까지. 실제로 하루 만에 두 번 겪었다.
+
+바깥(VPC·ECR·IAM)은 Terraform이 지키고 있었지만 안쪽은 손으로 복구하고 있었다.
+`04-platform` 이 그 안쪽을 맡는다.
+
+| | 이전 | 지금 |
+|---|---|---|
+| 클러스터 접근 권한 | `aws eks create-access-entry` 수동 | `cluster_admin_arns` 변수 |
+| Argo CD 설치 | README 절차 수동 | `helm_release` (차트 10.2.2 = v3.4.6) |
+| Argo Application | `kubectl apply` 수동 | 차트의 `extraObjects` |
+| Load Balancer Controller | `terraform output` 복사 실행 | `helm_release` |
+
+### 왜 `02-eks` 와 나눴나
+
+`helm` 프로바이더는 설정 시점에 클러스터 주소와 토큰이 필요하다.
+클러스터를 만드는 apply와 같은 스택이면 첫 실행에서 "아직 모르는 값"이라 깨진다.
+스택을 나누고 remote state로 넘겨받아야 한다.
+
+### 첫 apply가 두 단계인 이유
+
+`helm` 프로바이더가 인증하려면 access entry가 있어야 하는데, 그것을 같은 스택이
+만든다. 그래서 처음에는 `-target` 으로 권한을 먼저 만들고 나머지를 적용한다.
+access entry를 `02-eks` 로 옮기면 이 어색함은 사라진다.
+
+### 차트 버전을 고정한 이유
+
+버전을 비워두면 클러스터를 다시 만들 때마다 다른 Argo CD가 깔린다.
+`10.2.2` 는 실제 저장소를 조회해 `v3.4.6` 에 대응하는 것을 확인한 값이다.
+
+### 기본값에서 바꾼 것
+
+Argo CD 차트 기본값에는 **resource requests가 없다.** 그러면 파드가 BestEffort QoS가 되어
+노드 메모리가 압박받을 때 가장 먼저 축출된다. 배포 시스템이 부하 상황에서 먼저 죽으면
+복구 수단을 잃으므로, 주요 컴포넌트에 requests를 지정했다.
