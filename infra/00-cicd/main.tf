@@ -81,7 +81,7 @@ variable "services" {
   type        = list(string)
   # testpage 는 손으로 만들어져 있던 저장소를 import 로 흡수한 것이다.
   # 코드 밖에 있던 리소스를 남겨두면 수명주기 정책도 태그 정리도 안 붙는다.
-  default     = ["api", "testpage"]
+  default = ["api", "testpage"]
 }
 
 locals {
