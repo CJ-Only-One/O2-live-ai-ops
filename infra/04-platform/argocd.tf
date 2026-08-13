@@ -59,12 +59,22 @@ resource "helm_release" "argocd" {
       }
     }
     applicationSet = {
+      # ApplicationSet CR을 쓰지 않는다. 매니페스트 저장소 루트를 통째로 보는
+      # Application 하나뿐이라 서비스를 추가해도 Application 수가 늘지 않는다.
+      # 서비스별로 Application을 쪼개고 싶어지면 그때 true로 되돌린다.
+      #
+      # 끈 상태에서도 CRD는 남는다. ApplicationSet을 만들면 apply는 성공하지만
+      # 컨트롤러가 없어 아무 일도 일어나지 않으니, 쓸 때 이 값부터 확인할 것.
+      enabled = false
       resources = {
         requests = { cpu = "25m", memory = "64Mi" }
         limits   = { memory = "128Mi" }
       }
     }
     notifications = {
+      # 알림은 Datadog으로 보낸다. 여기에 또 두면 경로가 둘로 갈린다.
+      # cm에 트리거도 구독 애노테이션도 없어 지금은 아무것도 보내지 않는다.
+      enabled = false
       resources = {
         requests = { cpu = "25m", memory = "64Mi" }
         limits   = { memory = "128Mi" }
