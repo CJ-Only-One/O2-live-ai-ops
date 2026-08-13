@@ -57,6 +57,14 @@ variable "cluster_admin_arns" {
     "arn:aws:iam::066107819912:user/KDH",
     "arn:aws:iam::066107819912:user/KSY",
     "arn:aws:iam::066107819912:user/STY",
+
+    # tf.yml 이 쓰는 역할. 이 스택이 헬름 릴리스(Argo CD, LBC)를 관리하므로
+    # plan 단계에서도 클러스터 상태를 읽어야 한다. 없으면 CI가
+    # "Kubernetes cluster unreachable" 로 실패한다.
+    #
+    # 앱 배포용 역할(o2-live-github-app)에는 주지 않는다. GitOps라
+    # 애플리케이션 CD는 클러스터에 접근할 일이 없다. (docs/decisions.md D-004)
+    "arn:aws:iam::066107819912:role/o2-live-github-tf",
   ]
   # user/JYC 는 넣지 않는다. 클러스터를 만든 주체에게는 EKS가 생성 시점에
   # 관리자 access entry를 자동 부여하므로, 여기 넣으면 이미 있는 것을 또
