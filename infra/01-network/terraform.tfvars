@@ -20,5 +20,5 @@ single_nat_gateway             = true
 enable_ecr_interface_endpoints = false
 
 # 지금은 전부 off
-enable_data_tier = false   # RDS/Redis 미사용
-enable_flow_logs = false   # 소비할 주체 없음
+enable_data_tier = false # RDS/Redis 미사용
+enable_flow_logs = false # 소비할 주체 없음

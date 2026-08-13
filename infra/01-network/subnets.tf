@@ -18,8 +18,8 @@ resource "aws_subnet" "public" {
 
     # AWS Load Balancer Controller 서브넷 auto-discovery용
     # 인터넷 페이싱 Ingress/Service가 이 서브넷을 자동 선택한다.
-    "kubernetes.io/role/elb"                            = "1"
-    "kubernetes.io/cluster/${var.eks_cluster_name}"     = "shared"
+    "kubernetes.io/role/elb"                        = "1"
+    "kubernetes.io/cluster/${var.eks_cluster_name}" = "shared"
   }
 }
 
@@ -35,8 +35,8 @@ resource "aws_subnet" "private_app" {
     Name = "${local.name}-private-app-${each.key}"
     Tier = "private-app"
 
-    "kubernetes.io/role/internal-elb"                   = "1"
-    "kubernetes.io/cluster/${var.eks_cluster_name}"     = "shared"
+    "kubernetes.io/role/internal-elb"               = "1"
+    "kubernetes.io/cluster/${var.eks_cluster_name}" = "shared"
 
     # Karpenter를 쓸 경우 노드 프로비저닝 대상 서브넷 discovery 태그.
     # Cluster Autoscaler만 쓸 거면 무해하게 남아 있어도 된다.
