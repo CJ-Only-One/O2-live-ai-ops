@@ -49,7 +49,7 @@ function App() {
         setName('')
         loadItems()
       })
-      .catch(() => setItemsError('저장하지 못했습니다 (DB 연결을 확인하세요)'))
+      .catch(() => setItemsError('저장하지 못했습니다 (DB 연결을 확인하세용)'))
   }
 
   return (
