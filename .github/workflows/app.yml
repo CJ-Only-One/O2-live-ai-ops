@@ -96,33 +96,146 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v5
+      # 서비스마다 언어가 다르다. 워크플로에 목록을 박아두면 서비스를 추가할
+      # 때마다 여기를 고쳐야 하므로, 디렉터리에 있는 파일을 보고 판단한다.
+      #
+      # 판별에 실패하면 건너뛴다. 정적 페이지처럼 빌드할 것이 없는 서비스가
+      # 있고, 없는 것을 빌드하려 들면 잡 전체가 실패하기 때문이다.
+      # 다만 건너뛴 서비스는 이미지가 빌드된다는 것 외에는 아무것도
+      # 검증되지 않는다는 뜻이므로, 로그에 분명히 남긴다.
+      - id: kind
+        run: |
+          if [ -f pyproject.toml ] || [ -f requirements.txt ]; then
+            LANG=python
+          elif [ -f package.json ]; then
+            LANG=node
+          elif [ -f build.gradle.kts ]; then
+            # TODO: apps/api 가 FastAPI로 교체되면 이 분기를 지운다.
+            # 지금 지우면 교체 전까지 그 서비스가 무검증 상태가 된다.
+            LANG=gradle
+          else
+            LANG=none
+            echo "::warning::${{ matrix.service }} 의 언어를 판별하지 못했습니다. 검증을 건너뜁니다."
+          fi
+          echo "lang=$LANG" >> "$GITHUB_OUTPUT"
+          echo "판별: $LANG"
+
+      # ── Python (FastAPI) ──────────────────────────────────
+      - if: steps.kind.outputs.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          # 컨테이너의 파이썬과 같은 버전이어야 한다. Dockerfile을 바꾸면
+          # 여기도 같이 바꿀 것. 다르면 여기서 통과한 코드가 런타임에 깨진다.
+          python-version: '3.12'
+
+      - name: Python 의존성 설치
+        if: steps.kind.outputs.lang == 'python'
+        run: |
+          # 잠금 파일이 있으면 그것을 쓴다. 없으면 빌드마다 다른 버전이
+          # 들어와 CI 통과와 운영 동작이 어긋난다.
+          if [ -f uv.lock ]; then
+            pip install uv
+            uv sync --frozen
+            echo "RUN=uv run" >> "$GITHUB_ENV"
+          elif [ -f poetry.lock ]; then
+            pip install poetry
+            poetry install --no-interaction
+            echo "RUN=poetry run" >> "$GITHUB_ENV"
+          else
+            echo "::warning::잠금 파일이 없습니다. 빌드 재현성이 보장되지 않습니다."
+            pip install -r requirements.txt
+            # `[ -f x ] && pip install` 로 쓰지 않는다. 파일이 없을 때 그 줄이
+            # 마지막이면 스텝 전체가 실패한다. (bash -e 로 돌기 때문)
+            if [ -f requirements-dev.txt ]; then
+              pip install -r requirements-dev.txt
+            fi
+            echo "RUN=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Python 린트
+        if: steps.kind.outputs.lang == 'python'
+        run: |
+          # 설정이 없으면 도구를 강요하지 않는다. 있으면 반드시 통과해야 한다.
+          if $RUN ruff --version >/dev/null 2>&1; then
+            $RUN ruff check .
+            $RUN ruff format --check .
+          else
+            echo "ruff 없음 — 건너뜀"
+          fi
+
+      - name: Python 테스트
+        if: steps.kind.outputs.lang == 'python'
+        run: |
+          if $RUN pytest --version >/dev/null 2>&1; then
+            $RUN pytest -q
+          else
+            echo "::warning::pytest가 없습니다. 테스트 없이 배포됩니다."
+          fi
+
+      # ── Node (React) ──────────────────────────────────────
+      - if: steps.kind.outputs.lang == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/${{ matrix.service }}/package-lock.json
+
+      - name: Node 의존성 설치
+        if: steps.kind.outputs.lang == 'node'
+        run: |
+          # npm ci 는 package-lock.json 을 그대로 재현한다.
+          # npm install 은 잠금 파일을 갱신해버려 CI에서 쓰면 안 된다.
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "::warning::package-lock.json 이 없습니다. 빌드 재현성이 보장되지 않습니다."
+            npm install
+          fi
+
+      - name: Node 검사
+        if: steps.kind.outputs.lang == 'node'
+        run: |
+          # package.json 에 있는 스크립트만 돌린다. 없는 것을 부르면 실패한다.
+          #
+          # `has x && npm run x || echo` 로 쓰면 안 된다. 스크립트가 존재하는데
+          # 실패한 경우까지 || 가 삼켜서 검사가 통과한 것처럼 보인다.
+          has() { node -e "process.exit(require('./package.json').scripts?.['$1']?0:1)"; }
+
+          if has lint; then npm run lint; else echo "lint 스크립트 없음 — 건너뜀"; fi
+          if has test; then npm test;     else echo "::warning::test 스크립트가 없습니다. 테스트 없이 배포됩니다."; fi
+
+          # 빌드는 반드시 돈다. 프론트는 여기서 깨지는 것을 잡는 게 핵심이다.
+          npm run build
+
+      # ── Gradle (교체 예정) ────────────────────────────────
+      - if: steps.kind.outputs.lang == 'gradle'
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - if: steps.kind.outputs.lang == 'gradle'
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.14'
           # 포크 PR이 캐시를 오염시키지 못하게 한다.
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
-      # 모든 서비스가 JVM은 아니다. 정적 페이지처럼 빌드할 것이 없는 서비스는
-      # 여기서 할 일이 없다. 없는 것을 빌드하려 들면 잡 전체가 실패한다.
-      - name: 빌드 + 테스트
-        run: |
-          if [ ! -f build.gradle.kts ]; then
-            echo "gradle 프로젝트가 아님 — 빌드 건너뜀 (이미지 빌드에서 검증된다)"
-            exit 0
-          fi
-          gradle build --no-daemon
+      - name: Gradle 빌드 + 테스트
+        if: steps.kind.outputs.lang == 'gradle'
+        run: gradle build --no-daemon
 
+      # 언어마다 리포트가 나오는 위치가 다르다. 전부 적고 없는 것은 무시한다.
       - name: 테스트 리포트
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-${{ matrix.service }}
-          path: apps/${{ matrix.service }}/build/reports/tests/
+          path: |
+            apps/${{ matrix.service }}/build/reports/tests/
+            apps/${{ matrix.service }}/htmlcov/
+            apps/${{ matrix.service }}/junit.xml
+            apps/${{ matrix.service }}/coverage/
           retention-days: 7
           if-no-files-found: ignore
 
