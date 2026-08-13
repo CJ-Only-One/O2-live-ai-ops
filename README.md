@@ -8,7 +8,7 @@
 ```
 .github/workflows/
   app.yml        빌드 + 배포
-  tf.yml         plan(PR) / apply(main, 승인)
+  tf.yml         plan(PR 전용) — apply는 로컬
   scan.yml       gitleaks
 infra/
   00-cicd/       GitHub OIDC, IAM 역할, ECR
@@ -17,7 +17,6 @@ infra/
   03-data/       Redis, RDS (미작성)
   04-platform/   Argo CD, Load Balancer Controller, 클러스터 접근 권한
 apps/<service>/  Dockerfile + src
-bootstrap/       Argo CD Application (최초 1회 수동 적용)
 loadtest/        부하 테스트 시나리오
 docs/            결정 기록
 ```
@@ -28,7 +27,8 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 충돌해서 나눴다 — 근거는 D-006.
 
 `infra/`의 번호는 **의존 순서**다. `02`와 `03`은 `01`의 출력을 remote state로
-참조하므로 apply는 반드시 이 순서를 지켜야 한다. `tf.yml`이 이를 강제한다.
+참조하므로 apply는 반드시 이 순서를 지켜야 한다. apply는 로컬에서 하므로
+순서를 지키는 것은 사람의 몫이다 — `tf.yml` 은 plan만 돌린다.
 
 배경과 근거는 [`docs/decisions.md`](docs/decisions.md)에 있다.
 
@@ -37,12 +37,12 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 | | 트리거 | 하는 일 |
 |---|---|---|
 | `app.yml` | `apps/**` 변경 | 이미지 빌드 → ECR → 매니페스트 저장소에 태그 갱신 |
-| `tf.yml` | `infra/**` 변경 | PR에서 plan, main에서 승인 후 apply |
+| `tf.yml` | `infra/**` PR | plan만 — 무엇이 바뀔지 보여준다. apply는 로컬 |
 | `scan.yml` | 모든 PR·푸시, 주 1회 | 시크릿 유출 검사 |
 
 세 개로 나눈 기준은 **실패했을 때 되돌리는 비용**이다.
 앱 배포는 다시 하면 되지만 인프라는 그렇지 않고, 유출된 시크릿은 되돌릴 수 없다.
-그래서 `tf.yml`만 승인 게이트를 갖는다.
+그래서 인프라만 CI가 적용하지 않는다 — plan을 사람이 읽고 로컬에서 apply한다.
 
 ## 최초 셋업
 
@@ -52,11 +52,11 @@ state에는 RDS 비밀번호 같은 값이 평문으로 들어가므로 로컬�
 S3 버킷과 잠금 테이블을 먼저 만든다. (이 두 개만은 손으로 만든다 —
 state를 보관할 곳을 만드는 데 state가 필요한 순환을 피하기 위해서다)
 
-**이미 만들어져 있다** — `s3://o2-live-tfstate`. 아래는 재현이 필요할 때의 기록이다.
-버킷 하나만 손으로 만들고, 각 스택은 `backend "s3"` 로 그 안의 키를 쓴다.
+**이미 만들어져 있다** — `s3://o2-tfstate-066107819912`. 아래는 재현이 필요할 때의
+기록이다. 버킷 하나만 손으로 만들고, 각 스택은 `backend "s3"` 로 그 안의 키를 쓴다.
 
 ```bash
-B=o2-live-tfstate
+B=o2-tfstate-066107819912
 aws s3api create-bucket --bucket $B --region ap-northeast-2 \
   --create-bucket-configuration LocationConstraint=ap-northeast-2
 aws s3api put-public-access-block --bucket $B --public-access-block-configuration \
@@ -76,27 +76,21 @@ aws s3api put-bucket-encryption --bucket $B --server-side-encryption-configurati
 
 | 이름 | 값 |
 |---|---|
-| `AWS_TF_ROLE_ARN` | Terraform용 IAM Role — 인프라를 만들 수 있는 넓은 권한 |
+| `AWS_TF_ROLE_ARN` | `tf.yml` plan용 IAM Role — `ReadOnlyAccess` |
 | `AWS_APP_ROLE_ARN` | 애플리케이션 배포용 IAM Role — ECR push 등 좁은 권한 |
 | `DEPLOY_REPO_TOKEN` | 매니페스트 저장소에 태그 갱신을 커밋할 fine-grained PAT.<br>`O2-live-deploy` 한 곳, `Contents: Read and write` 만. **만료 주의** |
 
-**두 역할을 반드시 분리한다.** Terraform 역할은 사실상 관리자이므로,
-앱 배포처럼 자주 도는 워크플로가 그 권한을 쓰게 두면 노출 표면이 커진다.
+**두 역할을 반드시 분리한다.** 그리고 둘 다 쓰기 범위를 좁게 유지한다 —
+`plan` 은 임의 코드를 실행할 수 있으므로 CI 자격증명에 쓰기 권한을 주면
+PR 하나가 곧 인프라 변경 수단이 된다. (D-011)
 
-### 3. 승인 게이트
+### 3. Argo CD 등록
 
-저장소 Settings → Environments → `infra` 생성 후 **required reviewers** 지정.
-이 설정을 빼먹으면 `tf.yml`의 apply가 승인 없이 그냥 실행된다.
+`infra/04-platform` 이 Argo CD 설치와 `o2-dev` Application 등록을 함께 한다.
+손으로 `kubectl apply` 할 것은 없다 — 예전 `bootstrap/argocd-application.yaml`
+은 같은 리소스를 두 곳에서 만들게 되어 제거했다. (D-011)
 
-### 4. Argo CD 등록
-
-클러스터에 Argo CD를 설치한 뒤, 이 저장소를 보게 한 번만 등록한다.
-
-```bash
-kubectl apply -f bootstrap/argocd-application.yaml
-```
-
-이후로는 `main` 에 태그 갱신 커밋이 올라올 때마다 Argo가 알아서 반영한다.
+이후로는 배포 저장소에 태그 갱신 커밋이 올라올 때마다 Argo가 알아서 반영한다.
 기본 폴링 주기는 180초다.
 
 ## 배포 흐름
@@ -128,17 +122,16 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 
 - [x] 저장소 골격
 - [x] `scan.yml` — gitleaks
-- [x] `tf.yml` — plan / 승인 후 apply
+- [x] `tf.yml` — PR plan 전용 (apply는 로컬, 역할은 읽기 전용 · D-011)
 - [x] `app.yml` — 빌드 → ECR → 태그 갱신 커밋 (Argo가 배포)
 - [x] `apps/api` — Spring Boot (Kotlin)
 - [x] 매니페스트를 `O2-live-deploy` 로 분리 (D-006)
-- [x] `bootstrap/` — Argo CD Application
+- [x] Argo CD Application — `infra/04-platform` 이 소유 (`bootstrap/` 제거 · D-011)
 - [x] `loadtest/spike.js` — 스파이크 시나리오 (k6)
 - [x] `AWS_APP_ROLE_ARN` / `AWS_TF_ROLE_ARN` 시크릿 등록
 - [x] `infra/00-cicd` — OIDC 프로바이더, IAM Role 2개, ECR (로컬 적용 완료)
-- [x] `infra` 환경 승인 게이트 — 필수 리뷰어 SangMun, j0chan
 - [x] 파이프라인 전 구간 검증 — 커밋 → ECR → 태그 갱신 → Argo → 파드 응답
-- [x] Terraform state를 S3로 이전 (`s3://o2-live-tfstate`, 버전 관리·암호화·잠금)
+- [x] Terraform state를 S3로 이전 (버전 관리·암호화·잠금)
 - [x] `infra/01-network`, `02-eks` — 팀 코드 반영 (D-007)
 - [x] `infra/04-platform` — 클러스터 안의 구성을 코드로 (D-008)
 - [x] state를 팀 버킷(`o2-tfstate-066107819912`) 하나로 통일 (D-010)
