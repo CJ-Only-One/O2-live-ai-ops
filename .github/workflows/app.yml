@@ -197,9 +197,7 @@ jobs:
           # 이게 없으면 severity로 걸러도 SARIF에는 LOW/MEDIUM까지 전부
           # 들어가 Security 탭이 잠긴다. 기본값이 꺼짐이라 명시해야 한다.
           limit-severities-for-sarif: true
-          # 우선은 리포트만 한다. 몇 건이 나오는지 보고 CRITICAL 차단으로
-          # 올린다. 첫날부터 막으면 배포가 서고, 그러면 사람들이 스캔을
-          # 끄는 쪽으로 간다.
+          # 이 단계는 보고만 한다. 차단은 아래 단계가 따로 맡는다.
           exit-code: '0'
 
       # 결과를 워크플로 아티팩트로 두면 zip을 받아 열어봐야 해서 아무도
@@ -216,8 +214,33 @@ jobs:
           # 잡들이 서로의 결과를 덮어써 마지막 하나만 남는다.
           category: trivy-${{ matrix.service }}
 
-      # 스캔 뒤에 민다. 지금은 exit-code가 0이라 실제로 막지는 않지만,
-      # 차단으로 올리는 순간 이 단계가 자동으로 건너뛰어진다.
+      # ── 차단 ────────────────────────────────────────────
+      # 보고와 차단을 나눈 이유는 기준이 다르기 때문이다.
+      #
+      # 보고는 HIGH까지 본다. 지금 베이스 이미지에 HIGH가 몇 건 있고,
+      # 그건 우리가 고칠 수 있는 것이 아니라 temurin이 갱신해야 사라진다.
+      # 그것으로 배포를 막으면 우리가 손쓸 수 없는 이유로 배포가 서고,
+      # 결국 스캔을 끄는 쪽으로 간다.
+      #
+      # 차단은 CRITICAL만 본다. 이건 대개 의존성 한 줄로 고쳐진다.
+      #
+      # 한 단계로 합칠 수도 있지만, 그러면 limit-severities-for-sarif
+      # 때문에 Security 탭에서 HIGH가 통째로 사라진다. 보이는 것과
+      # 막는 것을 같은 값으로 묶을 수 없어 단계를 나눈다.
+      - name: CRITICAL 취약점 차단
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          format: table
+          ignore-unfixed: true
+          severity: CRITICAL
+          exit-code: '1'
+          # 위 단계가 이미 설치하고 DB도 받아뒀다. 다시 받지 않는다.
+          skip-setup-trivy: true
+
+      # 여기까지 왔다는 것은 CRITICAL이 없다는 뜻이다.
+      # 위 단계가 실패하면 이 단계는 실행되지 않아 이미지가 ECR에 올라가지 않는다.
       - name: ECR에 푸시
         run: docker push "$IMAGE"
 
