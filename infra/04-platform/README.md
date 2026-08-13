@@ -72,8 +72,19 @@ terraform output argocd_ui_command
 terraform output argocd_initial_password_command
 ```
 
-**첫 로그인 후 비밀번호를 바꾸고 `argocd-initial-admin-secret` 을 삭제할 것.**
-Argo CD는 클러스터 전체에 대한 배포 권한을 가지므로 이 계정이 뚫리면 전부 뚫린다.
+접속 주소는 **`http`** 다. `server.insecure` 로 설치해 서버가 평문으로 서빙하므로,
+`https` 로 붙으면 TLS 핸드셰이크가 깨져 연결이 끊긴다.
+
+```bash
+kubectl port-forward -n argocd svc/argocd-server 8080:80   # → http://localhost:8080
+```
+
+비밀번호는 설치할 때마다 랜덤으로 새로 생성된다. 클러스터를 자주 다시 만드는
+지금 방식에서는 사실상 매번 로테이션되므로, 사람이 정한 값으로 바꾸지 않고
+**그때그때 조회해서 쓴다.** `argocd-initial-admin-secret` 은 삭제하지 않는다.
+
+다만 5명이 `admin` 계정 하나를 공유하므로 누가 무엇을 했는지 남지 않는다.
+실사용자를 받기 전에는 `enable_dex` 를 켜고 GitHub SSO로 옮길 것.
 
 ## 배포되는 것
 
