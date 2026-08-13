@@ -290,6 +290,12 @@ jobs:
           tags: ${{ env.IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Vite의 VITE_* 값은 런타임이 아니라 빌드 시점에 번들에 박힌다.
+          # frontend는 api와 같은 ALB의 /api 경로를 상대경로로 그냥 부르면
+          # 되므로(도메인을 몰라도 됨), 값 자체가 고정 상수다.
+          # frontend가 아닌 서비스에는 안 쓰는 인자라 빈 값이 그냥 무시된다.
+          build-args: |
+            VITE_API_BASE_URL=${{ matrix.service == 'frontend' && '/api' || '' }}
 
       # ECR에도 스캔(scan_on_push)이 켜져 있지만 그쪽은 BASIC이라
       # Alpine 패키지만 본다. 정작 위험이 모이는 곳은 app.jar 안의 Java
