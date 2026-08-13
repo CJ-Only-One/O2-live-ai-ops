@@ -36,17 +36,34 @@ variable "cluster_admin_arns" {
     클러스터 관리자 권한을 줄 IAM 주체 목록.
     클러스터를 다시 만들 때마다 access entry가 초기화되므로 코드로 남긴다.
 
-    지금은 사람 단위(IAM User)로 나열하지만, 팀이 커지면
-    IAM Role 하나를 만들고 그것만 여기 넣은 뒤 팀원이 assume 하게 바꾸는 편이 낫다.
-    그러면 팀원 추가가 IAM 그룹 편집으로 끝나고 이 파일을 안 건드려도 된다.
+    사람 단위(IAM User)로 나열하는 이유:
+    EKS access entry는 **IAM 그룹을 대상으로 잡을 수 없다.** 사용자 또는 역할만 가능하다.
+    Only_One 그룹에 붙이는 식으로는 해결되지 않는다.
+
+    팀이 더 커지면 IAM Role 하나를 만들고 그것만 여기 넣은 뒤 팀원이 assume
+    하게 바꾸는 편이 낫다. 그러면 팀원 추가가 IAM 그룹 편집으로 끝난다.
+    지금은 5명이라 나열이 더 단순하다.
+
+    권한 수준에 대해:
+    이 계정의 Only_One 그룹에 AdministratorAccess가 붙어 있어 팀원 전원이
+    이미 AWS 관리자다. 따라서 EKS 권한을 좁혀도 보안 경계가 되지는 않는다
+    (본인이 직접 access entry를 만들 수 있다). 좁히는 실익은 사고 방지다.
+    필요하면 AmazonEKSEditPolicy 나 View로 낮추고 access_scope를 네임스페이스로
+    제한할 것.
   EOT
   type        = list(string)
   default = [
     "arn:aws:iam::066107819912:user/LSM",
+    "arn:aws:iam::066107819912:user/KDH",
+    "arn:aws:iam::066107819912:user/KSY",
+    "arn:aws:iam::066107819912:user/STY",
   ]
-  # 클러스터를 만든 주체(현재 user/JYC)는 EKS가 생성 시점에 자동으로
-  # 관리자 access entry를 부여한다. 여기 넣으면 이미 있는 것을 또 만들려다
-  # ResourceInUseException 으로 실패한다. EKS가 관리하는 것은 건드리지 않는다.
+  # user/JYC 는 넣지 않는다. 클러스터를 만든 주체에게는 EKS가 생성 시점에
+  # 관리자 access entry를 자동 부여하므로, 여기 넣으면 이미 있는 것을 또
+  # 만들려다 ResourceInUseException 으로 실패한다.
+  #
+  # 주의: 클러스터를 다른 사람이 다시 만들면 자동 부여 대상이 그 사람으로
+  # 바뀐다. 그때는 JYC를 이 목록에 넣고 새 생성자를 빼야 한다.
 }
 
 # ── Argo CD ───────────────────────────────────────────────────
