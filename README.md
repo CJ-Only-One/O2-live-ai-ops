@@ -15,10 +15,15 @@ infra/
   02-eks/        클러스터, 노드그룹, 애드온
   03-data/       Redis, RDS
 apps/<service>/  Dockerfile + src
-deploy/          쿠버네티스 매니페스트 (평면 배치)
+bootstrap/       Argo CD Application (최초 1회 수동 적용)
 loadtest/        부하 테스트 시나리오
 docs/            결정 기록
 ```
+
+**쿠버네티스 매니페스트는 이 저장소에 없다.**
+[`CJ-Only-One/O2-live-deploy`](https://github.com/CJ-Only-One/O2-live-deploy)에 있고
+Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 갱신 커밋이
+충돌해서 나눴다 — 근거는 D-006.
 
 `infra/`의 번호는 **의존 순서**다. `02`와 `03`은 `01`의 출력을 remote state로
 참조하므로 apply는 반드시 이 순서를 지켜야 한다. `tf.yml`이 이를 강제한다.
@@ -29,7 +34,7 @@ docs/            결정 기록
 
 | | 트리거 | 하는 일 |
 |---|---|---|
-| `app.yml` | `apps/**`, `deploy/**` 변경 | 이미지 빌드 → ECR → 배포 |
+| `app.yml` | `apps/**` 변경 | 이미지 빌드 → ECR → 매니페스트 저장소에 태그 갱신 |
 | `tf.yml` | `infra/**` 변경 | PR에서 plan, main에서 승인 후 apply |
 | `scan.yml` | 모든 PR·푸시, 주 1회 | 시크릿 유출 검사 |
 
@@ -71,6 +76,7 @@ aws s3api put-bucket-encryption --bucket $B --server-side-encryption-configurati
 |---|---|
 | `AWS_TF_ROLE_ARN` | Terraform용 IAM Role — 인프라를 만들 수 있는 넓은 권한 |
 | `AWS_APP_ROLE_ARN` | 애플리케이션 배포용 IAM Role — ECR push 등 좁은 권한 |
+| `DEPLOY_REPO_TOKEN` | 매니페스트 저장소에 태그 갱신을 커밋할 fine-grained PAT.<br>`O2-live-deploy` 한 곳, `Contents: Read and write` 만. **만료 주의** |
 
 **두 역할을 반드시 분리한다.** Terraform 역할은 사실상 관리자이므로,
 앱 배포처럼 자주 도는 워크플로가 그 권한을 쓰게 두면 노출 표면이 커진다.
@@ -97,22 +103,22 @@ kubectl apply -f bootstrap/argocd-application.yaml
 푸시 → app.yml
         ├ verify   바뀐 서비스만 gradle build + test
         ├ image    이미지 빌드 → ECR (태그: 커밋 SHA)
-        └ deploy   deploy/<service>-deployment.yaml 의 태그 갱신 후 커밋
+        └ deploy   O2-live-deploy 의 <service>-deployment.yaml 태그 갱신 후 커밋
                      → Argo CD가 감지 → 클러스터에 반영
 ```
 
 `app.yml` 은 **EKS를 직접 건드리지 않는다.** 배포 요청을 커밋으로 남기는 데서 끝난다.
 CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004에 있다.
 
-매니페스트 파일명은 `deploy/<service>-deployment.yaml` 규약을 따른다.
+매니페스트 파일명은 배포 저장소의 `<service>-deployment.yaml` 규약을 따른다.
 평면 배치라 `yq` 가 이 경로로 이미지 태그를 찾아 고치기 때문이며,
 이름이 어긋나면 태그 갱신이 건너뛰어진다(워크플로가 경고를 남긴다).
 
 ## 서비스 추가하기
 
 1. `apps/<service>/` — Dockerfile과 소스
-2. `deploy/<service>-deployment.yaml`, `deploy/<service>-service.yaml`
-3. ECR 저장소 `o2/<service>` 생성
+2. **배포 저장소**에 `<service>-deployment.yaml`, `<service>-service.yaml`
+3. ECR 저장소 `o2/<service>` 생성 (`infra/00-cicd` 의 `services` 변수에 추가)
 
 워크플로는 고치지 않아도 된다. `apps/` 아래를 훑어 바뀐 서비스만 빌드한다.
 
@@ -123,7 +129,7 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 - [x] `tf.yml` — plan / 승인 후 apply
 - [x] `app.yml` — 빌드 → ECR → 태그 갱신 커밋 (Argo가 배포)
 - [x] `apps/api` — Spring Boot (Kotlin)
-- [x] `deploy/` — 평면 매니페스트
+- [x] 매니페스트를 `O2-live-deploy` 로 분리 (D-006)
 - [x] `bootstrap/` — Argo CD Application
 - [x] `loadtest/spike.js` — 스파이크 시나리오 (k6)
 - [x] `AWS_APP_ROLE_ARN` / `AWS_TF_ROLE_ARN` 시크릿 등록

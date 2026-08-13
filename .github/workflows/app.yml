@@ -1,18 +1,16 @@
 name: app
 
 # 빌드와 배포를 한 파일에서 다룬다. 다만 "배포"의 정의가 GitOps에서는 다르다.
-# 이 워크플로는 EKS를 직접 건드리지 않고, deploy/ 의 이미지 태그를 갱신하는
-# 커밋을 만드는 데서 끝난다. 그 커밋을 Argo CD가 읽어 클러스터에 반영한다.
+# 이 워크플로는 EKS를 직접 건드리지 않고, 매니페스트 저장소의 이미지 태그를
+# 갱신하는 커밋을 만드는 데서 끝난다. 그 커밋을 Argo CD가 읽어 클러스터에 반영한다.
 #
 # Actions가 kubectl apply까지 하면 Argo와 서로를 덮어쓰며 싸우고,
 # CI에 클러스터 수정 권한을 줘야 해서 토큰 유출 시 노출 범위가 커진다.
 on:
   pull_request:
-    paths: ['apps/**', 'deploy/**', '.github/workflows/app.yml']
+    paths: ['apps/**', '.github/workflows/app.yml']
   push:
     branches: [main]
-    # deploy/** 를 뺀 이유: 이 워크플로가 스스로 만든 태그 갱신 커밋에
-    # 다시 반응해서 무한히 도는 것을 막는다.
     paths: ['apps/**', '.github/workflows/app.yml']
   workflow_dispatch:
 
@@ -28,6 +26,8 @@ permissions:
 env:
   AWS_REGION: ap-northeast-2
   YQ_VERSION: v4.44.3
+  # Argo CD가 감시하는 매니페스트 저장소. deploy 잡이 여기에 커밋한다.
+  DEPLOY_REPO: CJ-Only-One/O2-live-deploy
 
 jobs:
   # apps/ 아래에서 바뀐 서비스만 골라낸다.
@@ -119,9 +119,9 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # 매니페스트가 문법적으로 유효한지 본다.
-  # 깨진 채로 머지되면 Argo가 sync에서 멈추는데, 그때는 원인이 훨씬 안 보인다.
-  manifests:
+  # 부트스트랩 매니페스트가 문법적으로 유효한지 본다.
+  # 서비스 매니페스트는 배포 저장소로 옮겨갔고, 그쪽에서 자체 검증한다.
+  bootstrap:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -129,7 +129,7 @@ jobs:
       - name: YAML 검증
         run: |
           fail=0
-          for f in deploy/*.yaml bootstrap/*.yaml; do
+          for f in bootstrap/*.yaml; do
             [ -e "$f" ] || continue
             python3 -c "import yaml,sys; list(yaml.safe_load_all(open('$f')))" \
               && echo "OK   $f" || { echo "FAIL $f"; fail=1; }
@@ -178,6 +178,12 @@ jobs:
 
   # ── 배포 요청 ────────────────────────────────────────────
   # 여기가 GitOps의 이음매다. 이 커밋이 곧 배포 요청이 된다.
+  #
+  # 커밋 대상은 이 저장소가 아니라 매니페스트 전용 저장소다.
+  # 이 저장소의 main은 브랜치 보호로 직접 푸시가 막혀 있고, 우회 권한을 주면
+  # 배포마다 봇 커밋이 쌓여 사람 커밋과 뒤섞인다. 코드와 배포 기록은
+  # 생명주기가 다르므로 저장소를 나눴다. (docs/decisions.md D-006)
+  #
   # 서비스마다 커밋을 만들면 병렬 잡이 서로 밀어내며 충돌하므로,
   # 이미지가 전부 올라간 뒤 단일 잡에서 한 번에 갱신한다.
   deploy:
@@ -186,10 +192,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write        # 태그 갱신 커밋을 되민다
+      # 이 저장소에는 더 이상 쓰지 않는다. 쓰기는 배포 저장소에만,
+      # 그것도 그 저장소 하나로 범위가 묶인 토큰으로 한다.
+      contents: read
       id-token: write
     steps:
+      # 앱 소스는 필요 없다. 배포 저장소만 받아 태그를 고친다.
       - uses: actions/checkout@v5
+        with:
+          repository: ${{ env.DEPLOY_REPO }}
+          token: ${{ secrets.DEPLOY_REPO_TOKEN }}
+          path: manifests
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -208,11 +221,12 @@ jobs:
           chmod +x /usr/local/bin/yq
 
       - name: 이미지 태그 갱신
+        working-directory: manifests
         run: |
           for svc in $(echo '${{ needs.changed.outputs.services }}' | tr -d '[]"' | tr ',' ' '); do
-            f="deploy/${svc}-deployment.yaml"
+            f="${svc}-deployment.yaml"
             if [ ! -f "$f" ]; then
-              echo "::warning::$f 가 없어 건너뜁니다. 서비스를 추가할 때 매니페스트도 같이 만들어야 합니다."
+              echo "::warning::배포 저장소에 $f 가 없어 건너뜁니다. 서비스를 추가할 때 매니페스트도 같이 만들어야 합니다."
               continue
             fi
             IMAGE="${{ steps.ecr.outputs.registry }}/o2/${svc}:${{ github.sha }}" \
@@ -221,13 +235,18 @@ jobs:
           done
 
       - name: 커밋
+        working-directory: manifests
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add deploy/
+          git add -A
           if git diff --cached --quiet; then
             echo "이미지 태그 변화 없음 — 커밋 생략"
             exit 0
           fi
-          git commit -m "deploy: 이미지를 ${GITHUB_SHA::7}로 갱신"
+          # 저장소가 나뉘어 커밋 추적이 한 번 끊기므로,
+          # 원본 커밋의 좌표를 메시지에 남겨 되짚을 수 있게 한다.
+          git commit -m "deploy: 이미지를 ${GITHUB_SHA::7}로 갱신" \
+                     -m "출처: ${GITHUB_REPOSITORY}@${GITHUB_SHA}" \
+                     -m "실행: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           git push
