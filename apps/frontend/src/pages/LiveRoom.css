@@ -1,0 +1,102 @@
+.room {
+  background: #0b0b0d;
+}
+
+.room__video {
+  position: relative;
+  flex: 1;
+  min-height: 100svh;
+  overflow: hidden;
+}
+
+.room__video-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.room__video-scrim {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0) 26%, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.75) 100%);
+}
+
+.room__topbar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 12px 0 16px;
+}
+
+.room__logo {
+  color: #fff;
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.3px;
+}
+
+.room__topbar-icons {
+  display: flex;
+  gap: 2px;
+}
+
+.room__topbar-icons .icon-btn {
+  font-size: 16px;
+}
+
+.room__headline {
+  position: relative;
+  z-index: 2;
+  padding: 10px 16px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.room__title {
+  margin: 0;
+  color: #fff;
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 700;
+  max-width: 88%;
+}
+
+.room__segment {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+}
+
+.room__overlay-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  padding: 0 12px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.room__coupon {
+  width: 100%;
+  border: 1px dashed rgba(255, 255, 255, 0.6);
+  border-radius: var(--radius-s);
+  background: rgba(255, 47, 110, 0.18);
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 10px;
+}
+
+.room__coupon:disabled {
+  opacity: 0.8;
+}
