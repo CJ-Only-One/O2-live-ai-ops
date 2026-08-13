@@ -11,9 +11,11 @@
   tf.yml         plan(PR) / apply(main, 승인)
   scan.yml       gitleaks
 infra/
-  01-network/    VPC, 서브넷, 라우팅
-  02-eks/        클러스터, 노드그룹, 애드온
-  03-data/       Redis, RDS
+  00-cicd/       GitHub OIDC, IAM 역할, ECR
+  01-network/    VPC, 서브넷, 라우팅, NAT
+  02-eks/        클러스터, 노드그룹, EKS 애드온
+  03-data/       Redis, RDS (미작성)
+  04-platform/   Argo CD, Load Balancer Controller, 클러스터 접근 권한
 apps/<service>/  Dockerfile + src
 bootstrap/       Argo CD Application (최초 1회 수동 적용)
 loadtest/        부하 테스트 시나리오
@@ -137,4 +139,9 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 - [x] `infra` 환경 승인 게이트 — 필수 리뷰어 SangMun, j0chan
 - [x] 파이프라인 전 구간 검증 — 커밋 → ECR → 태그 갱신 → Argo → 파드 응답
 - [x] Terraform state를 S3로 이전 (`s3://o2-live-tfstate`, 버전 관리·암호화·잠금)
-- [ ] `infra/01-network`, `02-eks`, `03-data` — 로컬 검증 후 반영 (D-005)
+- [x] `infra/01-network`, `02-eks` — 팀 코드 반영 (D-007)
+- [x] `infra/04-platform` — 클러스터 안의 구성을 코드로 (D-008)
+- [x] state를 팀 버킷(`o2-tfstate-066107819912`) 하나로 통일 (D-010)
+- [ ] `infra/03-data` — Redis, RDS
+- [x] OIDC 프로바이더 소유권을 `00-cicd` 로 정리 (D-009)
+- [ ] `infra/03-data` — 팀 버킷에 `data/terraform.tfstate` 가 이미 있다. 코드를 찾아 흡수할 것

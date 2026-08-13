@@ -203,3 +203,158 @@ Dockerfile과 매니페스트가 같은 숫자 UID(여기서는 `10001`)를 가�
 - state는 반드시 S3 백엔드로 둔다. RDS 비밀번호 같은 값이 state에 평문으로 들어가므로
   로컬에 두면 유출과 분실 위험을 동시에 진다.
 - 첫 apply는 반드시 `01` → `02` → `03` 순서다. `02`·`03`이 `01`의 출력을 참조한다.
+
+---
+
+## D-007. 인프라 코드를 저장소로 흡수한다
+
+`01-network` 와 `02-eks` 는 팀원이 작성해 로컬에서 돌리던 코드다.
+`~/Downloads` 에 있어 **버전 관리도, 리뷰도, 이력도 없었다.**
+실제 인프라가 그 코드로 바뀌는데 변경 근거가 어디에도 남지 않는 상태였다.
+
+옮기면서 두 가지를 지켰다.
+
+- **state 파일은 가져오지 않았다.** state는 S3(`o2-tfstate-066107819912`)에 있고,
+  로컬에 남아 있던 `terraform.tfstate` 는 이전 과정의 잔재였다.
+- **`terraform.tfvars` 는 커밋했다.** `.gitignore` 의 `*.tfvars` 규칙에 걸렸으나,
+  이 파일들은 비밀이 아니라 환경 정의 그 자체다. 없으면 재현이 불가능하다.
+  비밀이 필요해지면 tfvars가 아니라 Secrets Manager를 쓴다.
+
+이제 `tf.yml` 이 PR에서 `plan` 을 돌려 무엇이 바뀌는지 보여준다.
+
+### 남은 정리
+
+- `00-cicd` 의 state만 다른 버킷(`o2-live-tfstate`)에 있다. 팀 버킷으로 합쳐야 한다.
+- `02-eks/github_oidc.tf` 도 GitHub OIDC 프로바이더를 만든다(현재 `enable_github_oidc = false`).
+  `00-cicd` 가 이미 소유하고 있으므로, 누가 저 값을 켜면 apply가 충돌한다.
+  소유권을 한쪽으로 정해야 한다.
+
+---
+
+## D-008. 클러스터 안의 구성도 코드로 남긴다 (`04-platform`)
+
+클러스터를 지웠다 만들면 **그 안의 것은 전부 사라진다.** Argo CD, 네임스페이스,
+파드, access entry까지. 실제로 하루 만에 두 번 겪었다.
+
+바깥(VPC·ECR·IAM)은 Terraform이 지키고 있었지만 안쪽은 손으로 복구하고 있었다.
+`04-platform` 이 그 안쪽을 맡는다.
+
+| | 이전 | 지금 |
+|---|---|---|
+| 클러스터 접근 권한 | `aws eks create-access-entry` 수동 | `cluster_admin_arns` 변수 |
+| Argo CD 설치 | README 절차 수동 | `helm_release` (차트 10.2.2 = v3.4.6) |
+| Argo Application | `kubectl apply` 수동 | 차트의 `extraObjects` |
+| Load Balancer Controller | `terraform output` 복사 실행 | `helm_release` |
+
+### 왜 `02-eks` 와 나눴나
+
+`helm` 프로바이더는 설정 시점에 클러스터 주소와 토큰이 필요하다.
+클러스터를 만드는 apply와 같은 스택이면 첫 실행에서 "아직 모르는 값"이라 깨진다.
+스택을 나누고 remote state로 넘겨받아야 한다.
+
+### 첫 apply가 두 단계인 이유
+
+`helm` 프로바이더가 인증하려면 access entry가 있어야 하는데, 그것을 같은 스택이
+만든다. 그래서 처음에는 `-target` 으로 권한을 먼저 만들고 나머지를 적용한다.
+access entry를 `02-eks` 로 옮기면 이 어색함은 사라진다.
+
+### 차트 버전을 고정한 이유
+
+버전을 비워두면 클러스터를 다시 만들 때마다 다른 Argo CD가 깔린다.
+`10.2.2` 는 실제 저장소를 조회해 `v3.4.6` 에 대응하는 것을 확인한 값이다.
+
+### 기본값에서 바꾼 것
+
+Argo CD 차트 기본값에는 **resource requests가 없다.** 그러면 파드가 BestEffort QoS가 되어
+노드 메모리가 압박받을 때 가장 먼저 축출된다. 배포 시스템이 부하 상황에서 먼저 죽으면
+복구 수단을 잃으므로, 주요 컴포넌트에 requests를 지정했다.
+
+---
+
+## D-009. CI/CD 자격증명의 소유자는 `00-cicd` 하나다
+
+`02-eks/github_oidc.tf` 를 제거했다. 팀원과 합의된 변경이다.
+
+### 겹쳤던 것
+
+GitHub OIDC 프로바이더는 **AWS 계정당 하나만 존재할 수 있는데**,
+`00-cicd` 와 `02-eks` 가 둘 다 이것을 `resource` 로 선언하고 있었다.
+`02-eks` 쪽은 `enable_github_oidc = false` 라 만들어지지 않아 조용했지만,
+누가 그 값을 켜는 순간 `EntityAlreadyExists` 로 apply가 깨진다.
+
+더 위험한 것은 그걸 해결하겠다고 `import` 하는 경우다.
+두 state가 하나의 리소스를 소유하게 되어, 한쪽 destroy가 다른 쪽을 조용히 부순다.
+
+### 왜 `02-eks` 쪽을 지웠나
+
+중복이어서가 아니라 **더 이상 쓰지 않는 아키텍처의 잔재이기 때문이다.**
+
+그 파일은 CI에게 EKS access entry를 주고 있었다
+(`AmazonEKSEditPolicy` + `app` 네임스페이스). 이는 **GitHub Actions가 직접
+`kubectl` 로 배포하는 push 방식**을 전제한 설계다.
+
+우리는 GitOps로 갔다(D-004). Actions는 ECR까지만 하고 배포는 Argo CD가
+클러스터 안에서 당겨온다. **CI는 클러스터 접근 권한이 아예 필요 없다.**
+
+### 남긴 것
+
+`cluster.tf` 의 `aws_iam_openid_connect_provider.eks` 는 그대로 두었다.
+이름이 비슷하지만 **클러스터 자신의 IRSA용**이고, `lbc_irsa.tf` 가 참조한다.
+GitHub용과 전혀 다른 것이다.
+
+### 배울 점 하나
+
+팀원 코드는 CI 권한을 `AmazonEKSEditPolicy` + 네임스페이스 스코프로 좁혀 두었다.
+반면 `00-cicd` 의 `o2-live-github-tf` 는 `AdministratorAccess` 다.
+Terraform이 관리할 대상이 확정되면 그 감각대로 좁혀야 한다(코드에 TODO로 남김).
+
+---
+
+## D-010. Terraform state는 버킷 하나에 모은다
+
+`s3://o2-tfstate-066107819912` 로 통일했다.
+
+`00-cicd` 만 별도 버킷(`o2-live-tfstate`)에 있었다. 그 스택을 만들 당시
+팀 버킷의 존재를 몰랐기 때문이다. 한 프로젝트의 state가 두 곳에 흩어지면
+백업·권한·수명주기 정책을 두 벌 관리해야 하고, 새로 온 사람이 한쪽만 보고
+전부인 줄 알기 쉽다.
+
+```
+o2-tfstate-066107819912/
+  cicd/terraform.tfstate       ← 옮겨옴
+  network/terraform.tfstate
+  eks/terraform.tfstate
+  data/terraform.tfstate
+  platform/terraform.tfstate   ← 04-platform (아직 미적용)
+```
+
+이전 후 `terraform plan` 이 `No changes` 로 나오는 것을 확인했고,
+빈 버킷은 삭제했다.
+
+**참고:** 팀 버킷에 `data/terraform.tfstate` 가 이미 있다.
+`03-data` 에 해당하는 코드가 어딘가 존재한다는 뜻이므로, 그것도 저장소로
+흡수해야 한다.
+
+### D-008 보충: 헬름 릴리스를 둘로 나눈 이유
+
+`argo-cd` 차트의 `extraObjects` 에 Application을 함께 넣으려 했으나 실패했다.
+헬름은 렌더링한 객체를 적용 전에 클러스터 API와 대조하는데,
+그 시점에는 아직 CRD가 설치되지 않았기 때문이다.
+
+```
+no matches for kind "Application" in version "argoproj.io/v1alpha1"
+```
+
+같은 릴리스에서 CRD를 설치하면서 그 CRD의 인스턴스를 만들 수는 없다.
+`argocd-apps` 차트를 두 번째 릴리스로 두고 `depends_on` 으로 순서를 강제한다.
+
+### D-008 보충: 클러스터 생성자는 access entry 대상이 아니다
+
+`cluster_admin_arns` 에 클러스터 생성자를 넣었더니 apply가 실패했다.
+
+```
+ResourceInUseException: The specified access entry resource is already in use
+```
+
+EKS가 클러스터 생성 시점에 생성자에게 관리자 access entry를 자동 부여한다.
+EKS가 관리하는 것을 Terraform이 또 만들려 하면 충돌한다. 목록에서 제외한다.
