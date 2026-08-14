@@ -37,6 +37,8 @@
 | D-020 | 문서를 저장소로, 죽은 코드 정리 | `architecture.md`, `AGENTS.md`, 부하 스크립트 |
 | D-021 | 문서는 매 세션 비용이다 | 토큰, 인덱스, 부분 읽기 |
 | D-022 | 규약은 `AGENTS.md` 하나, 인덱스는 CI가 지킨다 | Codex·Copilot 호환, `check-docs-index.sh` |
+| D-023 | PR에서 terraform plan을 돌리지 않는다 | CI 자격증명 제거, public 저장소 |
+| D-024 | ESO 게이트를 Datadog에서 분리 | `enable_external_secrets`, `moved` |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -1011,3 +1013,109 @@ D-021의 부분 읽기 전략은 **인덱스가 정확하다는 전제** 위에 
 
 키워드 열은 검사하지 않는다. 사람이 판단할 영역이고, 그것까지 검사하려 들면
 스크립트가 문서를 소유하게 된다.
+
+---
+
+## D-023. PR에서 `terraform plan` 을 돌리지 않는다
+
+`tf.yml` 이 PR 마다 plan 을 돌려 결과를 코멘트로 붙이고 있었다. 그 목적은
+"무엇이 바뀔지 보여준다" 였는데, D-005의 규칙과 앞뒤가 맞지 않았다.
+
+**로컬에서 apply 까지 하고 올리므로, PR 시점의 plan 은 정상이라면 언제나
+`No changes` 다.** "무엇이 바뀔지 미리 본다"는 목적은 apply 한 사람이 자기
+plan 을 읽는 것으로 이미 달성된다. CI 가 사후에 같은 것을 다시 붙이면
+아무도 읽지 않는 출력만 쌓인다. D-002 가 스스로 적어둔
+"읽지 않는 plan 은 승인 게이트의 의미를 없앤다" 에 그대로 걸린다.
+
+게다가 `-detailed-exitcode` 를 쓰지 않아 **변경이 있어도 초록불이었다.**
+게이트도 아니었다.
+
+### 게이트로 승격하지 않은 이유
+
+`-detailed-exitcode` 로 "변경이 있으면 실패" 를 만들면 규칙이 강제된다.
+그런데 그러면 **남이 만든 드리프트가 관계없는 PR 을 막는다.**
+
+PR 은 코드가 바뀐 사건이고 드리프트는 시간이 흐른 사건이다. 둘을 묶으면
+내가 고칠 수 없는 이유로 내 PR 이 서고, 그러면 사람들은 검사를 끄는 쪽으로
+간다. D-014 에서 Trivy HIGH 를 차단하지 않기로 한 것과 같은 판단이다.
+드리프트를 보고 싶으면 주기 실행으로 분리하는 것이 맞는 자리다.
+
+### 부수 효과가 더 크다
+
+plan 을 빼면 이 워크플로에 **AWS 접근이 아예 필요 없어진다.**
+
+```
+terraform fmt -check              자격증명 불필요
+terraform init -backend=false     자격증명 불필요 (프로바이더만 받음)
+terraform validate                자격증명 불필요
+```
+
+- `AWS_TF_ROLE_ARN` 시크릿과 그 IAM 역할이 필요 없어진다
+- **이 저장소는 public 이다.** PR 을 열 수 있는 사람이 CI 에서 코드를 실행할
+  수 있는 경로가 하나 줄어든다
+
+D-011 은 "plan 은 임의 코드를 실행할 수 있다"는 이유로 권한을
+`AdministratorAccess` 에서 `ReadOnlyAccess` 로 낮췄다. 이것은 그 방향의
+끝이다 — 권한을 좁히는 대신 자격증명 자체를 없앤다.
+
+### 덤으로 `04-platform` 이 검사 대상에 들어왔다
+
+D-011 에서 이 스택을 CI 에서 뺀 이유는 plan 에 클러스터 접근이 필요해서였다.
+plan 을 안 돌리니 그 이유가 사라졌다. 이제 여섯 스택 전부 `fmt` 와
+`validate` 를 거친다.
+
+---
+
+## D-024. ESO 게이트를 Datadog 에서 분리한다
+
+Datadog 을 나중에 뺄 계획이라 영향을 점검하다가 찾았다.
+`enable_datadog = false` 로 두면 **API 파드가 기동조차 못 하는 상태**였다.
+
+```
+enable_datadog = false
+  → helm_release.external_secrets 삭제        (ESO 컨트롤러 자체)
+  → ExternalSecret CRD 삭제                   (Helm 소유임을 확인)
+  → ExternalSecret CR 삭제
+  → 그것이 소유한 Secret 삭제                 (ownerReferences, blockOwnerDeletion)
+  → api 파드가 envFrom 대상을 못 찾음
+  → CreateContainerConfigError
+```
+
+원인은 게이트 하나에 성격이 다른 둘이 묶여 있던 것이다. `enable_datadog` 이
+지우는 12개 중 **Datadog 전용은 5개뿐**이고, 나머지는 시크릿을 쓰는 모든 것의
+공용 기반이었다. `ClusterSecretStore` 의 리소스 이름이
+`datadog_secret_store` 였던 것이 그 착시를 만들었다 — Datadog 이 첫 사용자였을
+뿐 그 리소스는 클러스터 단위 공용이다.
+
+`enable_external_secrets` 를 새로 만들어 ESO 계열을 옮겼다.
+분리 후 `enable_datadog = false` 로 dry-run 하면 **4개만 삭제되고 전부
+Datadog 전용**이다.
+
+### 이름 변경을 `moved` 로 처리했다
+
+`datadog_secret_store` → `aws_secret_store` 는 이름만 바뀐 것인데, 그냥
+바꾸면 Terraform 이 삭제·재생성으로 본다. 그 사이 ExternalSecret 들이
+참조를 잃는다.
+
+```hcl
+moved {
+  from = kubectl_manifest.datadog_secret_store
+  to   = kubectl_manifest.aws_secret_store
+}
+```
+
+실제 plan 결과는 `0 to change, 0 to destroy` 였고, apply 후에도
+ClusterSecretStore 의 나이가 그대로였다(재생성되지 않았다는 증거).
+
+### 잘못 조합하면 plan 단계에서 막는다
+
+`enable_app_data_wiring = true` + `enable_external_secrets = false` 는
+apply 는 성공하고 **파드에서만 실패**한다. 그런 실패는 원인 추적이 오래 걸린다.
+`terraform_data` 의 precondition 으로 plan 단계에서 멈추게 했다.
+
+### 배운 것
+
+**리소스 이름이 소유권을 암시한다.** `datadog_secret_store` 라는 이름 때문에
+그것이 Datadog 의 일부처럼 보였고, 게이트가 그렇게 붙었다.
+공용 리소스에 특정 사용자의 이름을 붙이면 나중에 그 사용자를 지울 때
+공용 기반이 함께 끌려 나간다.
