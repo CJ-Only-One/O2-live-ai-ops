@@ -121,6 +121,24 @@ def _stock_display(sku_ids: list[str]) -> dict[str, int]:
     return {sku: int(v) if v is not None else 0 for sku, v in zip(sku_ids, values)}
 
 
+def get_sale_price(broadcast_id: str, sku_id: str) -> int | None:
+    """편성 상품의 판매가. 없으면 None.
+
+    주문 접수가 이 값을 쓴다. 화면이 보는 것과 같은 캐시에서 꺼내므로
+    "사용자가 본 가격"과 "청구 가격"이 같은 출처가 된다. 별도 DB 조회도
+    생기지 않는다 — 스냅샷 캐시에 이미 들어 있다.
+    """
+    meta = get_or_load(
+        _meta_key(broadcast_id), LOCAL_TTL, lambda: _load_meta(broadcast_id, {"source": "CACHE", "cache_hit": True})
+    )
+    if meta is None:
+        return None
+    for p in meta["products"]:
+        if p["sku_id"] == sku_id:
+            return p["sale_price"]
+    return None
+
+
 def _emit_inventory_check(meta: dict, stocks: dict[str, int], origin: dict, latency_ms: int) -> None:
     """스냅샷 조회 1건당 이벤트 1건 (contracts.md 5.1).
 

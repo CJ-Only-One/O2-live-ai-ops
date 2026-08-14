@@ -17,6 +17,7 @@ from o2events.core import ulid
 from app.core.config import settings
 from app.core.errors import ApiError
 from app.db.valkey import valkey
+from app.services import broadcast as broadcast_service
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ _reserve = valkey.register_script(_SCRIPT_PATH.read_text())
 _sqs = boto3.client("sqs", region_name=settings.AWS_REGION) if settings.SQS_ORDER_QUEUE_URL else None
 
 
-def _publish(order_id: str, req, idem_key: str) -> None:
+def _publish(order_id: str, req, idem_key: str, user_key: str, unit_price: int, amount: int) -> None:
     """주문 확정 요청을 큐에 넣는다. 실제 기록은 order-worker 가 한다.
 
     idem_key 를 메시지에 실어 보낸다. SQS Standard 는 최소 1회 전달이라
@@ -52,7 +53,12 @@ def _publish(order_id: str, req, idem_key: str) -> None:
                 "idem_key": idem_key,
                 "broadcast_id": req.broadcast_id,
                 "sku_id": req.sku_id,
+                "user_key": user_key,
                 "qty": req.qty,
+                # 접수 시점에 확정한 금액이다. 워커는 이 값을 그대로 저장하고
+                # 다시 조회하지 않는다.
+                "unit_price": unit_price,
+                "amount": amount,
             }
         ),
     )
@@ -78,6 +84,13 @@ def _compensate(idem_key: str, sku_id: str, qty: int) -> None:
 def create_order(req, idem_key: str, user_key: str) -> dict:
     started = time.perf_counter()
     order_id = f"od_{ulid()}"
+
+    # 가격은 접수 시점에 확정한다. 화면이 보는 것과 같은 캐시에서 꺼내므로
+    # 사용자가 본 금액과 청구 금액이 어긋나지 않는다.
+    unit_price = broadcast_service.get_sale_price(req.broadcast_id, req.sku_id)
+    if unit_price is None:
+        raise ApiError("INVALID_REQUEST", "편성에 없는 상품입니다")
+    amount = unit_price * req.qty
 
     code, value = _reserve(
         keys=[f"idem:{idem_key}", f"stock:{req.sku_id}"],
@@ -106,7 +119,7 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
         raise ApiError("INTERNAL_ERROR", "주문을 처리할 수 없습니다")
 
     try:
-        _publish(order_id, req, idem_key)
+        _publish(order_id, req, idem_key, user_key, unit_price, amount)
     except Exception:
         logger.exception("주문 큐 발행 실패: %s", order_id)
         _compensate(idem_key, req.sku_id, req.qty)
@@ -114,7 +127,7 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     _emit_issue(req, "SUCCESS", None, latency_ms, remaining=int(value))
-    _emit_create(order_id, req, latency_ms)
+    _emit_create(order_id, req, amount, latency_ms)
 
     return {"order_id": order_id, "state": "ACCEPTED"}
 
@@ -142,12 +155,12 @@ def _emit_issue(req, result: str, failure_code: str | None, latency_ms: int, rem
         logger.exception("coupon.issue 발행 실패")
 
 
-def _emit_create(order_id: str, req, latency_ms: int) -> None:
+def _emit_create(order_id: str, req, amount: int, latency_ms: int) -> None:
     try:
         emit.order_create(
             order_id=order_id,
             items=[{"sku_id": req.sku_id, "qty": req.qty}],
-            total_amount=0,  # 금액 확정은 워커가 한다 — 여기서는 아직 모른다
+            total_amount=amount,
             channel="LIVE",
             latency_ms=latency_ms,
         )
