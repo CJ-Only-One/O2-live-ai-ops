@@ -14,11 +14,13 @@ infra/
   00-cicd/       GitHub OIDC, IAM 역할, ECR
   01-network/    VPC, 서브넷, 라우팅, NAT
   02-eks/        클러스터, 노드그룹, EKS 애드온
-  03-data/       Valkey, RDS (미작성 — backend key는 `datastore/` · D-015)
+  03-data/       RDS, Valkey, SQS (backend key는 `datastore/` · D-015, D-017)
   04-platform/   Argo CD, Load Balancer Controller, 클러스터 접근 권한
 apps/<service>/  Dockerfile + src
 loadtest/        부하 테스트 시나리오
-docs/            결정 기록
+docs/
+  decisions.md   결정 기록
+  contracts.md   인터페이스 계약 (REST, WebSocket, 캐시 키, 이벤트)
 ```
 
 **쿠버네티스 매니페스트는 이 저장소에 없다.**
@@ -140,13 +142,18 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 - [x] `infra/01-network`, `02-eks` — 팀 코드 반영 (D-007)
 - [x] `infra/04-platform` — 클러스터 안의 구성을 코드로 (D-008)
 - [x] state를 팀 버킷(`o2-tfstate-066107819912`) 하나로 통일 (D-010)
-- [ ] `infra/03-data` — Valkey, RDS. backend key는 `datastore/` 다 (D-015)
+- [x] `infra/03-data` — RDS, Valkey, SQS (D-017). 적용 완료
+- [x] `infra/01-network` — `enable_data_tier = true` (private-data 서브넷)
+- [ ] `infra/04-platform` — 접속 정보를 클러스터로 넣는 배선 (D-018). **apply 필요**
+- [ ] `apps/frontend` — 계약(`contracts.md`)에 맞춰 전면 수정 (D-019)
 - [x] OIDC 프로바이더 소유권을 `00-cicd` 로 정리 (D-009)
 - [x] 배포 저장소 ruleset이 태그 갱신 커밋을 막던 문제 해결 (D-012)
 - [x] `apps/testpage` — 파이프라인 검증용 정적 페이지, ALB Ingress로 노출 (D-013)
 - [ ] `data/terraform.tfstate` 의 소유자를 찾을 것 — 데이터 계층이 아니라 AIOps 파이프라인이었다 (Kinesis·Firehose·Glue·Lambda, 코드가 저장소에 없음 · D-015)
 - [x] `app.yml` — Trivy 이미지 스캔, 결과를 Code Scanning으로 (D-014)
 - [x] Trivy를 CRITICAL 차단으로 승격 (D-014)
+- [x] `docs/contracts.md` — REST·WebSocket·캐시 키·이벤트 계약 (D-016)
+- [ ] `contracts.md` 5.3 — 백데이터 파트에 확인 필요 (개발 시작 전)
 - [ ] `tf.yml` — `trivy config` 로 Terraform 미스컨피그 검사 (게이트 없이 리포트만)
 - [ ] `scan.yml` — gitleaks 결과도 Code Scanning으로 이전
 - [ ] 주 1회 ECR 최신 이미지 재스캔 — CI 스캔은 빌드 시점만 본다

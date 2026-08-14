@@ -19,6 +19,9 @@ enable_nat_gateway             = true
 single_nat_gateway             = true
 enable_ecr_interface_endpoints = false
 
-# 지금은 전부 off
-enable_data_tier = false # RDS/Redis 미사용
+# private-data 서브넷 + DB/Cache 서브넷 그룹. 03-data 가 이것을 참조한다.
+# CIDR 인덱스가 12,13 으로 고정이라 켜도 기존 서브넷에 영향이 없고,
+# 서브넷 자체는 과금 대상이 아니다.
+enable_data_tier = true
+
 enable_flow_logs = false # 소비할 주체 없음
