@@ -2,6 +2,7 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic-settings==2.5.2
 sqlalchemy==2.0.35
+alembic==1.19.1
 pymysql==1.1.1
 # MySQL 8 의 기본 인증 플러그인이 caching_sha2_password 이고, PyMySQL 은 그것을
 # 처리할 때 cryptography 를 요구한다. 없으면 연결이 RuntimeError 로 죽는다.

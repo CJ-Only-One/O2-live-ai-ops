@@ -43,6 +43,8 @@ services:
         required: false
     volumes:
       - ./apps/api/app:/app/app
+      # autogenerate 로 만든 리비전이 호스트에 남아야 커밋할 수 있다.
+      - ./apps/api/migrations:/app/migrations
     ports:
       - "8000:8000"
     # .env 에 값이 없어도 로컬 Valkey 를 찾도록 기본값을 준다.
