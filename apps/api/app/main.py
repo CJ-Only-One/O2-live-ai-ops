@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from o2events.middleware import install_fastapi
 
-from app.api.routes import broadcasts, health
+from app.api.routes import broadcasts, health, orders
 from app.core import errors
 from app.core.config import settings
 
@@ -31,3 +31,4 @@ app.add_middleware(
 # 규약은 docs/contracts.md 1.1.
 app.include_router(health.router, prefix="/api")
 app.include_router(broadcasts.router, prefix="/api")
+app.include_router(orders.router, prefix="/api")

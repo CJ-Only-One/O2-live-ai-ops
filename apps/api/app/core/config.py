@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # 로컬에서는 비어 있을 수 있다 — 그때는 발행을 건너뛰도록 코드에서 분기한다.
     SQS_ORDER_QUEUE_URL: str = ""
 
+    # 클러스터에서는 ConfigMap 이 넣지 않는다 — Pod Identity 가 세팅하는
+    # AWS_REGION 을 그대로 쓴다. 로컬에서 큐를 붙일 때만 값이 필요하다.
+    AWS_REGION: str = "ap-northeast-2"
+
     @property
     def allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
