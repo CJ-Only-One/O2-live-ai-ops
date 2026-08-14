@@ -85,9 +85,15 @@ variable "services" {
   # (destroy 는 config 가 아니라 state 의 값으로 동작한다 · decisions.md 함정).
   # 스토리지 비용이 미미해 그 두 단계를 지금 하지 않는다.
   #
-  # chat-gateway·order-worker·media 는 서비스가 실제로 생길 때 추가한다.
-  # 미리 만들면 빈 저장소만 늘어난다.
-  default = ["api", "testpage", "frontend"]
+  # order-worker 와 chat-gateway 를 함께 넣는다. 코드는 order-worker 가 먼저
+  # 생기지만, apply 는 CI 가 아니라 사람이 로컬에서 돌리므로(D-005) 두 번
+  # 부르지 않으려고 묶는다. 빈 저장소는 이미지가 없어 스토리지 비용이 없다.
+  #
+  # 저장소가 없는 상태로 서비스를 머지하면 빌드와 스캔이 전부 통과한 뒤
+  # docker push 에서만 실패한다 — 앞이 다 초록이라 원인이 눈에 안 띈다.
+  #
+  # media 는 아직 서비스가 없어 넣지 않는다.
+  default = ["api", "testpage", "frontend", "order-worker", "chat-gateway"]
 }
 
 locals {
