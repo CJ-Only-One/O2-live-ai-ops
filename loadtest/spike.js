@@ -2,14 +2,14 @@
 // 평균 부하로는 안 드러나고 스파이크에서만 터지는 문제가 따로 있다 —
 // 커넥션 풀 고갈, JVM 워밍업 지연, HPA가 따라오기 전의 공백 같은 것들이다.
 //
-//   k6 run -e BASE_URL=http://localhost:8080 loadtest/spike.js
+//   k6 run -e BASE_URL=http://localhost:8000 loadtest/spike.js
 //
 // 클러스터 밖에서 돌릴 때는 port-forward를 걸어 두거나 Ingress 주소를 넣는다.
 
 import http from 'k6/http';
 import { check } from 'k6';
 
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:8000';
 
 export const options = {
   scenarios: {
@@ -37,9 +37,12 @@ export const options = {
 };
 
 export default function () {
-  const res = http.get(`${BASE_URL}/`);
+  // 루트가 아니라 /api/health 를 때린다. ALB 하나를 프론트엔드와 공유하므로
+  // `/` 는 프론트 정적 페이지로 가고, 그러면 api 는 부하를 전혀 안 받는다.
+  // 경로 규약은 docs/contracts.md 1.1.
+  const res = http.get(`${BASE_URL}/api/health`);
   check(res, {
     '200': (r) => r.status === 200,
-    '응답에 service 필드': (r) => r.body && r.body.includes('service'),
+    '응답이 ok': (r) => r.body && r.body.includes('ok'),
   });
 }
