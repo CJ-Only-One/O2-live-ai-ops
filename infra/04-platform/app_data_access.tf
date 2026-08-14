@@ -71,14 +71,25 @@ resource "kubectl_manifest" "app_data_config" {
   })
 }
 
+# 잘못 조합하면 파드가 기동조차 못 한다. plan 단계에서 먼저 막는다.
+#
+# ESO 없이 배선만 켜면 Secret o2-db 가 만들어지지 않고, 파드는 그것을
+# envFrom 으로 참조하므로 CreateContainerConfigError 로 죽는다.
+# apply 가 성공한 뒤 파드에서만 드러나는 실패라 원인 추적이 오래 걸린다.
+resource "terraform_data" "require_external_secrets" {
+  count = var.enable_app_data_wiring ? 1 : 0
+
+  lifecycle {
+    precondition {
+      condition     = var.enable_external_secrets
+      error_message = "enable_app_data_wiring = true 이면 enable_external_secrets 도 true 여야 한다. ESO 가 없으면 Secret o2-db 가 생성되지 않아 파드가 기동하지 못한다."
+    }
+  }
+}
+
 # ── DB 비밀번호 ───────────────────────────────────────────────
 # 원본은 RDS 가 만들어 Secrets Manager 에 넣은 시크릿이다
 # (03-data 의 manage_master_user_password). Terraform state 에는 ARN 만 있다.
-#
-# 주의: ESO 컨트롤러와 ClusterSecretStore 는 현재 external_secrets.tf 가
-# enable_datadog 로 게이트하고 있다. 원래 그 둘은 Datadog 전용이 아니므로
-# 게이트를 분리하는 편이 맞지만, 돌아가는 스택을 지금 건드리지 않는다.
-# enable_datadog = false 로 두면 이 ExternalSecret 은 동기화되지 않는다.
 resource "kubectl_manifest" "app_db_secret" {
   count = var.enable_app_data_wiring ? 1 : 0
 
@@ -114,14 +125,14 @@ resource "kubectl_manifest" "app_db_secret" {
   })
 
   depends_on = [
-    kubectl_manifest.datadog_secret_store,
+    kubectl_manifest.aws_secret_store,
     # 권한이 먼저 붙어야 첫 동기화가 성공한다. 없으면 SecretSyncedError 로 시작해
     # 다음 refresh(1시간)까지 Secret 이 없는 상태가 이어진다.
     aws_iam_role_policy.external_secrets_read_db,
   ]
 }
 
-# ESO 역할은 Datadog 시크릿 ARN 하나로 좁혀져 있다 (external_secrets.tf).
+# ESO 역할은 시크릿 ARN 단위로 좁혀져 있다 (external_secrets.tf).
 # 리소스를 좁게 잡은 것 자체는 맞지만, 시크릿을 하나 늘릴 때마다 여기도 함께
 # 늘려야 한다. 안 늘리면 ExternalSecret 이 SecretSyncedError 로 멈추고
 # Secret 이 아예 생성되지 않는다 — 파드는 그것을 envFrom 으로 참조하므로
@@ -130,7 +141,7 @@ resource "kubectl_manifest" "app_db_secret" {
 # 정책을 별도 리소스로 두는 이유는 external_secrets.tf 를 건드리지 않기 위해서다.
 # 한 역할에 인라인 정책 여러 개를 붙일 수 있다.
 data "aws_iam_policy_document" "external_secrets_read_db" {
-  count = var.enable_app_data_wiring && var.enable_datadog ? 1 : 0
+  count = var.enable_app_data_wiring && var.enable_external_secrets ? 1 : 0
 
   statement {
     effect = "Allow"
@@ -146,7 +157,7 @@ data "aws_iam_policy_document" "external_secrets_read_db" {
 }
 
 resource "aws_iam_role_policy" "external_secrets_read_db" {
-  count = var.enable_app_data_wiring && var.enable_datadog ? 1 : 0
+  count = var.enable_app_data_wiring && var.enable_external_secrets ? 1 : 0
 
   name   = "read-db-master-secret"
   role   = aws_iam_role.external_secrets[0].id

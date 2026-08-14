@@ -201,3 +201,22 @@ variable "app_service_accounts" {
   type        = list(string)
   default     = ["api", "order-worker", "chat-gateway"]
 }
+
+variable "enable_external_secrets" {
+  description = <<-EOT
+    External Secrets Operator 와 ClusterSecretStore 를 설치한다.
+
+    ★ enable_datadog 과 분리되어 있다. 원래는 하나로 묶여 있었는데,
+    ESO 는 Datadog 전용이 아니라 시크릿을 쓰는 모든 것의 공용 기반이다.
+    묶여 있던 상태에서 Datadog 을 끄면 다음이 연쇄로 일어났다 (D-024):
+
+      ESO 컨트롤러 삭제 -> ExternalSecret CRD 삭제(Helm 소유)
+        -> ExternalSecret CR 삭제 -> 그것이 소유한 Secret 삭제
+        -> api 파드가 envFrom 대상을 못 찾아 CreateContainerConfigError
+
+    끄면 Secrets Manager 에서 값을 가져오는 경로가 전부 사라진다.
+    앱이 DB 비밀번호를 못 받으므로 사실상 서비스 중단이다.
+  EOT
+  type        = bool
+  default     = true
+}
