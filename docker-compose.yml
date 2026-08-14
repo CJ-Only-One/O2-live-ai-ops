@@ -18,6 +18,22 @@ services:
     ports:
       - "6379:6379"
 
+  # 주문·상품 원본. 클러스터의 RDS 자리를 대신한다.
+  # RDS 는 프라이빗 서브넷에 있고 보안 그룹이 EKS 노드로 좁혀져 있어
+  # 로컬에서는 닿지 않는다 — 그래서 컨테이너로 대신 띄운다.
+  mysql:
+    image: mysql:8.0
+    # 03-data 의 파라미터 그룹과 같은 값이다. 다르면 로컬에서는 통과한 쿼리가
+    # 클러스터에서 "Illegal mix of collations" 로 깨진다 (infra/03-data/rds.tf).
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_0900_ai_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-o2local}
+      MYSQL_DATABASE: ${DB_NAME:-o2}
+    ports:
+      - "3306:3306"
+
   api:
     build:
       context: ./apps/api
@@ -35,8 +51,13 @@ services:
       VALKEY_HOST: ${VALKEY_HOST:-valkey}
       VALKEY_PORT: ${VALKEY_PORT:-6379}
       VALKEY_TLS: ${VALKEY_TLS:-false}
+      DB_HOST: ${DB_HOST:-mysql}
+      DB_USER: ${DB_USER:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-o2local}
+      DB_NAME: ${DB_NAME:-o2}
     depends_on:
       - valkey
+      - mysql
 
   frontend:
     image: node:22-alpine
