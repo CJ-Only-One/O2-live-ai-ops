@@ -425,18 +425,65 @@ jobs:
             "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           chmod +x /usr/local/bin/yq
 
-      - name: 이미지 태그 갱신
+      - name: 이미지 태그와 버전 라벨 갱신
         working-directory: manifests
         run: |
+          set -euo pipefail
+
           for svc in $(echo '${{ needs.changed.outputs.services }}' | tr -d '[]"' | tr ',' ' '); do
             f="${svc}-deployment.yaml"
+
+            # 예전에는 경고만 남기고 넘어갔다. 그러면 이미지는 ECR에 올라갔는데
+            # 매니페스트가 그대로여서 클러스터가 옛 버전을 계속 도는 상태가
+            # 조용히 만들어진다 — 대시보드를 보지 않으면 모른다.
             if [ ! -f "$f" ]; then
-              echo "::warning::배포 저장소에 $f 가 없어 건너뜁니다. 서비스를 추가할 때 매니페스트도 같이 만들어야 합니다."
-              continue
+              echo "::error::배포 저장소에 $f 가 없습니다. 서비스를 추가할 때 매니페스트도 같이 만들어야 합니다 (파일명 규약: <service>-deployment.yaml)."
+              exit 1
             fi
-            IMAGE="${{ steps.ecr.outputs.registry }}/o2/${svc}:${{ github.sha }}" \
-              yq -i '.spec.template.spec.containers[0].image = strenv(IMAGE)' "$f"
-            echo "$f → $IMAGE"
+
+            # 배열 인덱스로 고르지 않는다. 나중에 사이드카가 주입되면
+            # (예: Datadog Admission Controller) 순서가 밀려 엉뚱한 컨테이너를
+            # 고치게 되고, 그 실패는 런타임에만 드러난다.
+            n=$(SVC="$svc" yq '[.spec.template.spec.containers[] | select(.name == strenv(SVC))] | length' "$f")
+            if [ "$n" != "1" ]; then
+              echo "::error::$f 에 name=$svc 컨테이너가 $n 개입니다. 정확히 하나여야 합니다."
+              exit 1
+            fi
+
+            IMAGE="${{ steps.ecr.outputs.registry }}/o2/${svc}:${{ github.sha }}"
+            SVC="$svc" IMAGE="$IMAGE" yq -i \
+              '(.spec.template.spec.containers[] | select(.name == strenv(SVC)) | .image) = strenv(IMAGE)' "$f"
+
+            # 버전 라벨은 있는 서비스만 갱신한다. 이벤트 SDK나 Datadog을 쓰지
+            # 않는 서비스(frontend 같은 정적 서빙)에까지 요구하면, 워크플로가
+            # 바뀌어 전체 재빌드가 도는 날 그 서비스에서 배포가 막힌다.
+            #
+            # 라벨은 Pod 템플릿에만 있다. selector.matchLabels 는 불변이라
+            # 거기를 고치면 다음 apply 가 거부된다.
+            LABEL_PATH='.spec.template.metadata.labels."app.kubernetes.io/version"'
+            has_label=$(yq "$LABEL_PATH // \"\"" "$f")
+            if [ -n "$has_label" ]; then
+              VERSION="${{ github.sha }}" yq -i "$LABEL_PATH = strenv(VERSION)" "$f"
+            fi
+
+            # 여기부터는 사후 검증이다. yq 가 계산을 틀리는 경우가 아니라,
+            # 선택자가 대상을 못 찾아 조용히 no-op 으로 끝나는 경우를 잡는다.
+            got_image=$(SVC="$svc" yq '.spec.template.spec.containers[] | select(.name == strenv(SVC)) | .image' "$f")
+            if [ "$got_image" != "$IMAGE" ]; then
+              echo "::error::$f 의 이미지 갱신이 반영되지 않았습니다: $got_image"
+              exit 1
+            fi
+
+            if [ -n "$has_label" ]; then
+              got_version=$(yq "$LABEL_PATH" "$f")
+              if [ "$got_version" != "${{ github.sha }}" ]; then
+                echo "::error::$f 의 버전 라벨이 커밋 SHA 와 다릅니다: $got_version"
+                exit 1
+              fi
+              echo "$f → $IMAGE (version=${GITHUB_SHA::7})"
+            else
+              echo "$f → $IMAGE (버전 라벨 없음)"
+            fi
           done
 
       - name: 커밋
