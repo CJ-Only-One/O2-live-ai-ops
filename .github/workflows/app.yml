@@ -308,6 +308,12 @@ jobs:
           # frontend가 아닌 서비스에는 안 쓰는 인자라 빈 값이 그냥 무시된다.
           build-args: |
             VITE_API_BASE_URL=${{ matrix.service == 'frontend' && '/api' || '' }}
+          # 이벤트 SDK가 private 저장소라 pip이 인증을 필요로 한다.
+          # build-args가 아니라 secrets로 넘긴다 — build-args는 이미지
+          # 히스토리에 남아 `docker history`로 읽힌다.
+          # 이 시크릿을 쓰지 않는 서비스의 Dockerfile은 그냥 무시한다.
+          secrets: |
+            sdk_token=${{ secrets.SDK_REPO_TOKEN }}
 
       # ECR에도 스캔(scan_on_push)이 켜져 있지만 그쪽은 BASIC이라
       # Alpine 패키지만 본다. 정작 위험이 모이는 곳은 app.jar 안의 Java

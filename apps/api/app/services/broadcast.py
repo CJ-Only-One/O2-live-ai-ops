@@ -16,7 +16,9 @@ MGET 으로 읽는다 — 왕복 한 번이 늘지만 표시값이 최신에 가
 
 import json
 import logging
+import time
 
+from o2events import emit
 from sqlalchemy import select
 
 from app.core.cache import get_or_load
@@ -71,10 +73,14 @@ def _load_from_db(broadcast_id: str) -> dict | None:
     }
 
 
-def _load_meta(broadcast_id: str) -> dict | None:
+def _load_meta(broadcast_id: str, origin: dict) -> dict | None:
     """Valkey 를 보고, 없으면 DB 에서 읽어 Valkey 를 채운다.
 
     Valkey 가 죽어도 DB 경로로 응답한다. 캐시는 보조이지 원본이 아니다.
+
+    origin 은 어느 계층이 응답했는지 호출자에게 돌려주는 자리다.
+    이벤트의 cache_hit 이 트래픽 폭증과 캐시 미스 폭주를 가르는 유일한 근거라
+    (SDK inventory_check 주석) 실제 값을 실어야 한다.
     """
     key = _meta_key(broadcast_id)
 
@@ -84,6 +90,9 @@ def _load_meta(broadcast_id: str) -> dict | None:
             return json.loads(cached)
     except Exception:
         logger.exception("방송 메타 캐시 조회 실패, DB 로 우회한다")
+
+    origin["source"] = "DB_REPLICA"
+    origin["cache_hit"] = False
 
     meta = _load_from_db(broadcast_id)
     if meta is None:
@@ -112,15 +121,52 @@ def _stock_display(sku_ids: list[str]) -> dict[str, int]:
     return {sku: int(v) if v is not None else 0 for sku, v in zip(sku_ids, values)}
 
 
+def _emit_inventory_check(meta: dict, stocks: dict[str, int], origin: dict, latency_ms: int) -> None:
+    """스냅샷 조회 1건당 이벤트 1건 (contracts.md 5.1).
+
+    상품마다 발행하지 않는다. 편성 상품이 전부 같은 캐시 블롭에서 나오므로
+    상품별로 쪼개도 cache_hit 이 전부 같은 값이고, 볼륨만 상품 수만큼 늘어난다.
+    대표 상품 하나로 방송 단위 조회를 기록한다.
+
+    발행 실패가 사용자 요청을 실패시키면 안 된다 (contracts.md 5.1).
+    SDK 는 전송을 논블로킹으로 처리하지만 계약 위반은 raise 하므로 여기서 막는다.
+    """
+    products = meta.get("products") or []
+    if not products:
+        return
+
+    featured = products[0]
+    try:
+        emit.inventory_check(
+            product_id=featured["sku_id"],
+            # 조회일 뿐 주문이 아니라 요청 수량이 없다.
+            requested_qty=0,
+            available_qty=stocks.get(featured["sku_id"], 0),
+            source=origin["source"],
+            cache_hit=origin["cache_hit"],
+            latency_ms=latency_ms,
+        )
+    except Exception:
+        logger.exception("inventory.check 발행 실패")
+
+
 def get_snapshot(broadcast_id: str) -> dict | None:
+    started = time.perf_counter()
+
+    # 아래 loader 가 안 불리면 로컬 캐시가 응답한 것이다.
+    origin = {"source": "CACHE", "cache_hit": True}
+
     meta = get_or_load(
-        _meta_key(broadcast_id), LOCAL_TTL, lambda: _load_meta(broadcast_id)
+        _meta_key(broadcast_id), LOCAL_TTL, lambda: _load_meta(broadcast_id, origin)
     )
     if meta is None:
         return None
 
     sku_ids = [p["sku_id"] for p in meta["products"]]
     stocks = _stock_display(sku_ids)
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    _emit_inventory_check(meta, stocks, origin, latency_ms)
 
     # 캐시에 담긴 dict 를 그대로 고치면 다음 요청이 남의 재고를 본다.
     return {
