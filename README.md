@@ -18,7 +18,9 @@ infra/
   04-platform/   Argo CD, Load Balancer Controller, 클러스터 접근 권한
 apps/<service>/  Dockerfile + src
 loadtest/        부하 테스트 시나리오
+CLAUDE.md        작업 시작 전에 읽을 것 — 규약과 함정 요약
 docs/
+  architecture.md  전체 설계 (부하 가정, 캐싱, 스케일링, 리스크)
   decisions.md   결정 기록
   contracts.md   인터페이스 계약 (REST, WebSocket, 캐시 키, 이벤트)
 ```
@@ -117,6 +119,55 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 평면 배치라 `yq` 가 이 경로로 이미지 태그를 찾아 고치기 때문이며,
 이름이 어긋나면 태그 갱신이 건너뛰어진다(워크플로가 경고를 남긴다).
 
+## 애플리케이션이 데이터 계층에 붙는 법
+
+**접속 정보를 코드나 매니페스트에 적지 않는다.** 클러스터에서는 두 가지가
+`envFrom` 으로 통째로 들어온다.
+
+| 이름 | 종류 | 내용 |
+|---|---|---|
+| `o2-data` | ConfigMap | RDS·Valkey 엔드포인트, SQS 큐 URL |
+| `o2-db` | Secret | `DB_PASSWORD` 하나 |
+
+둘 다 `infra/04-platform` 이 `03-data` 의 remote state 를 읽어 만든다.
+데이터 스택을 다시 만들어도 그 스택을 apply 하면 따라간다.
+
+### 이름이 계약이다
+
+```
+ConfigMap/Secret 키  ==  apps/api 의 Settings 필드  ==  .env.example 항목
+```
+
+셋이 같아야 한다. `REDIS_URL` 같은 새 이름을 만들면 **주입된 값이 조용히 무시되고
+기본값(localhost)이 쓰인다.** 파드는 정상적으로 뜨고 DB 호출에서만 실패하므로
+알아채기 늦다. 현재 키 목록은 `apps/api/.env.example` 에 있다.
+
+### 로컬과 클러스터의 차이는 둘뿐
+
+`docker-compose` 가 같은 이름의 환경변수를 쓰므로 로컬에서 돌아가는 코드는
+클러스터에서도 그대로 돈다. 다른 것은 두 가지다.
+
+- **Valkey TLS.** 클러스터는 transit 암호화가 켜져 있어 평문 접속이 끊긴다.
+  `VALKEY_TLS=true` 가 주입되고, `settings.valkey_url` 이 `rediss://` 를 낸다.
+  로컬 컨테이너에는 TLS 가 없어 `false` 다.
+- **SQS.** 로컬에는 큐가 없다. `SQS_ORDER_QUEUE_URL` 이 비면 발행을 건너뛰도록
+  코드에서 분기한다.
+
+### AWS 자격증명
+
+**액세스 키를 만들지 않는다.** 파드는 EKS Pod Identity 로 임시 자격증명을 받는다.
+매니페스트에 `serviceAccountName` 을 적고, 같은 이름이
+`infra/04-platform` 의 `app_service_accounts` 목록에 있어야 한다.
+
+이름이 어긋나면 파드는 뜨고 **AWS 호출에서만** 실패한다. 두 곳을 함께 고친다.
+
+### 서비스를 새로 붙일 때
+
+1. 매니페스트에 `serviceAccountName: <service>` 와 `envFrom` 두 줄
+2. `infra/04-platform` 의 `app_service_accounts` 에 이름 추가 후 apply
+3. 새 환경변수가 필요하면 `04-platform/app_data_access.tf` 의 ConfigMap 에
+   추가하고, 같은 이름을 앱 설정과 `.env.example` 에도 넣는다
+
 ## 서비스 추가하기
 
 1. `apps/<service>/` — Dockerfile과 소스
@@ -144,12 +195,14 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 - [x] state를 팀 버킷(`o2-tfstate-066107819912`) 하나로 통일 (D-010)
 - [x] `infra/03-data` — RDS, Valkey, SQS (D-017). 적용 완료
 - [x] `infra/01-network` — `enable_data_tier = true` (private-data 서브넷)
-- [ ] `infra/04-platform` — 접속 정보를 클러스터로 넣는 배선 (D-018). **apply 필요**
+- [x] `infra/04-platform` — 접속 정보를 클러스터로 넣는 배선 (D-018). 적용·검증 완료
+- [x] `apps/api` — 환경변수 계약 반영, `docker-compose` 에 Valkey 추가
 - [ ] `apps/frontend` — 계약(`contracts.md`)에 맞춰 전면 수정 (D-019)
+- [ ] DB 스키마와 마이그레이션 방식 — 정해진 것이 없다. `contracts.md` 2장·설계 문서 4.4 참고
 - [x] OIDC 프로바이더 소유권을 `00-cicd` 로 정리 (D-009)
 - [x] 배포 저장소 ruleset이 태그 갱신 커밋을 막던 문제 해결 (D-012)
-- [x] `apps/testpage` — 파이프라인 검증용 정적 페이지, ALB Ingress로 노출 (D-013)
-- [ ] `data/terraform.tfstate` 의 소유자를 찾을 것 — 데이터 계층이 아니라 AIOps 파이프라인이었다 (Kinesis·Firehose·Glue·Lambda, 코드가 저장소에 없음 · D-015)
+- [x] ~~`apps/testpage`~~ — 역할이 끝나 제거 (D-013 → D-020). ECR 저장소만 남겨둠
+- [x] `data/terraform.tfstate` 는 백데이터 파트 소관으로 확인 — 건드리지 않는다 (D-015)
 - [x] `app.yml` — Trivy 이미지 스캔, 결과를 Code Scanning으로 (D-014)
 - [x] Trivy를 CRITICAL 차단으로 승격 (D-014)
 - [x] `docs/contracts.md` — REST·WebSocket·캐시 키·이벤트 계약 (D-016)
