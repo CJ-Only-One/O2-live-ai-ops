@@ -19,11 +19,34 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# 읽기 전용 조회용. 리드 리플리카가 없는 동안에는 writer 와 같은 주소가 오므로
+# 지금은 커넥션만 나뉜다. 리플리카를 켜는 순간 코드를 안 고쳐도 읽기가 분산된다
+# (architecture.md 4.2).
+#
+# 쓰기 직후 조회는 여기로 보내지 않는다. 리플리카는 비동기 복제라
+# "주문 없음" 이 나갈 수 있다.
+reader_engine = create_engine(
+    settings.reader_database_url,
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=5,
+    connect_args={"connect_timeout": 2},
+)
+ReaderSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=reader_engine)
+
 Base = declarative_base()
 
 
 def get_db():
     db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_reader_db():
+    db = ReaderSessionLocal()
     try:
         yield db
     finally:
