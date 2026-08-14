@@ -1,0 +1,34 @@
+# 문서 구조가 낡지 않게 막는다.
+#
+# 워크플로를 따로 둔 기준은 D-001과 같다 — 실패했을 때의 비용이 다르다.
+# 문서 인덱스가 어긋나는 것은 되돌리기 쉽고, 시크릿 유출이나 인프라 드리프트와
+# 같은 잡에 묶어두면 정작 중요한 실패가 묻힌다.
+name: docs
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'scripts/check-docs-index.sh'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+
+permissions:
+  contents: read
+
+jobs:
+  index:
+    name: 결정 기록 인덱스
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # docs/decisions.md 는 통째로 읽지 않는 것을 전제로 만들어져 있다.
+      # 결정을 추가하면서 인덱스를 빠뜨리면 그 전제가 조용히 깨진다.
+      - run: ./scripts/check-docs-index.sh

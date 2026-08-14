@@ -79,8 +79,14 @@ variable "github_repo_id" {
 variable "services" {
   description = "ECR 저장소를 만들 서비스 목록. apps/ 에 서비스를 추가하면 여기에도 넣는다."
   type        = list(string)
-  # testpage 는 손으로 만들어져 있던 저장소를 import 로 흡수한 것이다.
-  # 코드 밖에 있던 리소스를 남겨두면 수명주기 정책도 태그 정리도 안 붙는다.
+  # testpage 는 apps/ 와 매니페스트가 모두 제거됐으나 저장소는 남겨둔다.
+  # 목록에서 빼면 destroy 대상이 되는데, 이미지가 11개 들어 있어 실패한다.
+  # 지우려면 force_delete = true 를 먼저 apply 해 state 를 갱신한 뒤 빼야 한다
+  # (destroy 는 config 가 아니라 state 의 값으로 동작한다 · decisions.md 함정).
+  # 스토리지 비용이 미미해 그 두 단계를 지금 하지 않는다.
+  #
+  # chat-gateway·order-worker·media 는 서비스가 실제로 생길 때 추가한다.
+  # 미리 만들면 빈 저장소만 늘어난다.
   default = ["api", "testpage", "frontend"]
 }
 

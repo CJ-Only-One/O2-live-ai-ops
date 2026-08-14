@@ -1,7 +1,23 @@
 # 로컬 개발용. 코드 수정하면 바로 반영되도록(hot reload) 소스를 볼륨으로 마운트한다.
-# 배포용 Dockerfile(운영 이미지 빌드)과는 별개다. DB는 AWS MySQL을 그대로 쓴다 —
-# 여기서 컨테이너로 띄우지 않으니 각 앱의 .env에 RDS 접속 정보를 채워야 한다.
+# 배포용 Dockerfile(운영 이미지 빌드)과는 별개다.
+#
+# 목표는 "클러스터와 같은 모양"이다. 환경변수 이름이 ConfigMap o2-data 와 같으므로,
+# 로컬에서 돌아가는 코드는 클러스터에서도 그대로 돈다.
+#
+# 다른 점 두 가지:
+#   - Valkey 는 TLS 가 없다 (클러스터는 transit 암호화가 켜져 있다)
+#   - SQS 는 없다. SQS_ORDER_QUEUE_URL 이 비면 발행을 건너뛰도록 코드에서 분기한다
 services:
+  # 재고 카운터·세션·Pub/Sub. 클러스터의 ElastiCache 자리를 대신한다.
+  # 재고 판정(원자적 DECR)은 이것 없이는 로컬에서 시험할 수 없다.
+  valkey:
+    image: valkey/valkey:8-alpine
+    # 클러스터의 파라미터 그룹과 같은 축출 정책을 쓴다.
+    # allkeys-lru 면 메모리 압박 시 TTL 없는 재고 키까지 사라진다 (D-017).
+    command: valkey-server --maxmemory-policy volatile-lru
+    ports:
+      - "6379:6379"
+
   api:
     build:
       context: ./apps/api
@@ -13,6 +29,14 @@ services:
       - ./apps/api/app:/app/app
     ports:
       - "8000:8000"
+    # .env 에 값이 없어도 로컬 Valkey 를 찾도록 기본값을 준다.
+    # .env 쪽이 우선이므로 개인 설정을 덮어쓰지 않는다.
+    environment:
+      VALKEY_HOST: ${VALKEY_HOST:-valkey}
+      VALKEY_PORT: ${VALKEY_PORT:-6379}
+      VALKEY_TLS: ${VALKEY_TLS:-false}
+    depends_on:
+      - valkey
 
   frontend:
     image: node:22-alpine
