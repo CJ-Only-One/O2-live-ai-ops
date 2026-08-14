@@ -165,3 +165,39 @@ variable "external_secrets_chart_version" {
   type        = string
   default     = "2.8.0"
 }
+
+# ── 애플리케이션 데이터 계층 배선 ─────────────────────────────
+variable "enable_app_data_wiring" {
+  description = <<-EOT
+    03-data 의 엔드포인트·시크릿·SQS 권한을 클러스터 안으로 넣는다.
+    03-data 를 apply 하기 전에는 false 여야 한다 (remote state 가 비어 있다).
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "datastore_state_key" {
+  description = <<-EOT
+    data/ 가 아니다. 그 키는 AI 에이전트 백데이터 파트가 쓰고 있다 (D-015).
+  EOT
+  type        = string
+  default     = "datastore/terraform.tfstate"
+}
+
+variable "app_namespace" {
+  description = "애플리케이션 네임스페이스. 매니페스트 저장소의 00-namespace.yaml 이 만든다"
+  type        = string
+  default     = "o2-dev"
+}
+
+variable "app_service_accounts" {
+  description = <<-EOT
+    Pod Identity 를 걸 ServiceAccount 목록. 서비스 이름과 같게 둔다.
+
+    매니페스트의 serviceAccountName 이 여기 없는 이름을 가리키면 파드는 뜨지만
+    AWS 자격증명이 없어 SQS 호출에서만 실패한다 — 기동은 성공하고 런타임에
+    깨지므로 알아채기 늦다. 서비스를 추가할 때 여기도 함께 늘릴 것.
+  EOT
+  type        = list(string)
+  default     = ["api", "order-worker", "chat-gateway"]
+}
