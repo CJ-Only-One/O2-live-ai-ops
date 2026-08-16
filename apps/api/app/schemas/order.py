@@ -15,3 +15,11 @@ class OrderAccepted(BaseModel):
     # 이 시점의 상태는 항상 ACCEPTED 다. MySQL 기록은 워커가 하므로
     # CONFIRMED 는 여기서 나올 수 없다.
     state: str = "ACCEPTED"
+
+
+class OrderStatus(BaseModel):
+    order_id: str
+    # ACCEPTED / CONFIRMED / CANCELLED
+    state: str
+    sku_id: str
+    qty: int
