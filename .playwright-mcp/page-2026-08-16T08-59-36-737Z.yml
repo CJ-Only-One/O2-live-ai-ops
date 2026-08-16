@@ -1,0 +1,4 @@
+- generic [active] [ref=f8e1]:
+  - heading "404 Not Found" [level=1] [ref=f8e3]
+  - separator [ref=f8e4]
+  - generic [ref=f8e5]: nginx/1.31.3
