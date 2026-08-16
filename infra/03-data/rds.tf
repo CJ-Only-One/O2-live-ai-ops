@@ -2,9 +2,13 @@
 # 이 둘은 "지금 정할 것" 쪽에 속한다 (설계 문서 10.2). 나중에 바꾸면 이미 만들어진
 # 테이블은 그대로 남아 있어, 같은 DB 안에서 테이블마다 콜레이션이 달라진다.
 # 그 상태로 JOIN 하면 "Illegal mix of collations" 로 쿼리가 깨진다.
+#
+# 이름을 고정하지 않는 이유는 엔진 메이저 버전 때문이다. family 가 바뀌면 이
+# 그룹은 교체되는데, create_before_destroy 는 옛 그룹이 살아 있는 동안 새 그룹을
+# 만든다. 이름이 고정이면 그 순간 이름이 충돌해 apply 가 깨진다.
 resource "aws_db_parameter_group" "main" {
-  name   = "${local.name}-mysql8"
-  family = "mysql${var.db_engine_version}"
+  name_prefix = "${local.name}-mysql-"
+  family      = "mysql${var.db_engine_version}"
 
   parameter {
     name  = "character_set_server"
@@ -40,6 +44,10 @@ resource "aws_db_instance" "main" {
   engine         = "mysql"
   engine_version = var.db_engine_version
   instance_class = var.db_instance_class
+
+  # 8.0 -> 8.4 처럼 메이저 버전을 올리려면 이 값이 있어야 provider 가 진행한다.
+  # 되돌릴 수 없는 작업이므로 apply 전 수동 스냅샷을 남긴다.
+  allow_major_version_upgrade = true
 
   db_name  = var.db_name
   username = "o2admin"
