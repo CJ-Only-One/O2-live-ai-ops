@@ -10,6 +10,7 @@ import { useChat } from '../services/useChat'
 import type { Broadcast, Product } from '../types'
 import '../styles/common.css'
 import './LiveRoom.css'
+import { uuid } from '../utils/uuid'
 
 type OrderPhase =
   | { kind: 'idle' }
@@ -56,7 +57,7 @@ function LiveRoom() {
 
     let key = idemKeys.current.get(product.sku_id)
     if (!key) {
-      key = crypto.randomUUID()
+      key = uuid()
       idemKeys.current.set(product.sku_id, key)
     }
 
