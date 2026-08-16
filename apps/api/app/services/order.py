@@ -11,12 +11,15 @@ import time
 from pathlib import Path
 
 import boto3
+from sqlalchemy import select
 from o2events import emit
 from o2events.core import ulid
 
 from app.core.config import settings
 from app.core.errors import ApiError
+from app.db.session import SessionLocal
 from app.db.valkey import valkey
+from app.models.order import Order
 from app.services import broadcast as broadcast_service
 
 logger = logging.getLogger(__name__)
@@ -62,6 +65,62 @@ def _publish(order_id: str, req, idem_key: str, user_key: str, unit_price: int, 
             }
         ),
     )
+
+
+def _mark_accepted(order_id: str, req) -> None:
+    """접수 상태를 조회할 수 있게 표식을 남긴다.
+
+    응답 캐시가 아니다. 202 를 받은 직후에는 MySQL 에 아직 행이 없고
+    (워커가 나중에 쓴다), 계약은 그 구간을 ACCEPTED 로 정의한다
+    (contracts.md 2.2·2.3). 그 상태를 담을 곳이 여기밖에 없다.
+
+    TTL 은 멱등키와 같다. 그 안에 워커가 기록하지 못했다면 DLQ 로 갔거나
+    영구 오류라, 표식이 남아 있어 봐야 사실과 다른 상태를 보여줄 뿐이다.
+    """
+    try:
+        valkey.set(
+            f"order:{order_id}",
+            json.dumps({"sku_id": req.sku_id, "qty": req.qty, "state": "ACCEPTED"}),
+            ex=IDEM_TTL_SECONDS,
+        )
+    except Exception:
+        # 실패해도 주문 자체는 성사됐다. 조회가 잠깐 404 가 될 뿐이다.
+        logger.exception("접수 표식 저장 실패: %s", order_id)
+
+
+def get_order(order_id: str) -> dict | None:
+    """주문 상태 조회 (contracts.md 2.3).
+
+    MySQL 을 먼저 본다. 워커가 기록했다면 그것이 최종 상태이고, Valkey 를
+    먼저 보면 확정된 뒤에도 ACCEPTED 를 돌려주게 된다.
+
+    리플리카가 아니라 writer 로 간다. 주문 직후 조회가 대부분인데 리플리카는
+    비동기 복제라 "주문 없음" 이 나갈 수 있다 (architecture.md 4.2).
+    """
+    with SessionLocal() as db:
+        row = db.execute(
+            select(Order).where(Order.order_id == order_id)
+        ).scalar_one_or_none()
+
+    if row is not None:
+        return {
+            "order_id": row.order_id,
+            "state": row.state,
+            "sku_id": str(row.sku_id),
+            "qty": row.qty,
+        }
+
+    try:
+        marker = valkey.get(f"order:{order_id}")
+    except Exception:
+        logger.exception("접수 표식 조회 실패: %s", order_id)
+        marker = None
+
+    if not marker:
+        return None
+
+    data = json.loads(marker)
+    return {"order_id": order_id, **data}
 
 
 def _compensate(idem_key: str, sku_id: str, qty: int) -> None:
@@ -124,6 +183,8 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
         logger.exception("주문 큐 발행 실패: %s", order_id)
         _compensate(idem_key, req.sku_id, req.qty)
         raise ApiError("INTERNAL_ERROR", "주문을 접수하지 못했습니다")
+
+    _mark_accepted(order_id, req)
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     _emit_issue(req, "SUCCESS", None, latency_ms, remaining=int(value))

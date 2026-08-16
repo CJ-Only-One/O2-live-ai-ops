@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Header, Request, Response
 
 from app.core.errors import ApiError
-from app.schemas.order import OrderAccepted, OrderCreate
+from app.schemas.order import OrderAccepted, OrderCreate, OrderStatus
 from app.services import order as order_service
 
 router = APIRouter()
@@ -31,3 +31,16 @@ def create_order(
     result = order_service.create_order(body, idempotency_key, user_key)
     response.status_code = 202
     return result
+
+
+@router.get("/orders/{order_id}", response_model=OrderStatus)
+def get_order(order_id: str):
+    """주문 상태 조회 (contracts.md 2.3).
+
+    캐싱하지 않는다. 상태가 ACCEPTED 에서 CONFIRMED 로 바뀌는 구간을
+    보는 것이 이 엔드포인트의 목적인데, 캐시가 그 변화를 가린다.
+    """
+    order = order_service.get_order(order_id)
+    if order is None:
+        raise ApiError("INVALID_REQUEST", "주문을 찾을 수 없습니다", status_code=404)
+    return order
