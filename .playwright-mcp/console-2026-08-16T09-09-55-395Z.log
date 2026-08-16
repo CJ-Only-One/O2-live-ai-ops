@@ -1,0 +1,11 @@
+[     399ms] TypeError: crypto.randomUUID is not a function
+    at Un (http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/assets/index-BP5gbHUV.js:11:23685)
+    at s (http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/assets/index-BP5gbHUV.js:11:27591)
+    at http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/assets/index-BP5gbHUV.js:11:27984
+    at Uc (http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/assets/index-BP5gbHUV.js:8:91646)
+    at Dl (http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/assets/index-BP5gbHUV.js:8:106750)
+    at El (http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/assets/index-BP5gbHUV.js:8:106634)
+    at Dl (http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/assets/index-BP5gbHUV.js:8:107513)
+    at El (http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/assets/index-BP5gbHUV.js:8:106634)
+    at Dl (http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/assets/index-BP5gbHUV.js:8:106730)
+    at El (http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/assets/index-BP5gbHUV.js:8:106634)

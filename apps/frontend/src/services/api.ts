@@ -6,6 +6,7 @@
  */
 
 import type { ApiErrorBody, ErrorCode } from '../types'
+import { uuid } from '../utils/uuid'
 
 // 상대 경로가 기본이다. 배포에서는 ALB 가, 로컬에서는 vite 프록시가
 // 같은 오리진에서 /api 를 받아 넘긴다. 절대 주소를 기본값으로 두면
@@ -66,7 +67,7 @@ export function sessionKey(): string {
   const KEY = 'o2-session-key'
   let value = localStorage.getItem(KEY)
   if (!value) {
-    value = crypto.randomUUID()
+    value = uuid()
     localStorage.setItem(KEY, value)
   }
   return value
