@@ -9,3 +9,4 @@ pymysql==1.1.1
 # RDS MySQL 8.0 도 같은 기본값이라 로컬만의 문제가 아니다.
 cryptography==50.0.0
 redis==8.1.0
+boto3==1.35.36

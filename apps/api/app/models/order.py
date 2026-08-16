@@ -49,6 +49,16 @@ class Order(Base):
 
     qty = Column(Integer, nullable=False)
 
+    # 접수 시점의 가격 스냅샷. 워커가 처리 시점에 다시 조회하면 안 된다 —
+    # 그 사이 가격이 바뀌면 사용자가 화면에서 본 금액과 청구 금액이 달라지고,
+    # 큐가 밀릴수록 그 간격이 벌어진다. 계약에 가격 변경 푸시(product.update)가
+    # 있으므로 실제로 일어나는 상황이다.
+    #
+    # 단가를 함께 남긴다. amount 만 있으면 나중에 "수량이 많았나 비쌌나" 를
+    # 되짚을 수 없다.
+    unit_price = Column(Integer, nullable=False)
+    amount = Column(Integer, nullable=False)
+
     # ACCEPTED / CONFIRMED / CANCELLED (contracts.md 2.3).
     # POST /api/orders 가 202 로 돌려주는 시점은 ACCEPTED 이고,
     # CONFIRMED 로 바꾸는 것은 order-worker 다.

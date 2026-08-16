@@ -37,6 +37,10 @@ services:
   api:
     build:
       context: ./apps/api
+      # 이벤트 SDK 가 private 저장소라 빌드에 읽기 토큰이 필요하다.
+      #   export SDK_REPO_TOKEN=$(gh auth token)
+      secrets:
+        - sdk_token
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
       - path: ./apps/api/.env
@@ -57,6 +61,11 @@ services:
       DB_USER: ${DB_USER:-root}
       DB_PASSWORD: ${DB_PASSWORD:-o2local}
       DB_NAME: ${DB_NAME:-o2}
+      # 이벤트 SDK 설정. 로컬은 stdout 이라 이벤트가 파드 로그로 나간다.
+      # 클러스터에서 kinesis 로 바꾸면 코드는 그대로고 목적지만 달라진다.
+      O2_SERVICE: ${O2_SERVICE:-api}
+      O2_SERVICE_VERSION: ${O2_SERVICE_VERSION:-local}
+      O2_EVENTS_SINK: ${O2_EVENTS_SINK:-stdout}
     depends_on:
       - valkey
       - mysql
@@ -78,3 +87,8 @@ services:
 
 volumes:
   frontend_node_modules:
+
+secrets:
+  # 빌드 중에만 파일로 마운트된다. ARG 로 넘기면 이미지 히스토리에 남는다.
+  sdk_token:
+    environment: SDK_REPO_TOKEN
