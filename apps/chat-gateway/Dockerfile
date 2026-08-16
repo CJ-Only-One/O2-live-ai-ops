@@ -17,6 +17,15 @@ RUN npm ci --omit=dev
 FROM node:22-alpine
 WORKDIR /app
 
+# npm 과 corepack 을 지운다. 실행은 `node dist/main.js` 라 둘 다 필요 없는데,
+# 이미지에 남아 있으면 그 안에 번들된 의존성이 그대로 취약점으로 잡힌다
+# (CVE-2026-59873 은 npm 이 들고 있는 tar 다). 우리 package.json 으로는
+# 고칠 수 없고 베이스 이미지가 갱신돼야 사라지므로, 안 쓰는 것을 지우는 편이
+# 확실하다. 이미지도 작아진다.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+           /usr/local/lib/node_modules/corepack \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
