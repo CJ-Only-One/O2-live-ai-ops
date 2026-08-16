@@ -1,90 +1,66 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { fetchLives } from '../services/liveService'
-import type { LiveItem } from '../types'
-import LiveCard from '../components/LiveCard'
-import LiveDetailSheet from '../components/LiveDetailSheet'
+
+import { fetchBroadcast, KNOWN_BROADCAST_IDS } from '../services/broadcastService'
+import type { Broadcast } from '../types'
 import '../styles/common.css'
-import './LiveLobby.css'
 
-const TABS = ['샵티끄', '매거진', '라이브'] as const
-
+/**
+ * 방송 목록.
+ *
+ * 계약에 목록 API 가 없어 알려진 방송을 하나씩 조회한다. mock 서비스를 두면
+ * 없는 API 가 있는 것처럼 보이므로 상수를 그대로 쓴다. 목록이 필요해지면
+ * 계약에 GET /api/broadcasts 를 추가하는 것이 먼저다.
+ */
 function LiveLobby() {
-  const [lives, setLives] = useState<LiveItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [detailLive, setDetailLive] = useState<LiveItem | null>(null)
   const navigate = useNavigate()
+  const [items, setItems] = useState<Broadcast[]>([])
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetchLives().then((data) => {
-      setLives(data)
-      setLoading(false)
+    Promise.allSettled(KNOWN_BROADCAST_IDS.map(fetchBroadcast)).then((results) => {
+      const ok = results
+        .filter((r): r is PromiseFulfilledResult<Broadcast> => r.status === 'fulfilled')
+        .map((r) => r.value)
+      setItems(ok)
+      if (ok.length === 0) setError('방송을 불러오지 못했습니다')
     })
   }, [])
 
-  function handleOpen(live: LiveItem) {
-    if (live.status === 'LIVE') {
-      navigate(`/live/${live.id}`)
-    } else if (live.status === 'UPCOMING') {
-      setDetailLive(live)
-    }
+  if (error) {
+    return (
+      <div className="phone-frame">
+        <p className="lobby-loading">{error}</p>
+      </div>
+    )
   }
-
-  const liveNow = lives.filter((l) => l.status === 'LIVE')
-  const upcoming = lives.filter((l) => l.status === 'UPCOMING')
-  const ended = lives.filter((l) => l.status === 'ENDED')
 
   return (
     <div className="phone-frame">
-      <header className="lobby-header">
-        <span className="lobby-header__logo">OLIVE YOUNG</span>
-        <nav className="lobby-tabs">
-          {TABS.map((tab) => (
-            <span key={tab} className={`lobby-tabs__item${tab === '라이브' ? ' is-active' : ''}`}>
-              {tab}
-            </span>
-          ))}
-        </nav>
-      </header>
-
-      <main className="lobby-main">
-        {loading && <p className="lobby-loading">불러오는 중...</p>}
-
-        {!loading && liveNow.length > 0 && (
-          <section className="lobby-section">
-            <h2 className="lobby-section__title">지금 LIVE</h2>
-            <div className="lobby-carousel">
-              {liveNow.map((live) => (
-                <LiveCard key={live.id} live={live} onOpen={handleOpen} />
-              ))}
-            </div>
-          </section>
-        )}
-
-        {!loading && upcoming.length > 0 && (
-          <section className="lobby-section">
-            <h2 className="lobby-section__title">방송 예정</h2>
-            <div className="lobby-carousel">
-              {upcoming.map((live) => (
-                <LiveCard key={live.id} live={live} onOpen={handleOpen} />
-              ))}
-            </div>
-          </section>
-        )}
-
-        {!loading && ended.length > 0 && (
-          <section className="lobby-section">
-            <h2 className="lobby-section__title">다시보기</h2>
-            <div className="lobby-carousel">
-              {ended.map((live) => (
-                <LiveCard key={live.id} live={live} onOpen={handleOpen} />
-              ))}
-            </div>
-          </section>
-        )}
-      </main>
-
-      {detailLive && <LiveDetailSheet live={detailLive} onClose={() => setDetailLive(null)} />}
+      <h1 style={{ padding: '20px 16px 8px', fontSize: 20 }}>올영 LIVE</h1>
+      {items.length === 0 && <p className="lobby-loading">불러오는 중...</p>}
+      {items.map((b) => (
+        <button
+          key={b.broadcast_id}
+          onClick={() => navigate(`/live/${b.broadcast_id}`)}
+          style={{
+            display: 'block',
+            width: '100%',
+            padding: '16px',
+            textAlign: 'left',
+            background: 'none',
+            border: 'none',
+            borderBottom: '1px solid rgba(0,0,0,.08)',
+            cursor: 'pointer',
+          }}
+        >
+          <span className="badge badge-live">{b.state}</span>
+          <p style={{ margin: '8px 0 4px', fontWeight: 600 }}>{b.broadcast_id}</p>
+          <p style={{ margin: 0, fontSize: 13, opacity: 0.7 }}>
+            상품 {b.products.length}개
+          </p>
+        </button>
+      ))}
     </div>
   )
 }

@@ -70,6 +70,23 @@ services:
       - valkey
       - mysql
 
+  # WebSocket 채팅. api 와 같은 Valkey 를 보고 Pub/Sub 으로 파드 간 전달을 한다.
+  chat-gateway:
+    build:
+      context: ./apps/chat-gateway
+    environment:
+      VALKEY_HOST: ${VALKEY_HOST:-valkey}
+      VALKEY_PORT: ${VALKEY_PORT:-6379}
+      VALKEY_TLS: ${VALKEY_TLS:-false}
+      O2_SERVICE: chat-gateway
+      O2_SERVICE_VERSION: local
+      # 수집단이 모르는 event_name 을 어떻게 처리하는지 확인되기 전까지 꺼둔다.
+      EMIT_CHAT_EVENTS: ${EMIT_CHAT_EVENTS:-false}
+    ports:
+      - "8090:8080"
+    depends_on:
+      - valkey
+
   frontend:
     image: node:22-alpine
     working_dir: /app
@@ -82,8 +99,14 @@ services:
       - frontend_node_modules:/app/node_modules
     ports:
       - "5173:5173"
+    # 개발 서버가 /api 와 /ws 를 각각 api·chat-gateway 로 넘긴다.
+    # 배포의 ALB 와 같은 모양이라 코드에 개발용 분기가 생기지 않는다.
+    environment:
+      API_TARGET: http://api:8000
+      WS_TARGET: http://chat-gateway:8080
     depends_on:
       - api
+      - chat-gateway
 
 volumes:
   frontend_node_modules:
