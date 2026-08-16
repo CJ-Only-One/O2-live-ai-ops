@@ -10,6 +10,7 @@ import { useChat } from '../services/useChat'
 import type { Broadcast, Product } from '../types'
 import '../styles/common.css'
 import './LiveRoom.css'
+import { approximateViewers, broadcastView } from '../presentation'
 import { uuid } from '../utils/uuid'
 
 type OrderPhase =
@@ -92,15 +93,18 @@ function LiveRoom() {
   }
 
   const featured = broadcast.products[0]
+  // 제목·썸네일·코너 문구는 서버가 주지 않는 장식이다 (presentation.ts).
+  const view = broadcastView(broadcast.broadcast_id)
 
   return (
     <div className="phone-frame room">
       <div className="room__video">
         {/*
-          hls_url 은 05-media(MediaMTX·CloudFront)가 생기면 실제 값이 온다.
-          그때 이 자리를 HLS 플레이어로 바꾼다 — 오버레이는 손대지 않는다.
+          영상 자리. 05-media(MediaMTX·CloudFront)가 생기면 hls_url 로
+          플레이어를 붙이고, 그때까지는 썸네일이 그 자리를 채운다.
+          오버레이 구조는 그대로라 교체가 이 한 줄이다.
         */}
-        <div className="room__video-img" />
+        <img src={view.thumbnail} alt="" className="room__video-img" />
         <div className="room__video-scrim" />
 
         <div className="room__topbar">
@@ -109,13 +113,18 @@ function LiveRoom() {
             <button className="icon-btn" onClick={() => setMuted((m) => !m)} aria-label="음소거">
               {muted ? '🔇' : '🔊'}
             </button>
+            <span className="room__viewers">
+              👁 {approximateViewers(broadcast.broadcast_id).toLocaleString()}
+            </span>
             <button className="icon-btn" aria-label="공유">🔗</button>
           </div>
         </div>
 
         <div className="room__headline">
-          <span className="badge badge-live">{broadcast.state}</span>
-          <h1 className="room__title">{broadcast.broadcast_id}</h1>
+          {broadcast.state === 'LIVE' && <span className="badge badge-live">LIVE</span>}
+          <p className="room__brand">{view.brand}</p>
+          <h1 className="room__title">{view.title}</h1>
+          {view.segment && <p className="room__segment">📍 {view.segment}</p>}
           {!connected && <p className="room__segment">채팅 다시 연결 중...</p>}
         </div>
 
