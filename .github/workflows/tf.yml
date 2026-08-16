@@ -57,7 +57,7 @@ jobs:
           # 04-platform 도 포함한다. plan을 안 돌리므로 클러스터 접근이
           # 필요 없어졌고, 그래서 이 스택만 검사에서 빠질 이유가 사라졌다.
           # (plan을 돌리던 시절에는 D-011의 이유로 제외했다)
-          for s in 00-cicd 01-network 02-eks 03-data 04-platform 05-media; do
+          for s in 00-cicd 01-network 02-eks 03-data 04-platform 05-media 06-datastream; do
             # 아직 코드가 없는 스택은 건너뛴다.
             if ! ls "infra/$s"/*.tf >/dev/null 2>&1; then
               continue

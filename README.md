@@ -16,6 +16,8 @@ infra/
   02-eks/        클러스터, 노드그룹, EKS 애드온
   03-data/       RDS, Valkey, SQS (backend key는 `datastore/` · D-015, D-017)
   04-platform/   Argo CD, Load Balancer Controller, 클러스터 접근 권한
+  06-datastream/ Kinesis, Firehose, S3 레이크, Glue, DynamoDB, Lambda
+                 에이전트가 쓰는 내부 데이터 시스템 (backend key는 `data/` · D-025)
 apps/<service>/  Dockerfile + src
 loadtest/        부하 테스트 시나리오
 CLAUDE.md        작업 시작 전에 읽을 것 — 규약과 함정 요약
@@ -31,8 +33,13 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 충돌해서 나눴다 — 근거는 D-006.
 
 `infra/`의 번호는 **의존 순서**다. `02`와 `03`은 `01`의 출력을 remote state로
-참조하므로 apply는 반드시 이 순서를 지켜야 한다. apply는 로컬에서 하므로
+참조하고, `06`은 `02`가 만든 클러스터의 OIDC 프로바이더를 조회하므로 apply는
+반드시 이 순서를 지켜야 한다. apply는 로컬에서 하므로
 순서를 지키는 것은 사람의 몫이다 — `tf.yml` 은 plan만 돌린다.
+
+`03-data`와 `06-datastream`은 이름이 비슷하지만 다른 것이다. 앞은 서비스가
+읽고 쓰는 저장소, 뒤는 그 서비스를 관찰한 결과다. **state 키를 서로 바꿔 쓰면
+상대 리소스를 지운다** (D-015, D-025).
 
 배경과 근거는 [`docs/decisions.md`](docs/decisions.md)에 있다.
 
