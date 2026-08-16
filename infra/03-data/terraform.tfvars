@@ -11,8 +11,12 @@ network_state_key    = "network/terraform.tfstate"
 # ── RDS ──────────────────────────────────────────────────────────
 # 사이징은 전부 Phase 6 부하 테스트 뒤에 정한다 (설계 문서 10.2).
 # 지금 정한 것은 나중에 못 바꾸는 것들뿐이다 — 암호화, 문자셋, 콜레이션.
-db_name              = "o2"
-db_engine_version    = "8.0"
+db_name = "o2"
+
+# 8.0 은 표준 지원이 끝나 확장 지원 요금이 붙는다. 실측 $5.47/day 로
+# 인스턴스 요금($0.57/day)의 10배였고, 인스턴스를 정지해도 계속 과금된다.
+# 8.4 는 LTS 라 해당 요금이 없다.
+db_engine_version    = "8.4"
 db_instance_class    = "db.t4g.micro"
 db_allocated_storage = 20
 

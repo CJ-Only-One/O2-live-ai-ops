@@ -39,6 +39,7 @@
 | D-022 | 규약은 `AGENTS.md` 하나, 인덱스는 CI가 지킨다 | Codex·Copilot 호환, `check-docs-index.sh` |
 | D-023 | PR에서 terraform plan을 돌리지 않는다 | CI 자격증명 제거, public 저장소 |
 | D-024 | ESO 게이트를 Datadog에서 분리 | `enable_external_secrets`, `moved` |
+| D-025 | MySQL 8.0 → 8.4 | 확장 지원 요금, `name_prefix`, 파라미터 그룹 교체 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -1119,3 +1120,61 @@ apply 는 성공하고 **파드에서만 실패**한다. 그런 실패는 원인
 그것이 Datadog 의 일부처럼 보였고, 게이트가 그렇게 붙었다.
 공용 리소스에 특정 사용자의 이름을 붙이면 나중에 그 사용자를 지울 때
 공용 기반이 함께 끌려 나간다.
+
+---
+
+## D-025. MySQL 8.0 이 아니라 8.4 를 쓴다
+
+D-017 에서 `03-data` 의 "지금 정할 것"을 고르며 엔진을 8.0 으로 잡았다.
+근거는 설계 문서 4장이 InnoDB 버퍼 풀과 REPEATABLE READ 기준으로 쓰여
+있다는 것이었다. 그 근거는 8.4 에서도 그대로 성립한다.
+
+바꾸는 이유는 성능이 아니라 요금이다.
+
+### 확인한 것
+
+Cost Explorer 를 usage type 단위로 나눠 보니 RDS 하루 $6.15 의 내역이 이랬다.
+
+```
+5.473  APN2-ExtendedSupport:Yr1-Yr2:MySQL8.0
+0.570  APN2-InstanceUsage:db.t4g.micro
+0.080  APN2-RDS:GP3-Storage
+```
+
+MySQL 8.0 은 표준 지원이 끝나 vCPU 시간당 확장 지원 요금이 붙는다.
+**인스턴스 요금 자체의 10배**이고, 계정 전체 지출(하루 약 $15)의 36% 였다.
+`db.t4g.micro` 한 대에 월 $164 다.
+
+이 요금은 **인스턴스를 정지해도 계속 붙는다.** 야간에 내리는 식으로는
+줄지 않는다. 8.4 는 LTS 라 해당 요금이 없다.
+
+### 파라미터 그룹 이름을 고정하지 않는다
+
+`db_engine_version` 은 인스턴스의 `engine_version` 과 파라미터 그룹의
+`family` 를 함께 움직인다. family 가 바뀌면 파라미터 그룹은 교체되는데,
+`create_before_destroy = true` 는 옛 그룹이 살아 있는 동안 새 그룹을 만든다.
+이름이 `o2-dev-mysql8` 로 고정이면 그 순간 이름이 충돌해 apply 가 깨진다.
+
+`name` 대신 `name_prefix` 를 쓴다. 다음 메이저 버전에서 다시 걸리지 않는다.
+
+### 되돌릴 수 없다
+
+메이저 업그레이드에는 다운그레이드가 없다. `backup_retention_period = 1`
+이라 자동 백업만으로는 얇아서, apply 전에 수동 스냅샷을 남긴다.
+
+```bash
+aws rds create-db-snapshot --region ap-northeast-2 \
+  --db-instance-identifier o2-dev-mysql \
+  --db-snapshot-identifier o2-dev-mysql-pre84
+```
+
+plan 결과는 `1 to add, 1 to change, 1 to destroy` 였다.
+인스턴스는 in-place 업데이트고 재생성되지 않는다.
+
+### 배운 것
+
+**끄는 것보다 요금제를 보는 것이 먼저다.** 처음에는 "비싼 리소스를 야간에
+내리자"로 접근했고, 그 방향의 절감은 하루 $1.5 였다. 실제 최대 항목은
+리소스가 아니라 지원이 끝난 버전에 붙은 요금이었고, 한 줄로 하루 $5.5 였다.
+서비스 단위 그래프만 보면 "RDS 가 비싸다"까지만 보인다. usage type 까지
+쪼개야 원인이 나온다.
