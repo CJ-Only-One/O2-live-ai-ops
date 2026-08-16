@@ -10,7 +10,7 @@ interface Props {
 function LiveProductCard({ product, onBuy }: Props) {
   const [liked, setLiked] = useState(false)
   const [likeCount, setLikeCount] = useState(702)
-  const discount = Math.round((1 - product.price / product.originalPrice) * 100)
+  const discount = Math.round((1 - product.sale_price / product.price) * 100)
 
   function toggleLike() {
     setLiked((v) => !v)
@@ -20,12 +20,15 @@ function LiveProductCard({ product, onBuy }: Props) {
   return (
     <div className="live-product">
       <button className="live-product__info" onClick={() => onBuy(product)}>
-        <img src={product.thumbnail} alt={product.name} className="live-product__thumb" />
         <div className="live-product__text">
           <p className="live-product__name">{product.name}</p>
+          <p className="live-product__stock">
+            {/* 표시용이다. 주문 가부는 서버의 재고 차감 결과가 정한다. */}
+            {product.state === 'SOLD_OUT' ? '품절' : `${product.stock_display}개 남음`}
+          </p>
           <p className="live-product__price">
             {discount > 0 && <span className="live-product__discount">{discount}%</span>}
-            {product.price.toLocaleString()}원
+            {product.sale_price.toLocaleString()}원
           </p>
         </div>
       </button>
