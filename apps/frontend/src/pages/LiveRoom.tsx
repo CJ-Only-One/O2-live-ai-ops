@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 
 import ChatPanel from '../components/ChatPanel'
 import LiveProductCard from '../components/LiveProductCard'
+import ProductSheet from '../components/ProductSheet'
+import { approximateViewers, broadcastView } from '../presentation'
 import { ApiError } from '../services/api'
 import { fetchBroadcast } from '../services/broadcastService'
 import { createOrder } from '../services/orderService'
 import { useChat } from '../services/useChat'
 import type { Broadcast, Product } from '../types'
+import { uuid } from '../utils/uuid'
 import '../styles/common.css'
 import './LiveRoom.css'
-import { approximateViewers, broadcastView } from '../presentation'
-import { uuid } from '../utils/uuid'
 
 type OrderPhase =
   | { kind: 'idle' }
@@ -21,16 +22,23 @@ type OrderPhase =
 
 function LiveRoom() {
   const { broadcastId } = useParams()
+  const navigate = useNavigate()
+
   const [broadcast, setBroadcast] = useState<Broadcast | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [muted, setMuted] = useState(true)
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const [couponIssued, setCouponIssued] = useState(false)
   const [order, setOrder] = useState<OrderPhase>({ kind: 'idle' })
 
   const { messages, connected, send } = useChat(broadcastId)
 
   /**
    * 재시도는 같은 멱등키를 다시 보내야 한다. 서버가 만들어주지 않으므로
-   * 여기서 상품별로 하나씩 들고 있는다 (contracts.md 1.2).
+   * 상품별로 하나씩 들고 있는다 (contracts.md 1.2).
+   *
+   * 주문이 성사되면 버린다. 남겨두면 같은 상품을 또 살 때 서버가 첫 주문을
+   * 그대로 돌려준다.
    */
   const idemKeys = useRef(new Map<string, string>())
 
@@ -53,7 +61,7 @@ function LiveRoom() {
     wasConnected.current = connected
   }, [connected, load])
 
-  function buy(product: Product) {
+  function buy(product: Product, qty: number) {
     if (!broadcastId || order.kind === 'sending') return
 
     let key = idemKeys.current.get(product.sku_id)
@@ -63,8 +71,15 @@ function LiveRoom() {
     }
 
     setOrder({ kind: 'sending' })
-    createOrder(broadcastId, product.sku_id, 1, key)
-      .then((res) => setOrder({ kind: 'accepted', orderId: res.order_id }))
+    createOrder(broadcastId, product.sku_id, qty, key)
+      .then((res) => {
+        idemKeys.current.delete(product.sku_id)
+        setSheetOpen(false)
+        setOrder({ kind: 'accepted', orderId: res.order_id })
+        // 재고가 줄었으므로 스냅샷을 다시 받는다. stock.update 푸시가
+        // 붙으면 이 호출은 필요 없어진다 (contracts.md 3.3).
+        load()
+      })
       .catch((e: ApiError) => {
         // code 로 분기한다. message 는 예고 없이 바뀐다 (contracts.md 1.3).
         const text =
@@ -92,31 +107,31 @@ function LiveRoom() {
     )
   }
 
-  const featured = broadcast.products[0]
-  // 제목·썸네일·코너 문구는 서버가 주지 않는 장식이다 (presentation.ts).
   const view = broadcastView(broadcast.broadcast_id)
+  const featured = broadcast.products.find((p) => p.state === 'ON_SALE') ?? broadcast.products[0]
 
   return (
     <div className="phone-frame room">
       <div className="room__video">
         {/*
           영상 자리. 05-media(MediaMTX·CloudFront)가 생기면 hls_url 로
-          플레이어를 붙이고, 그때까지는 썸네일이 그 자리를 채운다.
-          오버레이 구조는 그대로라 교체가 이 한 줄이다.
+          플레이어를 붙인다 — 오버레이 구조는 그대로라 교체가 이 한 줄이다.
         */}
         <img src={view.thumbnail} alt="" className="room__video-img" />
         <div className="room__video-scrim" />
 
         <div className="room__topbar">
-          <span className="room__logo">올영 LIVE.</span>
+          <span className="room__logo">올영LIVE</span>
           <div className="room__topbar-icons">
-            <button className="icon-btn" onClick={() => setMuted((m) => !m)} aria-label="음소거">
-              {muted ? '🔇' : '🔊'}
-            </button>
             <span className="room__viewers">
               👁 {approximateViewers(broadcast.broadcast_id).toLocaleString()}
             </span>
-            <button className="icon-btn" aria-label="공유">🔗</button>
+            <button className="icon-btn" onClick={() => setMuted((m) => !m)} aria-label="음소거">
+              {muted ? '🔇' : '🔊'}
+            </button>
+            <button className="icon-btn" onClick={() => navigate('/')} aria-label="닫기">
+              ✕
+            </button>
           </div>
         </div>
 
@@ -132,20 +147,42 @@ function LiveRoom() {
           <ChatPanel messages={messages} onSend={send} />
 
           {order.kind === 'accepted' && (
-            <p className="room__order-note">
-              주문이 접수되었습니다 ({order.orderId.slice(0, 12)}…)
-            </p>
+            <button className="room__toast" onClick={() => navigate(`/orders/${order.orderId}`)}>
+              주문이 접수되었습니다 · 상태 보기 →
+            </button>
           )}
-          {order.kind === 'failed' && <p className="room__order-note">{order.message}</p>}
+          {order.kind === 'failed' && <p className="room__toast is-error">{order.message}</p>}
+
+          {/*
+            쿠폰 API 는 계약에 없다. 화면 장식이고 실제 발급이 일어나지 않는다 —
+            특가 자체가 쿠폰을 대신한다 (contracts.md 5.2).
+          */}
+          <button
+            className={`room__coupon${couponIssued ? ' is-issued' : ''}`}
+            onClick={() => setCouponIssued(true)}
+            disabled={couponIssued}
+          >
+            {couponIssued ? '✓ 쿠폰이 발급되었습니다' : '🎟 라이브 전용 쿠폰 받기'}
+          </button>
 
           {featured && (
             <LiveProductCard
               product={featured}
-              onBuy={buy}
+              count={broadcast.products.length}
+              onOpen={() => setSheetOpen(true)}
             />
           )}
         </div>
       </div>
+
+      {sheetOpen && (
+        <ProductSheet
+          products={broadcast.products}
+          onClose={() => setSheetOpen(false)}
+          onBuy={buy}
+          pending={order.kind === 'sending'}
+        />
+      )}
     </div>
   )
 }

@@ -1,2 +1,0 @@
-[     205ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/live/bc_1042:0
-[     291ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/favicon.ico:0

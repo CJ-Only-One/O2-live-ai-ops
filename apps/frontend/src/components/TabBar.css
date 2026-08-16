@@ -1,0 +1,47 @@
+/* 하단 탭바.
+   sticky 는 스크롤 컨테이너를 기준으로 하는데 프레임이 문서 전체를 늘리고
+   있어 중간에 떠버린다. 화면 하단에 고정하고, 프레임 폭에 맞춰 가운데 둔다. */
+.tabbar {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 430px;
+  max-width: 100%;
+  z-index: 20;
+  display: flex;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.tabbar__item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 9px 0 8px;
+  background: none;
+  border: none;
+  color: var(--faint);
+  cursor: pointer;
+}
+
+.tabbar__item:disabled {
+  cursor: default;
+}
+
+.tabbar__item.is-active {
+  color: var(--ink);
+}
+
+.tabbar__icon {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.tabbar__label {
+  font-size: 10px;
+  font-weight: 700;
+}

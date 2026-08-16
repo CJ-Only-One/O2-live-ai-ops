@@ -1,0 +1,72 @@
+/* 앱 진입 스플래시. 흰 배경에 워드마크만 두는 실제 앱 방식을 따른다. */
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--bg);
+  opacity: 1;
+  transition: opacity 0.4s ease;
+}
+
+.splash.is-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.splash__mark {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: splash-rise 0.6s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+/* 잎 모양. 브랜드 그린 원을 한쪽만 둥글게 깎아 만든다. */
+.splash__leaf {
+  width: 22px;
+  height: 22px;
+  background: var(--green);
+  border-radius: 50% 0 50% 50%;
+  transform: rotate(-12deg);
+}
+
+.splash__word {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+}
+
+.splash__sub {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.32em;
+  color: var(--green-dark);
+  animation: splash-rise 0.6s 0.12s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+@keyframes splash-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 애니메이션을 줄이도록 설정한 사용자에게는 움직임 없이 보여준다. */
+@media (prefers-reduced-motion: reduce) {
+  .splash__mark,
+  .splash__sub {
+    animation: none;
+  }
+  .splash {
+    transition: none;
+  }
+}

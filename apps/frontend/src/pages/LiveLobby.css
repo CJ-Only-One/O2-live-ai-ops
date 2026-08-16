@@ -40,7 +40,8 @@
 
 .lobby-main {
   flex: 1;
-  padding: 20px 0 40px;
+  /* 고정된 탭바에 가려지지 않게 띄운다. */
+  padding: 20px 0 96px;
 }
 
 .lobby-loading {
