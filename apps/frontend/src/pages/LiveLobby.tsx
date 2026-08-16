@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import LiveCard from '../components/LiveCard'
 import { fetchBroadcast, KNOWN_BROADCAST_IDS } from '../services/broadcastService'
 import type { Broadcast } from '../types'
 import '../styles/common.css'
+import './LiveLobby.css'
 
 /**
  * 방송 목록.
  *
- * 계약에 목록 API 가 없어 알려진 방송을 하나씩 조회한다. mock 서비스를 두면
- * 없는 API 가 있는 것처럼 보이므로 상수를 그대로 쓴다. 목록이 필요해지면
- * 계약에 GET /api/broadcasts 를 추가하는 것이 먼저다.
+ * 계약에 목록 API 가 없어 알려진 방송을 하나씩 조회한다. 상태·시각은 서버
+ * 값이고 제목·썸네일은 화면 장식이다 (presentation.ts).
  */
 function LiveLobby() {
   const navigate = useNavigate()
@@ -27,40 +28,45 @@ function LiveLobby() {
     })
   }, [])
 
-  if (error) {
-    return (
-      <div className="phone-frame">
-        <p className="lobby-loading">{error}</p>
-      </div>
-    )
-  }
+  const open = (b: Broadcast) => navigate(`/live/${b.broadcast_id}`)
+  const groups: [string, Broadcast[]][] = [
+    ['지금 라이브', items.filter((b) => b.state === 'LIVE')],
+    ['방송 예정', items.filter((b) => b.state === 'SCHEDULED')],
+    ['다시보기', items.filter((b) => b.state === 'ENDED')],
+  ]
 
   return (
     <div className="phone-frame">
-      <h1 style={{ padding: '20px 16px 8px', fontSize: 20 }}>올영 LIVE</h1>
-      {items.length === 0 && <p className="lobby-loading">불러오는 중...</p>}
-      {items.map((b) => (
-        <button
-          key={b.broadcast_id}
-          onClick={() => navigate(`/live/${b.broadcast_id}`)}
-          style={{
-            display: 'block',
-            width: '100%',
-            padding: '16px',
-            textAlign: 'left',
-            background: 'none',
-            border: 'none',
-            borderBottom: '1px solid rgba(0,0,0,.08)',
-            cursor: 'pointer',
-          }}
-        >
-          <span className="badge badge-live">{b.state}</span>
-          <p style={{ margin: '8px 0 4px', fontWeight: 600 }}>{b.broadcast_id}</p>
-          <p style={{ margin: 0, fontSize: 13, opacity: 0.7 }}>
-            상품 {b.products.length}개
-          </p>
-        </button>
-      ))}
+      <header className="lobby-header">
+        <p className="lobby-header__logo">올영 LIVE</p>
+        {/*
+          탭은 표시만 한다. 방송이 하나뿐이라 거를 것이 없고, 필터를 붙이려면
+          목록 API 가 먼저 있어야 한다.
+        */}
+        <nav className="lobby-tabs">
+          <span className="lobby-tabs__item is-active">라이브</span>
+          <span className="lobby-tabs__item">예정</span>
+          <span className="lobby-tabs__item">다시보기</span>
+        </nav>
+      </header>
+
+      <main className="lobby-main">
+        {error && <p className="lobby-loading">{error}</p>}
+        {!error && items.length === 0 && <p className="lobby-loading">불러오는 중...</p>}
+
+        {groups.map(([title, list]) =>
+          list.length === 0 ? null : (
+            <section className="lobby-section" key={title}>
+              <h2 className="lobby-section__title">{title}</h2>
+              <div className="lobby-carousel">
+                {list.map((b) => (
+                  <LiveCard key={b.broadcast_id} broadcast={b} onOpen={open} />
+                ))}
+              </div>
+            </section>
+          ),
+        )}
+      </main>
     </div>
   )
 }

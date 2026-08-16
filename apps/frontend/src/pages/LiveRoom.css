@@ -100,3 +100,32 @@
 .room__coupon:disabled {
   opacity: 0.8;
 }
+
+/* 브랜드명과 시청자 수. 서버가 주지 않는 장식이다.
+   영상 위에 얹히므로 밝은 프레임에서도 읽히게 그림자를 준다. */
+.room__brand {
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+.room__viewers {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  align-self: center;
+  white-space: nowrap;
+}
+
+/* 주문 결과 안내. 채팅 위에 잠깐 뜬다. */
+.room__order-note {
+  margin: 6px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 13px;
+  font-weight: 600;
+}
