@@ -18,4 +18,4 @@ export function fetchBroadcast(broadcastId: string): Promise<Broadcast> {
  *
  * 목록이 필요해지면 계약에 GET /api/broadcasts 를 추가하고 이 상수를 지운다.
  */
-export const KNOWN_BROADCAST_IDS = ['bc_1042']
+export const KNOWN_BROADCAST_IDS = ['bc_1042', 'bc_1043', 'bc_1050', 'bc_1051', 'bc_1030']

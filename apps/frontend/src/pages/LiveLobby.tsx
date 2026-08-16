@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import LiveCard from '../components/LiveCard'
+import TabBar from '../components/TabBar'
 import { fetchBroadcast, KNOWN_BROADCAST_IDS } from '../services/broadcastService'
 import type { Broadcast } from '../types'
 import '../styles/common.css'
@@ -38,7 +39,7 @@ function LiveLobby() {
   return (
     <div className="phone-frame">
       <header className="lobby-header">
-        <p className="lobby-header__logo">올영 LIVE</p>
+        <p className="lobby-header__logo">올영LIVE</p>
         {/*
           탭은 표시만 한다. 방송이 하나뿐이라 거를 것이 없고, 필터를 붙이려면
           목록 API 가 먼저 있어야 한다.
@@ -67,6 +68,8 @@ function LiveLobby() {
           ),
         )}
       </main>
+
+      <TabBar />
     </div>
   )
 }

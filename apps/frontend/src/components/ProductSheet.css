@@ -1,0 +1,218 @@
+/* 상품 목록·구매 바텀시트. 실제 앱처럼 아래에서 올라온다. */
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  animation: sheet-fade 0.2s ease both;
+}
+
+.sheet {
+  width: 430px;
+  max-width: 100%;
+  max-height: 76svh;
+  overflow-y: auto;
+  padding: 8px 18px 28px;
+  background: var(--bg);
+  border-radius: var(--radius-l) var(--radius-l) 0 0;
+  animation: sheet-up 0.26s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+.sheet__handle {
+  width: 40px;
+  height: 4px;
+  margin: 6px auto 14px;
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+
+.sheet__title {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.sheet__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sheet__item,
+.sheet__buy {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 0;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.sheet__buy {
+  cursor: default;
+}
+
+.sheet__thumb {
+  width: 68px;
+  height: 68px;
+  flex: none;
+  object-fit: cover;
+  border-radius: var(--radius-s);
+  background: var(--bg-dim);
+}
+
+.sheet__info {
+  min-width: 0;
+  flex: 1;
+}
+
+.sheet__brand {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sub);
+}
+
+.sheet__name {
+  margin: 0 0 4px;
+  font-size: 14px;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+.sheet__price {
+  margin: 0;
+  font-size: 15px;
+  color: var(--ink);
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.sheet__price strong {
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.sheet__discount {
+  color: var(--sale);
+  font-weight: 800;
+}
+
+.sheet__origin {
+  font-size: 12px;
+  color: var(--faint);
+  text-decoration: line-through;
+}
+
+.sheet__stock {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.sheet__back {
+  margin-bottom: 6px;
+  padding: 0;
+  font-size: 13px;
+  color: var(--sub);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.sheet__qty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.sheet__stepper {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+}
+
+.sheet__stepper button {
+  width: 26px;
+  height: 26px;
+  font-size: 17px;
+  background: none;
+  border: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.sheet__total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+  color: var(--sub);
+}
+
+.sheet__total strong {
+  font-size: 19px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+/* 구매 버튼은 브랜드 그린. 세일 표기의 레드와 역할을 나눈다. */
+.sheet__cta {
+  width: 100%;
+  padding: 15px;
+  border: none;
+  border-radius: var(--radius-m);
+  background: var(--green);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.sheet__cta:disabled {
+  background: var(--line-strong);
+  cursor: default;
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(14%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes sheet-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet,
+  .sheet-backdrop {
+    animation: none;
+  }
+}

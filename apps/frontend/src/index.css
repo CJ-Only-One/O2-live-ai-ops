@@ -8,11 +8,14 @@
   --bg-soft: #f7f7f9;
   --bg-dim: #f1f1f4;
 
-  /* 올리브영 라이브 포인트 컬러 */
-  --brand: #ff2f6e;
-  --brand-dark: #e5195a;
-  --brand-soft: #ffe6ee;
-  --live: #ff2d55;
+  /* 올리브영 브랜드 컬러. 실제 몰에서 쓰이는 값을 그대로 맞췄다. */
+  --green: #9bce26;        /* 시그니처 그린 */
+  --green-dark: #7fae1a;
+  --sale: #e02020;         /* 세일·강조 레드 */
+  --brand: #e02020;
+  --brand-dark: #c41818;
+  --brand-soft: #ffeaea;
+  --live: #e02020;
 
   --radius-s: 8px;
   --radius-m: 14px;
@@ -21,9 +24,10 @@
   --shadow-card: 0 2px 10px rgba(17, 17, 20, 0.06);
   --shadow-pop: 0 12px 32px rgba(17, 17, 20, 0.16);
 
+  /* 몰과 같은 조합. 라틴은 Montserrat, 한글은 시스템 고딕이 받는다. */
   --sans:
-    'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo',
-    'Malgun Gothic', system-ui, Roboto, sans-serif;
+    'Montserrat', 'Noto Sans KR', -apple-system, BlinkMacSystemFont,
+    'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
 
   font: 15px/1.5 var(--sans);
   color: var(--ink);

@@ -86,3 +86,11 @@
   font-size: 11px;
   color: rgba(255, 255, 255, 0.75);
 }
+
+/* 상품이 여러 개일 때 시트를 열도록 유도한다. */
+.live-product__more {
+  margin: 3px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+}

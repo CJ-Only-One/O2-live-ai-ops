@@ -129,3 +129,44 @@
   font-size: 13px;
   font-weight: 600;
 }
+
+/* 주문 결과 안내. 눌러서 상태 화면으로 갈 수 있다. */
+.room__toast {
+  display: block;
+  width: 100%;
+  margin: 6px 0;
+  padding: 10px 12px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.room__toast.is-error {
+  background: rgba(224, 32, 32, 0.85);
+  cursor: default;
+}
+
+/* 쿠폰 버튼. 계약에 API 가 없어 화면 장식이다. */
+.room__coupon {
+  width: 100%;
+  margin: 6px 0 8px;
+  padding: 13px;
+  border: none;
+  border-radius: var(--radius-m);
+  background: var(--green);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.room__coupon.is-issued {
+  background: rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: default;
+}
