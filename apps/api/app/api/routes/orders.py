@@ -1,13 +1,20 @@
 from fastapi import APIRouter, Header, Request, Response
 
-from app.core.errors import ApiError
+from app.core.errors import ApiError, openapi_errors
 from app.schemas.order import OrderAccepted, OrderCreate, OrderStatus
 from app.services import order as order_service
 
 router = APIRouter()
 
 
-@router.post("/orders", response_model=OrderAccepted, status_code=202)
+@router.post(
+    "/orders",
+    response_model=OrderAccepted,
+    status_code=202,
+    responses=openapi_errors(
+        "SOLD_OUT", "NOT_STARTED", "RATE_LIMITED", "INVALID_REQUEST", "INTERNAL_ERROR"
+    ),
+)
 def create_order(
     body: OrderCreate,
     request: Request,
@@ -33,7 +40,11 @@ def create_order(
     return result
 
 
-@router.get("/orders/{order_id}", response_model=OrderStatus)
+@router.get(
+    "/orders/{order_id}",
+    response_model=OrderStatus,
+    responses=openapi_errors(("INVALID_REQUEST", 404)),
+)
 def get_order(order_id: str):
     """주문 상태 조회 (contracts.md 2.3).
 
