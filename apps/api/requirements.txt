@@ -10,3 +10,6 @@ pymysql==1.1.1
 cryptography==50.0.0
 redis==8.1.0
 boto3==1.35.36
+# APM. FastAPI·SQLAlchemy·redis·boto3 를 자동으로 계측한다. 코드에서 임포트하지
+# 않는다 — ddtrace-run 이 기동 시 패치한다 (Dockerfile CMD).
+ddtrace==4.13.1

@@ -5,3 +5,7 @@ pymysql==1.1.1
 # 처리할 때 cryptography 를 요구한다. RDS MySQL 8.0 도 같은 기본값이다.
 cryptography==50.0.0
 boto3==1.35.36
+# APM. SQLAlchemy 와 boto3(SQS) 를 자동 계측한다. 이 서비스에서 보고 싶은 것은
+# "메시지를 받은 뒤 MySQL 쓰기까지 얼마나 걸렸나" 다 — 그것이 적체의 원인을
+# 큐 쪽과 DB 쪽으로 가른다.
+ddtrace==4.13.1

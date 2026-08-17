@@ -53,12 +53,20 @@ resource "helm_release" "datadog" {
         processCollection = false
       }
 
-      # 이번 범위는 메트릭과 Kubernetes 이벤트다. 로그/APM은 데이터량과 과금 모델이
-      # 달라 명시적으로 끈다.
+      # 로그는 계속 끈다. 데이터량이 곧 요금이고, 지금 필요한 것은 로그 본문이
+      # 아니라 "어느 구간이 느린가" 다.
       logs = {
         enabled = false
       }
+
+      # APM. 파드 지표는 "api 가 느리다" 까지만 말해주고 그 안에서 Valkey 냐
+      # MySQL 이냐를 가르지 못한다. 장애 감별이 목적이므로 구간별 시간이 필요하다.
       apm = {
+        # UDS 대신 hostPort 로 받는다. 소켓 방식은 애플리케이션 파드마다
+        # hostPath 볼륨을 마운트해야 하는데, 그러면 매니페스트 셋을 모두 고치고
+        # 파드에 노드 파일시스템 접근을 주게 된다. hostPort 는 DD_AGENT_HOST 를
+        # status.hostIP 로 주입하는 것으로 끝난다.
+        portEnabled   = true
         socketEnabled = false
       }
 

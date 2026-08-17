@@ -36,4 +36,10 @@ USER 1000
 
 EXPOSE 8080
 
-CMD ["node", "dist/main.js"]
+# dd-trace 를 --require 로 먼저 올린다. 소스에서 임포트하지 않는 이유는
+# 파이썬 쪽 ddtrace-run 과 같다 — 끄고 켤 때 이미지를 다시 만들지 않는다.
+#
+# WebSocket 은 HTTP 요청처럼 트레이스가 잡히지 않는다. 업그레이드 요청 한 번이
+# 전부이고 그 뒤 프레임은 트레이스 밖이다. 여기서 얻는 것은 Valkey Pub/Sub
+# 호출 시간과 런타임 지표다.
+CMD ["node", "--require", "dd-trace/init", "dist/main.js"]
