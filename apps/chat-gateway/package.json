@@ -9,6 +9,7 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
+    "dd-trace": "^6.10.0",
     "ioredis": "^5.4.1",
     "ws": "^8.18.0"
   },

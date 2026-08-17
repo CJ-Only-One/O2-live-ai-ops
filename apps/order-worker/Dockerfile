@@ -36,4 +36,4 @@ RUN useradd -u 10001 -r appuser
 USER 10001
 
 # HTTP 서버가 아니라 큐 소비자다. 포트를 열지 않는다.
-CMD ["python", "-m", "worker.main"]
+CMD ["ddtrace-run", "python", "-m", "worker.main"]
