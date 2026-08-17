@@ -115,12 +115,20 @@ class WarmSettings:
     )
 
     # --- Datadog ---
+    # 아래 셋은 **키가 어디 있는지**만 담습니다. 값 자체를 환경변수로 주면
+    # Terraform state 와 Lambda 콘솔에 평문으로 남습니다. 조회는 secrets.py 가
+    # 실행 시점에 합니다.
     dd_api_key: str = field(
         default_factory=lambda: os.environ.get("O2_DD_API_KEY")
         or os.environ.get("DD_API_KEY", "")
     )
-    # 키를 환경변수로 주면 Terraform state 에 평문으로 남습니다.
-    # SSM SecureString 이름만 주고 실행 시점에 읽는 편이 낫습니다.
+    # 이 저장소의 원본. 04-platform 이 ESO 로 Agent 에 넣는 것과 같은 시크릿이라
+    # 사본이 생기지 않고, 회전하면 Agent 와 Lambda 가 함께 바뀝니다.
+    dd_secret: str = field(default_factory=lambda: os.environ.get("O2_DD_SECRET", ""))
+    dd_secret_property: str = field(
+        default_factory=lambda: os.environ.get("O2_DD_SECRET_PROPERTY", "api-key")
+    )
+    # 대안 경로. Secrets Manager 를 쓸 수 없을 때만 씁니다.
     dd_param: str = field(default_factory=lambda: os.environ.get("O2_DD_PARAM", ""))
     dd_site: str = field(
         default_factory=lambda: os.environ.get("DD_SITE", "datadoghq.com")
@@ -132,12 +140,22 @@ class WarmSettings:
     dd_env: str = field(default_factory=lambda: os.environ.get("DD_ENV", "prod"))
 
     # --- 조회 API ---
+    # 값을 직접 넣는 경로(api_key)는 남겨 두지만 배포에는 쓰지 않습니다.
+    # Function URL 은 인터넷에 바로 붙으므로 이 키가 state 에 남으면
+    # state 를 읽을 수 있는 주체가 곧 엔드포인트 권한을 갖습니다.
     api_key: str = field(default_factory=lambda: os.environ.get("O2_WARM_API_KEY", ""))
+    api_key_param: str = field(
+        default_factory=lambda: os.environ.get("O2_WARM_API_KEY_PARAM", "")
+    )
     max_windows: int = field(default_factory=lambda: _int("O2_WARM_MAX_WINDOWS", 60))
 
     @property
     def datadog_configured(self) -> bool:
-        return bool(self.dd_api_key or self.dd_param)
+        return bool(self.dd_api_key or self.dd_secret or self.dd_param)
+
+    @property
+    def api_auth_configured(self) -> bool:
+        return bool(self.api_key or self.api_key_param)
 
 
 settings = WarmSettings()

@@ -38,40 +38,22 @@ import sys
 import urllib.error
 import urllib.request
 
+from . import secrets
 from .metrics import DATADOG_SCALARS
 from .settings import settings
 
 GAUGE = 3  # Datadog series v2 의 gauge 타입 코드
 
-_key_cache: str | None = None
-
 
 def api_key() -> str:
-    """환경변수 우선, 없으면 SSM SecureString 에서 한 번만 읽습니다.
+    """키가 있는 곳에서 실행 시점에 읽습니다. 조회·캐시는 `secrets` 가 합니다.
 
-    Terraform 변수로 키를 넘기면 S3 remote state 에 평문으로 남습니다.
-    파라미터 이름만 넘기고 실행 시점에 읽으면 그 문제가 사라집니다.
-    콜드 스타트 때 한 번이라 조회 비용은 무시할 수준입니다.
+    원본은 Secrets Manager `o2/dev/datadog` 이고, 04-platform 이 ESO 로
+    Agent 에 넣는 것과 **같은 시크릿**입니다. 사본을 만들지 않으므로
+    키를 회전할 때 Agent 와 이 Lambda 가 함께 바뀝니다. 한쪽만 바뀌면
+    인프라 지표는 정상인데 비즈니스 지표만 조용히 멈춥니다.
     """
-    global _key_cache
-    if _key_cache is not None:
-        return _key_cache
-
-    if settings.dd_api_key:
-        _key_cache = settings.dd_api_key
-    elif settings.dd_param:
-        try:
-            import boto3
-
-            _key_cache = boto3.client("ssm", region_name=settings.region).get_parameter(
-                Name=settings.dd_param, WithDecryption=True
-            )["Parameter"]["Value"]
-        except Exception as e:
-            _warn(f"SSM {settings.dd_param} 조회 실패 — Datadog 전송을 건너뜁니다: {e}")
-            _key_cache = ""
-    else:
-        _key_cache = ""
-    return _key_cache
+    return secrets.datadog_api_key()
 
 
 def build_series(metrics: dict, *, prefix: str | None = None, env: str | None = None) -> list[dict]:

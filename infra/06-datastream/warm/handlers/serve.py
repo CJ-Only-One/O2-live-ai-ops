@@ -45,6 +45,7 @@ import traceback
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from o2warm import secrets  # noqa: E402
 from o2warm.client import WarmClient  # noqa: E402
 from o2warm.settings import settings  # noqa: E402
 
@@ -69,11 +70,23 @@ def _resp(status: int, body) -> dict:
 
 
 def _authorized(event: dict) -> bool:
-    if not settings.api_key:
-        return True  # 키 미설정 = 로컬/사설망 운영. 배포 시 반드시 설정하세요.
+    """키 조회 실패는 '키 없음'이 아니라 '거절'입니다.
+
+    이 함수는 인터넷에 바로 노출된 Function URL 앞에 있습니다
+    (`authorization_type = "NONE"`). 조회 실패를 미설정과 같이 처리하면
+    SSM 이 흔들리는 동안 엔드포인트가 그대로 열립니다. `secrets` 가
+    두 경우를 다른 값으로 돌려주는 이유입니다.
+    """
+    expected = secrets.warm_api_key()
+
+    if expected is None:
+        return False  # 사유는 secrets 가 이미 stderr 에 남깁니다
+    if not expected:
+        return True  # 출처 미지정 = 로컬/사설망 운영. 배포 시 반드시 설정하세요.
+
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     given = headers.get("x-o2-key") or ""
-    return hmac.compare_digest(given, settings.api_key)
+    return hmac.compare_digest(given, expected)
 
 
 def _int_param(params: dict, name: str, default: int, lo: int, hi: int) -> int:
