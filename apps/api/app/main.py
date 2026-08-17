@@ -7,7 +7,19 @@ from app.api.routes import broadcasts, health, orders
 from app.core import errors
 from app.core.config import settings
 
-app = FastAPI(title=settings.APP_NAME)
+# 문서 경로도 /api 아래에 둔다. FastAPI 기본값은 /docs 인데, ALB 가 그 경로를
+# 프론트엔드로 보내기 때문에 SPA 의 index.html 이 대신 나온다.
+app = FastAPI(
+    title=settings.APP_NAME,
+    description=(
+        "라이브커머스 주문·조회 API. 이 문서는 코드에서 생성된다.\n\n"
+        "설계 계약(왜 이런 모양인지, WebSocket·캐시 키·이벤트 규격)은 "
+        "`docs/contracts.md` 가 원본이고, 어긋나면 그쪽이 맞다."
+    ),
+    docs_url="/api/docs",
+    redoc_url=None,
+    openapi_url="/api/openapi.json",
+)
 
 # 계약의 오류 봉투로 응답하게 한다 (contracts.md 1.3).
 errors.register(app)
