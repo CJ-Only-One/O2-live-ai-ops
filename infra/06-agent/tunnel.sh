@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Dify 콘솔을 로컬로 당겨온다. 퍼블릭 노출 없이 스튜디오 작업용.
-#   ./tunnel.sh          -> http://localhost:8080
-#   ./tunnel.sh 9000     -> http://localhost:9000
+#   ./tunnel.sh          -> http://localhost:17080
+#
+# ★ 포트를 바꾸지 말 것. 서버의 NEXT_PUBLIC_SOCKET_URL 이 17080 으로 고정돼 있어
+#   다른 포트로 열면 실시간 동기화(socket.io)만 조용히 안 된다.
 #
 # 유휴 타임아웃(최대 60분)에 걸리지 않게 keepalive 를 함께 돌린다.
 # 그래서 실제 세션 상한은 session_max_duration_minutes(기본 360분)이다.
 set -euo pipefail
 
 cd "$(dirname "$0")"
-LOCAL_PORT="${1:-8080}"
+LOCAL_PORT="${1:-17080}"
 KEEPALIVE_INTERVAL="${KEEPALIVE_INTERVAL:-300}" # 초. 유휴 상한 60분보다 충분히 짧게
 
 ID=$(terraform output -raw instance_id)

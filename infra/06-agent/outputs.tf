@@ -17,7 +17,7 @@ output "dify_api_base" {
 }
 
 output "console_url" {
-  description = "포트 포워딩을 건 뒤 로컬에서 여는 주소는 http://localhost:8080"
+  description = "포트 포워딩을 건 뒤 로컬에서 여는 주소는 http://localhost:17080"
   value       = "http://${aws_instance.dify.private_ip}"
 }
 
@@ -30,11 +30,17 @@ output "ssm_session_command" {
 }
 
 output "ssm_port_forward_command" {
-  description = "콘솔을 로컬 8080 으로 당겨온다. ALB 도 퍼블릭 노출도 필요 없다"
+  description = <<-EOT
+    콘솔을 로컬 17080 으로 당겨온다. ALB 도 퍼블릭 노출도 필요 없다.
+
+    ★ 로컬 포트를 바꾸지 말 것. 서버의 NEXT_PUBLIC_SOCKET_URL 이
+    ws://localhost:17080 으로 고정돼 있어, 다른 포트로 열면 화면은 뜨는데
+    실시간 동기화(socket.io)만 조용히 죽는다.
+  EOT
   value = join(" ", [
     "aws ssm start-session --target ${aws_instance.dify.id}",
     "--document-name AWS-StartPortForwardingSession",
-    "--parameters '{\"portNumber\":[\"80\"],\"localPortNumber\":[\"8080\"]}'",
+    "--parameters portNumber=80,localPortNumber=17080",
     "--region ${var.region}",
   ])
 }
