@@ -100,7 +100,7 @@ docker compose ps          # 전부 running/healthy 인지
 terraform output -raw ssm_port_forward_command   # 이대로 실행
 ```
 
-브라우저에서 `http://localhost:8080/install` — 관리자 계정을 만든다.
+브라우저에서 `http://localhost:17080/install` — 관리자 계정을 만든다.
 그 다음 모델 공급자 등록:
 
 - **Bedrock** — `enable_bedrock_access = true` 면 인스턴스 역할로 붙는다. 액세스 키를 넣지 않는다
@@ -119,9 +119,13 @@ ConfigMap 키 이름은 `Settings` 필드, `.env.example` 과 반드시 일치�
 퍼블릭 IP 도 ALB 도 붙이지 않는다. SSM 포트 포워딩으로 로컬에 당겨온다.
 
 ```bash
-./tunnel.sh          # http://localhost:8080
-./tunnel.sh 9000     # 포트가 겹치면
+./tunnel.sh          # http://localhost:17080
 ```
+
+★ **로컬 포트를 바꾸지 말 것.** 서버의 `NEXT_PUBLIC_SOCKET_URL` 이
+`ws://localhost:17080` 으로 고정돼 있다. 다른 포트로 열면 화면은 정상으로 뜨고
+워크플로 동기화만 무한 로딩에 걸린다. 증상이 조용해서 원인 추적이 오래 걸린다.
+바꿔야 하면 서버 `.env` 와 함께 바꾼다.
 
 로컬에 플러그인이 필요하다: `brew install --cask session-manager-plugin`
 

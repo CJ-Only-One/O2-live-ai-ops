@@ -24,6 +24,12 @@ resource "aws_instance" "dify" {
   metadata_options {
     http_tokens   = "required" # IMDSv2 강제
     http_endpoint = "enabled"
+
+    # ★ 2 여야 한다. Dify 는 docker 브리지 네트워크 안에서 돌고, 컨테이너에서
+    #   169.254.169.254 로 가는 패킷은 홉을 하나 더 쓴다. 1 이면 컨테이너가
+    #   인스턴스 역할을 못 받아 Bedrock 호출이 자격증명 없음으로 실패한다.
+    #   호스트에서 aws CLI 는 되는데 Dify 안에서만 안 되는 형태라 원인이 잘 안 보인다.
+    http_put_response_hop_limit = 2
   }
 
   lifecycle {
