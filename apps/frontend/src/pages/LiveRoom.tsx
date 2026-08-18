@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import ChatPanel from '../components/ChatPanel'
 import LiveProductCard from '../components/LiveProductCard'
+import PreBroadcast from '../components/PreBroadcast'
 import ProductSheet from '../components/ProductSheet'
 import { approximateViewers, broadcastView } from '../presentation'
 import { ApiError } from '../services/api'
@@ -104,6 +105,18 @@ function LiveRoom() {
       <div className="phone-frame">
         <p className="lobby-loading">방송을 불러오는 중...</p>
       </div>
+    )
+  }
+
+  // 방송 전에는 재생할 것이 없다. 상품 시트도 채팅도 열지 않고 예고 화면만
+  // 보여준다 — 시작 시각 전에 주문이 들어가면 서버가 NOT_STARTED 로 막는다.
+  if (broadcast.state === 'SCHEDULED') {
+    return (
+      <PreBroadcast
+        broadcastId={broadcast.broadcast_id}
+        startedAt={broadcast.started_at}
+        onClose={() => navigate('/')}
+      />
     )
   }
 

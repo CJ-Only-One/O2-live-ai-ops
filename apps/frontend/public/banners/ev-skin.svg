@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 750 840" width="750" height="840" role="img">
+  <defs>
+    <linearGradient id="bg101" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#eef4fd"/><stop offset="100%" stop-color="#d5e4f7"/>
+    </linearGradient>
+    <linearGradient id="body101" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7fa9e0"/><stop offset="55%" stop-color="#a9c8ee"/>
+      <stop offset="100%" stop-color="#7fa9e0"/>
+    </linearGradient>
+    <radialGradient id="sh101" cx="50%" cy="50%">
+      <stop offset="0%" stop-color="#000" stop-opacity=".18"/>
+      <stop offset="100%" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="750" height="840" fill="url(#bg101)"/>
+  <g transform="scale(3.1250) translate(0 28.8)">
+  <ellipse cx="120" cy="200" rx="74" ry="16" fill="url(#sh101)"/>
+  <rect x="74" y="86" width="92" height="110" rx="18" fill="url(#body101)"/>
+  <rect x="68" y="62" width="104" height="34" rx="12" fill="#4f7fbe"/>
+  <rect x="88" y="122" width="64" height="46" rx="6" fill="#fff" opacity=".92"/>
+  <rect x="82" y="98" width="12" height="86" rx="6" fill="#fff" opacity=".26"/>
+
+  </g>
+</svg>

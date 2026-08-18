@@ -16,6 +16,8 @@ export interface BroadcastPresentation {
   title: string
   brand: string
   thumbnail: string
+  /** 방송 전 화면의 한 줄 멘트. 실제 라이브의 예고 카피와 같은 자리다. */
+  teaser: string
   badges: string[]
   /** 진행 중인 코너. 나중에 WebSocket 의 broadcast.state 로 대체될 수 있다. */
   segment: string
@@ -29,7 +31,8 @@ export interface ProductPresentation {
 const DEFAULT_BROADCAST: BroadcastPresentation = {
   title: '올영라이브',
   brand: '올리브영',
-  thumbnail: 'https://picsum.photos/seed/oliveyoung-live/600/900',
+  thumbnail: '/live/bc_1042.svg',
+  teaser: '라이브 특가로 만나보세요',
   badges: [],
   segment: '',
 }
@@ -38,55 +41,60 @@ const BROADCASTS: Record<string, BroadcastPresentation> = {
   bc_1042: {
     title: '수분 앰플·선크림 최대 50% 단독 특가',
     brand: '올리브영 단독',
-    thumbnail: 'https://picsum.photos/seed/oy-ampoule-live/600/800',
+    thumbnail: '/live/bc_1042.svg',
+    teaser: 'BEST 수분 앰플 1시간 라이브 특가!',
     badges: ['라이브 특가', '선착순 증정'],
     segment: '수분 앰플 특가 소개 중',
   },
   bc_1043: {
     title: '비타민 세럼 · 수분 크림 리뉴얼 기념전',
     brand: '올영 PICK',
-    thumbnail: 'https://picsum.photos/seed/oy-vitamin-live/600/800',
+    thumbnail: '/live/bc_1043.svg',
+    teaser: '리뉴얼 기념 · 라이브 단독 구성!',
     badges: ['1+1', '무료배송'],
     segment: '비타민 세럼 사용법 시연 중',
   },
   bc_1050: {
     title: '프로틴 쉐이크 최대 40% + 쉐이커 증정',
     brand: '올리브베러',
-    thumbnail: 'https://picsum.photos/seed/oy-protein/600/800',
+    thumbnail: '/live/bc_1050.svg',
+    teaser: '프로틴 쉐이크 + 쉐이커 증정 라이브!',
     badges: ['쉐이커 증정'],
     segment: '',
   },
   bc_1051: {
     title: '유산균 30포 · 이너뷰티 기획전',
     brand: '올리브영 단독',
-    thumbnail: 'https://picsum.photos/seed/oy-probiotics/600/800',
+    thumbnail: '/live/bc_1051.svg',
+    teaser: '이너뷰티 앵콜 특가 · 30포 기획!',
     badges: ['앵콜 특가'],
     segment: '',
   },
   bc_1030: {
     title: '마스크팩 30매 파격가 라이브',
     brand: '올영 PICK',
-    thumbnail: 'https://picsum.photos/seed/oy-maskpack/600/800',
+    thumbnail: '/live/bc_1030.svg',
+    teaser: '마스크팩 30매 파격가 라이브!',
     badges: [],
     segment: '',
   },
 }
 
 const DEFAULT_PRODUCT: ProductPresentation = {
-  image: 'https://picsum.photos/seed/oliveyoung-item/200/200',
+  image: '/products/88213.svg',
   brand: '올리브영',
 }
 
 const PRODUCTS: Record<string, ProductPresentation> = {
-  '88213': { image: 'https://picsum.photos/seed/oy-p-ampoule/240/240', brand: '올리브영 단독' },
-  '88214': { image: 'https://picsum.photos/seed/oy-p-sun/240/240', brand: '데일리' },
-  '88215': { image: 'https://picsum.photos/seed/oy-p-hair/240/240', brand: '리페어' },
-  '88216': { image: 'https://picsum.photos/seed/oy-p-cleansing/240/240', brand: '딥클렌' },
-  '88220': { image: 'https://picsum.photos/seed/oy-p-vitamin/240/240', brand: '비타랩' },
-  '88221': { image: 'https://picsum.photos/seed/oy-p-cream/240/240', brand: '모이스트' },
-  '88230': { image: 'https://picsum.photos/seed/oy-p-protein/240/240', brand: '올리브베러' },
-  '88240': { image: 'https://picsum.photos/seed/oy-p-probio/240/240', brand: '이너뷰티' },
-  '88250': { image: 'https://picsum.photos/seed/oy-p-mask/240/240', brand: '올영 PICK' },
+  '88213': { image: '/products/88213.svg', brand: '올리브영 단독' },
+  '88214': { image: '/products/88214.svg', brand: '데일리' },
+  '88215': { image: '/products/88215.svg', brand: '리페어' },
+  '88216': { image: '/products/88216.svg', brand: '딥클렌' },
+  '88220': { image: '/products/88220.svg', brand: '비타랩' },
+  '88221': { image: '/products/88221.svg', brand: '모이스트' },
+  '88230': { image: '/products/88230.svg', brand: '올리브베러' },
+  '88240': { image: '/products/88240.svg', brand: '이너뷰티' },
+  '88250': { image: '/products/88250.svg', brand: '올영 PICK' },
 }
 
 export function broadcastView(broadcastId: string): BroadcastPresentation {
@@ -119,7 +127,7 @@ export const HOME_BANNERS = [
     eyebrow: 'OLIVE YOUNG LIVE',
     title: '여름 마무리 세일\n최대 50% 단독 특가',
     sub: '라이브 방송 중 · 선착순 쿠폰 증정',
-    image: 'https://picsum.photos/seed/oy-ev-summer/750/840',
+    image: '/banners/ev-summer.svg',
     tint: 'linear-gradient(180deg, rgba(0,0,0,.05) 30%, rgba(0,0,0,.62) 100%)',
   },
   {
@@ -127,7 +135,7 @@ export const HOME_BANNERS = [
     eyebrow: 'SKINCARE WEEK',
     title: '스킨케어 위크\n앰플·세럼 1+1',
     sub: '오늘드림 주문 시 무료배송',
-    image: 'https://picsum.photos/seed/oy-ev-skin/750/840',
+    image: '/banners/ev-skin.svg',
     tint: 'linear-gradient(180deg, rgba(0,0,0,.05) 30%, rgba(0,0,0,.6) 100%)',
   },
   {
@@ -135,7 +143,7 @@ export const HOME_BANNERS = [
     eyebrow: 'INNER BEAUTY',
     title: '이너뷰티 기획전\n유산균·프로틴 모음',
     sub: '구매 시 쉐이커 증정',
-    image: 'https://picsum.photos/seed/oy-ev-inner/750/840',
+    image: '/banners/ev-inner.svg',
     tint: 'linear-gradient(180deg, rgba(0,0,0,.05) 30%, rgba(0,0,0,.6) 100%)',
   },
 ]
