@@ -35,6 +35,7 @@ htmlcov/
 # ── Node ─────────────────────────────────────────────────
 node_modules/
 dist/
+dist-test/
 .vite/
 coverage/
 
