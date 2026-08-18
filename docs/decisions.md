@@ -42,6 +42,7 @@
 | D-025 | MySQL 8.0 → 8.4 | 확장 지원 요금, `name_prefix`, 파라미터 그룹 교체 |
 | D-026 | APM을 켠다 (D-024 뒤집기) | `portEnabled`, `ddtrace-run`, `status.hostIP` |
 | D-027 | 이벤트를 Kinesis 로 보낸다 | `O2_EVENTS_SINK`, salt, `PutRecords`, chat-gateway 보류 |
+| D-028 | Dify 는 EKS 밖에 둔다 (`06-agent`) | 블래스트 반경, SSM 터널, 포트 17080, IMDS 홉, Bedrock 프로필 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -1323,3 +1324,118 @@ Secret 이 없는 상태로 매니페스트가 먼저 동기화되면 파드가 
 2. infra/04-platform apply                      (ExternalSecret → Secret o2-events)
 3. O2-live-deploy 푸시                          (Argo CD 가 envFrom 을 붙인다)
 ```
+
+---
+
+## D-028. Dify 는 EKS 밖에 둔다 (`06-agent`)
+
+AI 에이전트 워크플로 오케스트레이션(Dify)을 클러스터 안이 아니라 같은 VPC
+프라이빗 앱 서브넷의 EC2 한 대에 올린다.
+
+### 왜 EKS 안이 아닌가
+
+**첫째, 블래스트 반경.** 이 프로젝트의 본질은 EKS 에 의도적으로 장애를 주입하고
+에이전트가 그것을 해결하는 것이다(`AGENTS.md` 첫 문단). 고치는 쪽이 부서지는 쪽
+위에 살면 노드 장애 시나리오에서 에이전트도 같이 죽는다. 시연이 성립하지 않는다.
+나머지 셋이 다 뒤집혀도 이 하나로 결정은 같다.
+
+**둘째, 클러스터 사양.** 노드그룹은 `t3.small` × 2 (max 3) 다. Dify 셀프호스트는
+컨테이너가 열다섯 개 뜨고 실사용 메모리가 8 GiB 다. EKS 에 넣으려면 어차피 전용
+노드그룹을 새로 만들어야 하고, 그럴 바에는 EC2 한 대가 싸다.
+
+**셋째, 운영 비용.** 배포 경로가 Argo CD GitOps(D-004, D-006)라 매니페스트 열다섯
+개와 PVC, StatefulSet 을 직접 쓰고 유지해야 한다. Dify 공식 지원은 docker compose
+이고 Helm 차트는 커뮤니티 관리다. `docker compose up -d` 한 줄과 바꿀 만한 것이 없다.
+
+**넷째, DB 재사용 불가.** Dify 는 PostgreSQL 을 쓰는데 `03-data` 의 RDS 는 MySQL
+8.4 다(D-025). compose 번들 postgres 를 그대로 쓴다.
+
+**EKS 로 옮겨야 하는 시점** — Dify 가 시청자 트래픽 경로에 들어가 스케일링이
+필요해질 때. 지금은 에이전트 운영 평면이라 해당 없다.
+
+### 번호는 05 가 아니라 06 이다
+
+`05-media` 가 `architecture.md` 10.3 에서 이미 예약되어 있다(D-01 교체로 생긴
+영상 스택, 미작성). 같은 번호를 두 스택이 쓰면 apply 순서 문서가 깨진다.
+
+`tf.yml` 의 대상 스택 목록은 하드코딩이라 `06-agent` 를 거기 추가하지 않으면
+**CI 가 새 스택을 조용히 건너뛴다.** 검사가 도는 줄 알고 깨진 코드를 올리게 된다.
+
+### backend key 는 `dify/` 다
+
+`agent/` 로 하지 않았다. AI 에이전트 백데이터 파트가 쓸 수 있는 이름이고, 키가
+겹치면 서로의 리소스를 자기 것으로 인식해 지운다. D-015 에서 이미 한 번 겪었다.
+이 스택이 소유하는 것은 Dify 호스트 하나뿐이므로 그대로 이름 짓는다.
+
+### 접속은 SSM 포트 포워딩만 쓴다
+
+퍼블릭 IP 도 ALB 도 붙이지 않는다. Dify 콘솔은 LLM API 키를 보관하고 sandbox
+컨테이너로 임의 코드를 실행한다. 로그인 폼 하나를 믿고 인터넷에 내놓을 물건이
+아니다. "개발할 때만 잠깐" 도 같다.
+
+세션 설정(`SSM-SessionManagerRunShell`)은 이 스택이 관리한다. 유휴 60분,
+최대 6시간이다. **유휴 상한 60분은 AWS 제한이라 더 못 올린다.** 6시간 연속 작업은
+`tunnel.sh` 가 5분마다 트래픽을 흘려 유휴 상태를 만들지 않는 것으로 만든다.
+
+이 문서는 **계정 전역**이다. EKS 노드 접속을 포함한 모든 세션에 적용되고,
+이 스택을 destroy 하면 계정 기본값으로 돌아간다. 소유할 더 나은 스택이 생기면
+`manage_session_preferences = false` 로 끄고 옮긴다.
+
+### 겪은 함정
+
+**로컬 포트는 17080 으로 고정한다.** Dify 는 브라우저에 socket.io 주소를
+`NEXT_PUBLIC_SOCKET_URL` 그대로 내려준다. 기본값이 `ws://localhost` (포트 80)라,
+8080 으로 터널을 열면 브라우저가 자기 기계의 80번으로 붙으러 가서 영원히 기다린다.
+채팅플로우 편집 화면이 "데이터를 동기화할 수 있습니다"에서 멈추는 증상이다.
+
+nginx 접근 로그에 `/socket.io/` 요청이 **한 건도 없는 것**이 이 증상의 판별법이다.
+브라우저가 시도조차 하지 않은 것이라 서버를 아무리 봐도 정상으로 보인다.
+
+값이 브라우저 번들에 박히므로 접속하는 사람 전원이 같은 로컬 포트를 써야 한다.
+8080 은 다른 프로젝트와 겹치기 쉬워 17080 을 골랐다. `tunnel.sh` 와
+`outputs.tf` 의 포트 포워딩 명령이 이 값을 쓴다.
+
+**IMDS 홉 한계는 2 여야 한다.** Dify 는 docker 브리지 네트워크 안에서 돌고,
+컨테이너에서 `169.254.169.254` 로 가는 패킷은 홉을 하나 더 쓴다. 1 이면 컨테이너가
+인스턴스 역할을 못 받는다. **호스트에서 `aws` CLI 는 되는데 Dify 안에서만 Bedrock
+이 실패하는** 형태라 원인이 잘 안 보인다.
+
+**`http_put_response_hop_limit` 를 Terraform 이 관리하지 않으면 언젠가 1 로
+돌아간다.** 현재 값이 우연히 2 라 `apply` 는 no-op 이지만 그래서 더 못 박아 둔다.
+
+**포트 포워딩 파라미터는 JSON 대신 축약형을 쓴다.**
+`--parameters portNumber=80,localPortNumber=17080` 이다. JSON 으로 쓰면 PowerShell
+이 따옴표를 먹어 `Invalid parameters` 가 난다. 축약형은 macOS 와 PowerShell 에서
+동일하게 동작해서 OS 분기 자체가 없어진다.
+
+**`SECRET_KEY` 를 `set -x` 켜진 채로 만들지 않는다.** user_data 가 cloud-init 로그에
+평문으로 남긴다. SSM 접근 권한이 있어야 읽히지만 로그에 남을 이유가 없는 값이다.
+
+**`ssm-user` 는 부팅 시점에 없다.** 첫 SSM 세션에서 만들어지므로 user_data 의
+`usermod -aG docker ssm-user` 는 조용히 실패한다. 세션에서는 `sudo docker compose`
+로 쓴다.
+
+### Bedrock 은 인스턴스 역할로 붙인다
+
+액세스 키를 만들지 않는다. Dify 의 Bedrock 플러그인에 키 두 칸을 비우고 리전만
+넣으면 boto3 가 IMDS 를 탄다.
+
+서울 리전은 **inference profile 로만 호출된다.** 맨 모델 ID 는
+`on-demand throughput isn't supported` 로 거절되고, 없는 프로필은
+`The provided model identifier is invalid` 로 거절된다. 에러 문구가 다르므로
+둘을 구분해서 읽는다.
+
+Dify 는 리전에서 `apac.` 접두어를 유추해 붙인다. 그런데 Claude 4.5·5 계열은 이
+계정에 `global.` 프로필만 있어서 존재하지 않는 ID 가 만들어진다. 검증한 조합은
+`apac.amazon.nova-micro-v1:0` 와 `apac.anthropic.claude-3-5-sonnet-20241022-v2:0` 다.
+테스트는 Nova Micro 로 한다 — 출력 100만 토큰에 $0.164 다.
+
+### 아직 안 한 것
+
+- **백업.** 데이터가 루트 볼륨에만 있다. 인스턴스를 교체하면 워크플로가 전멸한다.
+  `lifecycle.ignore_changes = [ami, user_data]` 로 의도치 않은 교체는 막았지만
+  백업은 아니다. 워크플로가 자산이 되면 별도 EBS 로 분리하고 DLM 을 건다
+- **Datadog 계측.** EKS 밖이라 클러스터 에이전트가 안 잡는다
+- **접속 IAM 정책.** 팀원용 정책이 문서에만 있고 코드에 없다. 사람 수가 정해지면
+  `aws_iam_policy` 로 넣는다. 그 전까지는 콘솔에서 붙인 것과 코드가 어긋난다
+- **HA.** 단일 인스턴스다. 에이전트 운영 평면이므로 서비스 SLA 대상이 아니다
