@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 
 from o2events.middleware import install_fastapi
 
@@ -44,3 +45,35 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api")
 app.include_router(broadcasts.router, prefix="/api")
 app.include_router(orders.router, prefix="/api")
+
+
+def _openapi():
+    """런타임 오류 처리와 같은 OpenAPI를 만든다.
+
+    FastAPI는 입력 모델이 있는 라우트에 422 응답을 자동으로 추가한다. 우리는
+    RequestValidationError를 계약의 400 INVALID_REQUEST로 바꾸므로, 자동 생성된
+    422를 그대로 두면 명세가 실제 응답과 달라진다.
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    for path_item in schema.get("paths", {}).values():
+        for operation in path_item.values():
+            if not isinstance(operation, dict):
+                continue
+            responses = operation.get("responses", {})
+            default_validation = responses.get("422")
+            if default_validation and default_validation.get("description") == "Validation Error":
+                responses.pop("422")
+
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = _openapi

@@ -39,14 +39,13 @@
 | D-022 | 규약은 `AGENTS.md` 하나, 인덱스는 CI가 지킨다 | Codex·Copilot 호환, `check-docs-index.sh` |
 | D-023 | PR에서 terraform plan을 돌리지 않는다 | CI 자격증명 제거, public 저장소 |
 | D-024 | ESO 게이트를 Datadog에서 분리 | `enable_external_secrets`, `moved` |
-<<<<<<< HEAD
-| D-025 | 백데이터 파이프라인을 흡수한다 (`06-datastream`) | D-015 뒤집기, 코드만 이동, `No changes` |
-| D-026 | 비밀값은 원본 하나, 읽기는 실행 시점에 | 사본 회전 사고, `""` vs `None`, `DD_SITE` |
-| D-027 | Function URL 을 에이전트 인그레스로 쓰지 않는다 | 403 `AccessDeniedException`, SCP/RCP 가설 |
-=======
 | D-025 | MySQL 8.0 → 8.4 | 확장 지원 요금, `name_prefix`, 파라미터 그룹 교체 |
 | D-026 | APM을 켠다 (D-024 뒤집기) | `portEnabled`, `ddtrace-run`, `status.hostIP` |
->>>>>>> main
+| D-027 | 이벤트를 Kinesis 로 보낸다 | `O2_EVENTS_SINK`, salt, `PutRecords`, chat-gateway 보류 |
+| D-028 | Dify 는 EKS 밖에 둔다 (`06-agent`) | 블래스트 반경, SSM 터널, 포트 17080, IMDS 홉, Bedrock 프로필 |
+| D-029 | 백데이터 파이프라인을 흡수한다 (`06-datastream`) | D-015 뒤집기, 코드만 이동, `No changes` |
+| D-030 | 비밀값은 원본 하나, 읽기는 실행 시점에 | 사본 회전 사고, `` vs `None`, `DD_SITE` |
+| D-031 | Function URL 을 에이전트 인그레스로 쓰지 않는다 | 403 `AccessDeniedException`, SCP/RCP 가설 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -1130,8 +1129,323 @@ apply 는 성공하고 **파드에서만 실패**한다. 그런 실패는 원인
 
 ---
 
-<<<<<<< HEAD
-## D-025. 백데이터 파이프라인을 흡수한다 (`06-datastream`)
+## D-025. MySQL 8.0 이 아니라 8.4 를 쓴다
+
+D-017 에서 `03-data` 의 "지금 정할 것"을 고르며 엔진을 8.0 으로 잡았다.
+근거는 설계 문서 4장이 InnoDB 버퍼 풀과 REPEATABLE READ 기준으로 쓰여
+있다는 것이었다. 그 근거는 8.4 에서도 그대로 성립한다.
+
+바꾸는 이유는 성능이 아니라 요금이다.
+
+### 확인한 것
+
+Cost Explorer 를 usage type 단위로 나눠 보니 RDS 하루 $6.15 의 내역이 이랬다.
+
+```
+5.473  APN2-ExtendedSupport:Yr1-Yr2:MySQL8.0
+0.570  APN2-InstanceUsage:db.t4g.micro
+0.080  APN2-RDS:GP3-Storage
+```
+
+MySQL 8.0 은 표준 지원이 끝나 vCPU 시간당 확장 지원 요금이 붙는다.
+**인스턴스 요금 자체의 10배**이고, 계정 전체 지출(하루 약 $15)의 36% 였다.
+`db.t4g.micro` 한 대에 월 $164 다.
+
+이 요금은 **인스턴스를 정지해도 계속 붙는다.** 야간에 내리는 식으로는
+줄지 않는다. 8.4 는 LTS 라 해당 요금이 없다.
+
+### 파라미터 그룹 이름을 고정하지 않는다
+
+`db_engine_version` 은 인스턴스의 `engine_version` 과 파라미터 그룹의
+`family` 를 함께 움직인다. family 가 바뀌면 파라미터 그룹은 교체되는데,
+`create_before_destroy = true` 는 옛 그룹이 살아 있는 동안 새 그룹을 만든다.
+이름이 `o2-dev-mysql8` 로 고정이면 그 순간 이름이 충돌해 apply 가 깨진다.
+
+`name` 대신 `name_prefix` 를 쓴다. 다음 메이저 버전에서 다시 걸리지 않는다.
+
+### 되돌릴 수 없다
+
+메이저 업그레이드에는 다운그레이드가 없다. `backup_retention_period = 1`
+이라 자동 백업만으로는 얇아서, apply 전에 수동 스냅샷을 남긴다.
+
+```bash
+aws rds create-db-snapshot --region ap-northeast-2 \
+  --db-instance-identifier o2-dev-mysql \
+  --db-snapshot-identifier o2-dev-mysql-pre84
+```
+
+plan 결과는 `1 to add, 1 to change, 1 to destroy` 였다.
+인스턴스는 in-place 업데이트고 재생성되지 않는다.
+
+### 배운 것
+
+**끄는 것보다 요금제를 보는 것이 먼저다.** 처음에는 "비싼 리소스를 야간에
+내리자"로 접근했고, 그 방향의 절감은 하루 $1.5 였다. 실제 최대 항목은
+리소스가 아니라 지원이 끝난 버전에 붙은 요금이었고, 한 줄로 하루 $5.5 였다.
+서비스 단위 그래프만 보면 "RDS 가 비싸다"까지만 보인다. usage type 까지
+쪼개야 원인이 나온다.
+
+---
+
+## D-026. APM 을 켠다. 소켓이 아니라 hostPort 로 받는다
+
+Datadog 을 붙일 때 로그와 APM 을 명시적으로 껐다. 근거는 "이번 범위는 메트릭과
+Kubernetes 이벤트" 였고, 데이터량과 과금 모델이 다르다는 것이었다. 그 판단은
+관측 범위를 넓히는 일이 미뤄도 되는 일이라는 전제 위에 있었다.
+
+그 전제가 틀렸다. 이 프로젝트의 목적은 서비스를 운영하는 것이 아니라 **장애를
+만들고 AI 에이전트가 감별하게 하는 것**이다. 감별은 원인이 여럿인데 증상이
+같을 때만 의미가 있고, 그것을 가르는 근거가 구간별 시간이다.
+
+파드 지표로 볼 수 있는 것은 여기까지다.
+
+    api 파드 CPU 80%
+
+가를 수 없는 것.
+
+    캐시가 비어 DB 로 몰렸나
+    DB 커넥션이 고갈됐나
+    Valkey 가 느려졌나
+
+셋 다 "api 가 느리다" 로 보이고, 조치는 서로 다르다. 캐시 워밍 / 파드 축소 /
+Valkey 확인. 에이전트에게 CPU 숫자만 주고 이 셋 중 하나를 고르라고 하면
+그것은 감별이 아니라 추측이다.
+
+무료 트라이얼 기간이라 지금 켜는 비용은 0 이다. 트라이얼이 끝나면 APM 은
+호스트 단위 과금이라 노드 수에 비례한다 — 노드 3 대 규모에서는 로그(수집량
+과금)보다 예측이 쉽다. 로그는 계속 끈다.
+
+### 소켓이 아니라 hostPort
+
+Helm 차트가 두 방식을 제공한다.
+
+`socketEnabled` — 에이전트가 UDS 소켓을 노드에 만들고 애플리케이션 파드가
+그것을 `hostPath` 로 마운트한다. 네트워크를 타지 않아 더 빠르다. 대신 매니페스트
+셋 전부에 볼륨과 마운트를 넣어야 하고, 파드에 노드 파일시스템 접근 권한을 준다.
+
+`portEnabled` — 에이전트가 hostPort 8126 을 연다. 애플리케이션은 `DD_AGENT_HOST`
+하나만 알면 된다.
+
+후자를 골랐다. 트레이스 전송량이 성능 문제가 되는 규모가 아니고, 매니페스트에
+추가되는 것이 환경변수 한 개 대 볼륨 두 개다. 되돌리기도 쉽다.
+
+`DD_AGENT_HOST` 는 `status.hostIP` 로 넣는다. **서비스 이름으로 부르면 안 된다.**
+에이전트는 DaemonSet 이라 노드마다 하나씩 있는데, 서비스로 부르면 다른 노드의
+에이전트에 갈 수 있다. 그러면 트레이스에 붙는 노드 태그가 실제로 실행된 노드와
+달라져, "이 노드에서만 느리다" 같은 판단이 조용히 틀린다.
+
+보안 그룹은 손댈 것이 없었다. EKS 클러스터 SG 에 자기 자신을 참조하는 전 포트
+허용 규칙이 이미 있고, VPC CNI 파드가 노드 SG 를 쓰므로 파드 → 노드 8126 이
+그 규칙에 들어간다. 확인 없이 넘기면 트레이스가 조용히 안 들어오는 쪽으로
+실패한다 — 애플리케이션은 정상 기동하므로 알아채기 어렵다.
+
+### 코드에 임포트하지 않는다
+
+`ddtrace-run uvicorn ...` / `node --require dd-trace/init ...` 로 감싼다.
+소스에 `import ddtrace` 를 넣지 않는 이유는, 넣으면 계측을 끄려 할 때 이미지를
+다시 빌드해야 하기 때문이다. 지금 방식은 `DD_TRACE_ENABLED=false` 로 끝난다.
+
+부하 테스트에서 계측 자체의 오버헤드를 재려면 이 스위치가 필요하다. 이미지가
+같아야 비교가 성립한다.
+
+### chat-gateway 에서 얻는 것은 제한적이다
+
+WebSocket 은 HTTP 요청처럼 트레이스가 잡히지 않는다. 업그레이드 요청 한 번이
+트레이스이고, 그 뒤 오가는 프레임은 트레이스 밖이다. 여기서 얻는 것은 Valkey
+Pub/Sub 호출 시간과 런타임 지표다.
+
+채팅 쪽 판단 근거는 결국 커스텀 지표여야 한다 — 연결 수, tick 당 드롭 수,
+발화율. 그것은 무엇을 재야 하는지가 장애 시나리오로 확정된 뒤에 설계한다.
+이름과 태그를 먼저 박으면 시나리오가 지표에 맞춰지는 역전이 일어난다.
+
+---
+
+## D-027. 이벤트를 Kinesis 로 보낸다
+
+SDK 배선은 D-016 때 끝나 있었다. `apps/api` 와 `apps/order-worker` 는
+`coupon.issue`·`order.create`·`inventory.check`·`order.cancel` 을 이미 발행한다.
+빠져 있던 것은 목적지 하나다.
+
+`O2_EVENTS_SINK` 의 기본값이 `stdout` 이라, 배선이 없는 동안 이벤트는 파드
+로그로 나갔다. Datadog 로그 수집은 꺼져 있으므로(D-026) **어디에도 남지
+않았다.** 로테이션과 함께 사라진 것이 전부다. 에이전트가 장애를 조사할 때 읽을
+재료를 쌓는 것이 이 이벤트의 존재 이유인데, 쌓이는 곳이 없었다.
+
+### 스트림은 만들지 않는다
+
+`stream-business` / `stream-client` 는 백데이터 파트 소유이고 이미 ACTIVE 다.
+우리는 생산자로서 쓰기 권한만 받는다. 이름이 SDK 기본값과 같아서
+`O2_STREAM_*` 을 주입할 필요도 없다 — 주입하면 두 곳에 같은 사실이 생긴다.
+
+### 권한은 두 스트림 모두에 준다
+
+지금 우리가 내는 네 이벤트는 전부 `stream-business` 로 간다. 그런데도
+`stream-client` 까지 주는 이유는 SDK 의 `sinks.py` 때문이다.
+
+```python
+def send(self, records):     # KinesisSink
+    ...                      # 예외를 밖으로 던지지 않는다
+```
+
+`_stream_for()` 가 `client.*` / `live.*` 를 client 스트림으로 보내는데, sink 는
+전송 예외를 삼킨다. 권한이 없으면 **이벤트가 사라진 줄도 모른 채 사라진다.**
+나중에 `client.*` 를 하나 추가하는 순간 조용히 새는 구멍이 된다. 두 스트림
+모두 우리는 생산자일 뿐이라 넓혀서 잃는 것도 없다.
+
+### salt 는 Secrets Manager 에 둔다
+
+SDK 는 `user_key` 를 그대로 싣지 않고 HMAC 으로 바꿔 담는다. 그 salt 를 세
+서비스가 같은 값으로 봐야 같은 사용자로 조인된다. chat-gateway 는 Node 라
+SDK 를 안 쓰지만 `events.ts` 의 `hashUserKey()` 가 같은 규칙을 구현하고 있어
+**발행 스위치와 무관하게** 접속 시점에 이미 해싱한다. 그래서 세 파드 모두에
+넣는다.
+
+값이 바뀌면 같은 사용자가 다른 키로 보이고 과거 이벤트와의 조인이 끊긴다.
+한 번 정하면 바꾸지 않는다.
+
+ConfigMap 이 아니라 Secret 인 이유는, salt 가 새면 가명화된 `user_key` 를
+역추적할 수 있기 때문이다. 경로는 Datadog 키와 같다 — 원본은 Secrets Manager,
+ESO 가 동기화, Terraform 은 ARN 만 안다. **ESO 역할 정책에 그 ARN 을 같이
+넣어야 한다.** 빠뜨리면 `SecretSyncedError` 로 Secret 이 안 생기고, 파드는
+그것을 `envFrom` 하므로 `CreateContainerConfigError` 로 기동조차 못 한다.
+
+### chat-gateway 의 Kinesis 경로는 안 만든다
+
+`events.ts` 는 아직 stdout 하드코딩이다. 고치지 않는 이유는 `emitChatEvents`
+스위치가 꺼져 있고, 켜는 조건이 우리 손에 없기 때문이다 — 모르는 `event_name`
+이 들어갔을 때 수집단이 어떻게 처리하는지가 `contracts.md` 5.5 의 미확인
+항목으로 남아 있다. 답이 오기 전에 경로를 만들면 쓰이지 않는 코드와 새 의존성
+(`@aws-sdk/client-kinesis`)만 남는다. 답이 오면 그때 `emitChatSend()` 안쪽만
+바꾼다.
+
+### 적용 순서
+
+Secret 이 없는 상태로 매니페스트가 먼저 동기화되면 파드가 기동하지 못한다.
+
+```
+1. Secrets Manager 에 o2/dev/events-salt 생성   (사람이 한 번)
+2. infra/04-platform apply                      (ExternalSecret → Secret o2-events)
+3. O2-live-deploy 푸시                          (Argo CD 가 envFrom 을 붙인다)
+```
+
+---
+
+## D-028. Dify 는 EKS 밖에 둔다 (`06-agent`)
+
+AI 에이전트 워크플로 오케스트레이션(Dify)을 클러스터 안이 아니라 같은 VPC
+프라이빗 앱 서브넷의 EC2 한 대에 올린다.
+
+### 왜 EKS 안이 아닌가
+
+**첫째, 블래스트 반경.** 이 프로젝트의 본질은 EKS 에 의도적으로 장애를 주입하고
+에이전트가 그것을 해결하는 것이다(`AGENTS.md` 첫 문단). 고치는 쪽이 부서지는 쪽
+위에 살면 노드 장애 시나리오에서 에이전트도 같이 죽는다. 시연이 성립하지 않는다.
+나머지 셋이 다 뒤집혀도 이 하나로 결정은 같다.
+
+**둘째, 클러스터 사양.** 노드그룹은 `t3.small` × 2 (max 3) 다. Dify 셀프호스트는
+컨테이너가 열다섯 개 뜨고 실사용 메모리가 8 GiB 다. EKS 에 넣으려면 어차피 전용
+노드그룹을 새로 만들어야 하고, 그럴 바에는 EC2 한 대가 싸다.
+
+**셋째, 운영 비용.** 배포 경로가 Argo CD GitOps(D-004, D-006)라 매니페스트 열다섯
+개와 PVC, StatefulSet 을 직접 쓰고 유지해야 한다. Dify 공식 지원은 docker compose
+이고 Helm 차트는 커뮤니티 관리다. `docker compose up -d` 한 줄과 바꿀 만한 것이 없다.
+
+**넷째, DB 재사용 불가.** Dify 는 PostgreSQL 을 쓰는데 `03-data` 의 RDS 는 MySQL
+8.4 다(D-025). compose 번들 postgres 를 그대로 쓴다.
+
+**EKS 로 옮겨야 하는 시점** — Dify 가 시청자 트래픽 경로에 들어가 스케일링이
+필요해질 때. 지금은 에이전트 운영 평면이라 해당 없다.
+
+### 번호는 05 가 아니라 06 이다
+
+`05-media` 가 `architecture.md` 10.3 에서 이미 예약되어 있다(D-01 교체로 생긴
+영상 스택, 미작성). 같은 번호를 두 스택이 쓰면 apply 순서 문서가 깨진다.
+
+`tf.yml` 의 대상 스택 목록은 하드코딩이라 `06-agent` 를 거기 추가하지 않으면
+**CI 가 새 스택을 조용히 건너뛴다.** 검사가 도는 줄 알고 깨진 코드를 올리게 된다.
+
+### backend key 는 `dify/` 다
+
+`agent/` 로 하지 않았다. AI 에이전트 백데이터 파트가 쓸 수 있는 이름이고, 키가
+겹치면 서로의 리소스를 자기 것으로 인식해 지운다. D-015 에서 이미 한 번 겪었다.
+이 스택이 소유하는 것은 Dify 호스트 하나뿐이므로 그대로 이름 짓는다.
+
+### 접속은 SSM 포트 포워딩만 쓴다
+
+퍼블릭 IP 도 ALB 도 붙이지 않는다. Dify 콘솔은 LLM API 키를 보관하고 sandbox
+컨테이너로 임의 코드를 실행한다. 로그인 폼 하나를 믿고 인터넷에 내놓을 물건이
+아니다. "개발할 때만 잠깐" 도 같다.
+
+세션 설정(`SSM-SessionManagerRunShell`)은 이 스택이 관리한다. 유휴 60분,
+최대 6시간이다. **유휴 상한 60분은 AWS 제한이라 더 못 올린다.** 6시간 연속 작업은
+`tunnel.sh` 가 5분마다 트래픽을 흘려 유휴 상태를 만들지 않는 것으로 만든다.
+
+이 문서는 **계정 전역**이다. EKS 노드 접속을 포함한 모든 세션에 적용되고,
+이 스택을 destroy 하면 계정 기본값으로 돌아간다. 소유할 더 나은 스택이 생기면
+`manage_session_preferences = false` 로 끄고 옮긴다.
+
+### 겪은 함정
+
+**로컬 포트는 17080 으로 고정한다.** Dify 는 브라우저에 socket.io 주소를
+`NEXT_PUBLIC_SOCKET_URL` 그대로 내려준다. 기본값이 `ws://localhost` (포트 80)라,
+8080 으로 터널을 열면 브라우저가 자기 기계의 80번으로 붙으러 가서 영원히 기다린다.
+채팅플로우 편집 화면이 "데이터를 동기화할 수 있습니다"에서 멈추는 증상이다.
+
+nginx 접근 로그에 `/socket.io/` 요청이 **한 건도 없는 것**이 이 증상의 판별법이다.
+브라우저가 시도조차 하지 않은 것이라 서버를 아무리 봐도 정상으로 보인다.
+
+값이 브라우저 번들에 박히므로 접속하는 사람 전원이 같은 로컬 포트를 써야 한다.
+8080 은 다른 프로젝트와 겹치기 쉬워 17080 을 골랐다. `tunnel.sh` 와
+`outputs.tf` 의 포트 포워딩 명령이 이 값을 쓴다.
+
+**IMDS 홉 한계는 2 여야 한다.** Dify 는 docker 브리지 네트워크 안에서 돌고,
+컨테이너에서 `169.254.169.254` 로 가는 패킷은 홉을 하나 더 쓴다. 1 이면 컨테이너가
+인스턴스 역할을 못 받는다. **호스트에서 `aws` CLI 는 되는데 Dify 안에서만 Bedrock
+이 실패하는** 형태라 원인이 잘 안 보인다.
+
+**`http_put_response_hop_limit` 를 Terraform 이 관리하지 않으면 언젠가 1 로
+돌아간다.** 현재 값이 우연히 2 라 `apply` 는 no-op 이지만 그래서 더 못 박아 둔다.
+
+**포트 포워딩 파라미터는 JSON 대신 축약형을 쓴다.**
+`--parameters portNumber=80,localPortNumber=17080` 이다. JSON 으로 쓰면 PowerShell
+이 따옴표를 먹어 `Invalid parameters` 가 난다. 축약형은 macOS 와 PowerShell 에서
+동일하게 동작해서 OS 분기 자체가 없어진다.
+
+**`SECRET_KEY` 를 `set -x` 켜진 채로 만들지 않는다.** user_data 가 cloud-init 로그에
+평문으로 남긴다. SSM 접근 권한이 있어야 읽히지만 로그에 남을 이유가 없는 값이다.
+
+**`ssm-user` 는 부팅 시점에 없다.** 첫 SSM 세션에서 만들어지므로 user_data 의
+`usermod -aG docker ssm-user` 는 조용히 실패한다. 세션에서는 `sudo docker compose`
+로 쓴다.
+
+### Bedrock 은 인스턴스 역할로 붙인다
+
+액세스 키를 만들지 않는다. Dify 의 Bedrock 플러그인에 키 두 칸을 비우고 리전만
+넣으면 boto3 가 IMDS 를 탄다.
+
+서울 리전은 **inference profile 로만 호출된다.** 맨 모델 ID 는
+`on-demand throughput isn't supported` 로 거절되고, 없는 프로필은
+`The provided model identifier is invalid` 로 거절된다. 에러 문구가 다르므로
+둘을 구분해서 읽는다.
+
+Dify 는 리전에서 `apac.` 접두어를 유추해 붙인다. 그런데 Claude 4.5·5 계열은 이
+계정에 `global.` 프로필만 있어서 존재하지 않는 ID 가 만들어진다. 검증한 조합은
+`apac.amazon.nova-micro-v1:0` 와 `apac.anthropic.claude-3-5-sonnet-20241022-v2:0` 다.
+테스트는 Nova Micro 로 한다 — 출력 100만 토큰에 $0.164 다.
+
+### 아직 안 한 것
+
+- **백업.** 데이터가 루트 볼륨에만 있다. 인스턴스를 교체하면 워크플로가 전멸한다.
+  `lifecycle.ignore_changes = [ami, user_data]` 로 의도치 않은 교체는 막았지만
+  백업은 아니다. 워크플로가 자산이 되면 별도 EBS 로 분리하고 DLM 을 건다
+- **Datadog 계측.** EKS 밖이라 클러스터 에이전트가 안 잡는다
+- **접속 IAM 정책.** 팀원용 정책이 문서에만 있고 코드에 없다. 사람 수가 정해지면
+  `aws_iam_policy` 로 넣는다. 그 전까지는 콘솔에서 붙인 것과 코드가 어긋난다
+- **HA.** 단일 인스턴스다. 에이전트 운영 평면이므로 서비스 SLA 대상이 아니다
+
+---
+
+## D-029. 백데이터 파이프라인을 흡수한다 (`06-datastream`)
 
 D-015에서 "이 저장소의 관심사가 아니다. 흡수 대상도 아니다"라고 적었다.
 **그 판단을 뒤집는다.** 코드를 `infra/06-datastream/` 으로 옮겼다.
@@ -1207,7 +1521,7 @@ provider 상향은 6.0 upgrade guide를 보고 plan이 비는 것을 확인한 �
 
 ---
 
-## D-026. 비밀값은 원본 하나, 읽기는 실행 시점에
+## D-030. 비밀값은 원본 하나, 읽기는 실행 시점에
 
 집계 Lambda 가 Datadog 키를 SSM 사본에서 읽게 하려다 멈췄다. **키는 이미
 있었다** — `04-platform` 이 ESO 로 Agent 에 넣는 Secrets Manager
@@ -1304,7 +1618,7 @@ state 와 Lambda 콘솔에 평문으로 남는다.** state 버킷은 암호화·
 
 ---
 
-## D-027. Function URL 을 에이전트 인그레스로 쓰지 않는다
+## D-031. Function URL 을 에이전트 인그레스로 쓰지 않는다
 
 `o2-warm-api` 의 Function URL 이 **인터넷에서 모든 요청을 거부한다.**
 Dify 가 이 경로로 붙는다는 전제(`README.md`, `handlers/serve.py`)가
@@ -1353,7 +1667,7 @@ x-amzn-ErrorType: AccessDeniedException
 적었다. 코드상으로는 맞았지만 **실제 노출은 없었다** — AWS 가 앞에서
 막고 있었다. 설정을 읽고 결론을 냈고 호출해 보지 않았다.
 
-D-026 의 인증 수정은 그래도 유효하다. URL 이 열리는 순간 필요해지고,
+D-030 의 인증 수정은 그래도 유효하다. URL 이 열리는 순간 필요해지고,
 그때 "열려 있었는지"를 다시 조사하고 싶지 않다.
 
 ### 배운 것
@@ -1363,7 +1677,7 @@ D-026 의 인증 수정은 그래도 유효하다. URL 이 열리는 순간 필�
 `describe` 로 안 보이고, 실제로 요청을 보내야만 드러난다.
 **노출 여부는 설정이 아니라 요청으로 확인한다.**
 =======
-## D-025. MySQL 8.0 이 아니라 8.4 를 쓴다
+## D-029. MySQL 8.0 이 아니라 8.4 를 쓴다
 
 D-017 에서 `03-data` 의 "지금 정할 것"을 고르며 엔진을 8.0 으로 잡았다.
 근거는 설계 문서 4장이 InnoDB 버퍼 풀과 REPEATABLE READ 기준으로 쓰여
@@ -1421,7 +1735,7 @@ plan 결과는 `1 to add, 1 to change, 1 to destroy` 였다.
 
 ---
 
-## D-026. APM 을 켠다. 소켓이 아니라 hostPort 로 받는다
+## D-030. APM 을 켠다. 소켓이 아니라 hostPort 로 받는다
 
 Datadog 을 붙일 때 로그와 APM 을 명시적으로 껐다. 근거는 "이번 범위는 메트릭과
 Kubernetes 이벤트" 였고, 데이터량과 과금 모델이 다르다는 것이었다. 그 판단은

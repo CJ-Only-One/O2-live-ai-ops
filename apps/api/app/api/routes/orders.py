@@ -1,6 +1,11 @@
-from fastapi import APIRouter, Header, Request, Response
+from typing import Annotated
+
+from fastapi import APIRouter, Header, Response
+from o2events.core import hash_key
+from pydantic import UUID4
 
 from app.core.errors import ApiError, openapi_errors
+from app.schemas.common import OrderId
 from app.schemas.order import OrderAccepted, OrderCreate, OrderStatus
 from app.services import order as order_service
 
@@ -12,30 +17,27 @@ router = APIRouter()
     response_model=OrderAccepted,
     status_code=202,
     responses=openapi_errors(
-        "SOLD_OUT", "NOT_STARTED", "RATE_LIMITED", "INVALID_REQUEST", "INTERNAL_ERROR"
+        "SOLD_OUT", "INVALID_REQUEST", "INTERNAL_ERROR"
     ),
 )
 def create_order(
     body: OrderCreate,
-    request: Request,
     response: Response,
-    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    idempotency_key: Annotated[UUID4, Header(alias="Idempotency-Key")],
+    session_key: Annotated[UUID4, Header(alias="X-Session-Key")],
 ):
     """주문 접수 (contracts.md 2.2).
 
     202 인 이유는 이 시점에 확정된 것이 재고 차감까지이기 때문이다.
     MySQL 기록은 SQS 를 거쳐 워커가 한다.
     """
-    if not idempotency_key:
-        # 서버가 만들어주지 않는다. 서버가 만들면 클라이언트가 재시도할 때
-        # 같은 키를 다시 보낼 수 없어 멱등성이 성립하지 않는다
-        # (contracts.md 1.2).
-        raise ApiError("INVALID_REQUEST", "Idempotency-Key 헤더가 필요합니다")
+    # 이벤트 SDK 미들웨어와 같은 함수·salt 로 파생한다. 원본 세션 키를 SQS나
+    # MySQL에 넣으면 이벤트의 user_key와 조인할 수 없고 원본 식별자도 남는다.
+    user_key = hash_key("u", str(session_key))
+    if user_key is None:  # UUID4 검증을 통과했다면 일어날 수 없는 방어 분기다.
+        raise ApiError("INTERNAL_ERROR", "사용자 식별자를 만들 수 없습니다")
 
-    # 로그인이 없다. 클라이언트가 만든 데모 세션 키로 사용자를 구분한다.
-    user_key = request.headers.get("x-session-key", "")
-
-    result = order_service.create_order(body, idempotency_key, user_key)
+    result = order_service.create_order(body, str(idempotency_key), user_key)
     response.status_code = 202
     return result
 
@@ -43,9 +45,9 @@ def create_order(
 @router.get(
     "/orders/{order_id}",
     response_model=OrderStatus,
-    responses=openapi_errors(("INVALID_REQUEST", 404)),
+    responses=openapi_errors("INVALID_REQUEST", "NOT_FOUND", "INTERNAL_ERROR"),
 )
-def get_order(order_id: str):
+def get_order(order_id: OrderId):
     """주문 상태 조회 (contracts.md 2.3).
 
     캐싱하지 않는다. 상태가 ACCEPTED 에서 CONFIRMED 로 바뀌는 구간을
@@ -53,5 +55,5 @@ def get_order(order_id: str):
     """
     order = order_service.get_order(order_id)
     if order is None:
-        raise ApiError("INVALID_REQUEST", "주문을 찾을 수 없습니다", status_code=404)
+        raise ApiError("NOT_FOUND", "주문을 찾을 수 없습니다")
     return order

@@ -11,7 +11,7 @@
  * 길이·해시·중복 여부만으로 부하 분석 목적은 전부 달성된다.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 
 import { config } from './config.js';
 
@@ -22,11 +22,36 @@ export type ChatSendPayload = {
   rejected_code?: string;
 };
 
+/**
+ * SDK core.py 의 ulid() 와 같은 값을 만든다.
+ *
+ * randomUUID 를 쓰면 안 된다. 앞 10자가 밀리초 타임스탬프라 문자열 정렬이 곧
+ * 시간순 정렬이고, 수집단이 중복 제거 키로 쓴다. UUID 로 내면 chat.send 만
+ * 정렬이 깨지는데, 깨져도 아무도 에러를 내지 않아 늦게 발견된다.
+ */
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+function b32(value: bigint, length: number): string {
+  const out: string[] = [];
+  for (let i = 0; i < length; i += 1) {
+    out.push(CROCKFORD[Number(value & 31n)]);
+    value >>= 5n;
+  }
+  return out.reverse().join('');
+}
+
+export function ulid(): string {
+  // 10자 = 50비트(밀리초), 16자 = 80비트(난수). SDK 와 같은 분할이다.
+  return b32(BigInt(Date.now()), 10) + b32(BigInt('0x' + randomBytes(10).toString('hex')), 16);
+}
+
 function envelope(eventName: string, payload: ChatSendPayload, ctx: EmitContext) {
   const now = new Date().toISOString();
   return {
-    event_id: randomUUID(),
+    event_id: ulid(),
     event_name: eventName,
+    // SDK config.py 의 schema_version 상수와 같아야 한다. 그쪽이 올라가면
+    // 여기도 같이 올려야 하는데, 어긋나도 아무 에러가 안 난다.
     schema_version: '1.0',
     event_ts: now,
     received_ts: now,
@@ -45,6 +70,12 @@ export type EmitContext = {
   broadcastId: string;
   userKey: string | null;
 };
+
+/** Python SDK의 hash_key("u", raw)와 같은 사용자 키를 만든다. */
+export function hashUserKey(raw: string): string {
+  const digest = createHmac('sha256', config.eventsSalt).update(raw).digest('hex').slice(0, 16);
+  return `u_${digest}`;
+}
 
 /** 본문 대신 남기는 파생값. 같은 문구 도배는 해시로 탐지된다. */
 export function digest(message: string): string {

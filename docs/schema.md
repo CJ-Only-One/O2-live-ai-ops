@@ -86,7 +86,10 @@ erDiagram
 
 ## 3. MySQL 테이블
 
-원본은 `apps/api/app/models/`. 여기 표와 어긋나면 코드가 맞다.
+물리 스키마의 원본은 `apps/api/migrations/versions/`의 Alembic 이력이다.
+`apps/api/app/models/`는 애플리케이션 매핑이며 둘이 항상 일치해야 한다. 이 문서는
+둘을 사람이 읽기 쉽게 설명한 것이므로, 어긋나면 문서를 코드에 맞춰 덮기 전에
+마이그레이션 누락인지 모델 누락인지부터 확인한다.
 
 ### 3.1 `broadcasts`
 
@@ -151,6 +154,13 @@ erDiagram
 만든 세션 토큰을 쓰는데, SDK 가 HMAC 으로 바꾼 값만 담는다. 이벤트 봉투의
 `user_key` 와 같은 값이라 로그와 DB 를 이 키로 이을 수 있다.
 
+이 일치는 API와 chat-gateway가 같은 `O2_EVENTS_SALT`를 쓸 때만 보장된다. 로컬은
+Compose 기본값이 있고, 클러스터용 Secret 배선은 아직 미구현이다.
+
+HMAC 적용 전 만들어진 개발 주문에는 원본 세션 키나 빈 문자열이 남아 있을 수
+있다. salt에 의존하는 데이터 변환을 Alembic에 넣지 말고, 운영 데이터가 생기기
+전에 별도 정리 작업으로 폐기하거나 변환한다.
+
 **`unit_price` 를 남기는 이유.** 워커가 처리 시점에 가격을 다시 조회하면,
 큐가 밀린 사이 가격이 바뀌었을 때 사용자가 화면에서 본 금액과 청구 금액이
 달라진다. 계약에 가격 변경 푸시(`product.update`)가 있으므로 실제로 일어난다.
@@ -195,8 +205,9 @@ erDiagram
 stock:88213 → "47"        String, TTL 없음
 ```
 
-**TTL 을 걸지 않는다. 만료되는 순간 재고가 소실된다.** 방송 종료 시 명시적으로
-삭제하고 MySQL 에 최종 수량을 반영한다.
+**TTL 을 걸지 않는다. 만료되는 순간 재고가 소실된다.** 현재는 종료 재고를
+영속화할 MySQL 테이블과 배치가 없으므로 방송이 끝났다는 이유만으로 삭제하지
+않는다. 목적지 스키마와 reconciliation 절차를 먼저 정한 뒤 삭제를 구현한다.
 
 축출 정책은 `volatile-lru` — TTL 이 있는 키만 축출 대상이라, 메모리가 차도
 이 키는 살아남는다. `allkeys-lru` 로 바꾸면 재고가 조용히 사라진다.
@@ -237,14 +248,15 @@ order:od_01J... → {"sku_id":"88213","qty":1,"state":"ACCEPTED"}   TTL 600s
 
 ### 그 밖
 
-| 키 | 타입 | 용도 |
+| 키 | 타입 | 상태·용도 |
 |---|---|---|
-| `bcast:{id}:meta` | String(JSON) | 스냅샷 캐시 30s |
-| `sku:{id}:detail` | String(JSON) | 상품 상세 캐시 60s |
-| `sess:{token}` | Hash | 세션 1800s |
-| `room:{bcast}:pods` | Set | 파드 목록 60s |
-| `chat:{bcast}` | Pub/Sub | 채팅 팬아웃 |
-| `cache:invalidate` | Pub/Sub | 캐시 무효화 |
+| `bcast:{id}:meta` | String(JSON) | 구현됨. 스냅샷 메타 캐시 30s |
+| `chat:{bcast}` | Pub/Sub | 구현됨. 채팅 팬아웃 |
+| `chat:rate:{bcast}:{user}` | Integer | 구현됨. 채팅 제한 60s |
+| `sku:{id}:detail` | String(JSON) | 예정. 상품 상세 캐시 60s |
+| `sess:{token}` | Hash | 예정. 세션 1800s |
+| `room:{bcast}:pods` | Set | 예정. 파드 목록 60s |
+| `cache:invalidate` | Pub/Sub | 예정. 캐시 무효화 |
 
 ---
 
@@ -254,20 +266,20 @@ order:od_01J... → {"sku_id":"88213","qty":1,"state":"ACCEPTED"}   TTL 600s
 
 `products.broadcast_id`, `orders.*` 모두 FK 가 없다.
 
-특가 오픈에 600 RPS 가 몰리는 경로에서 **부모 행에 잠금이 잡히는 것을
-피한다.** MySQL 은 FK 검사를 위해 부모 행에 공유 잠금을 건다. 같은
-`broadcast_id` 를 가진 주문이 초당 수백 건 들어오면 그 잠금이 직렬화 지점이
-된다. MySQL 재고 차감을 금지한 것과 같은 이유다.
+FK 검사는 부모 행에 공유 잠금을 잡지만 공유 잠금끼리는 호환되므로, 같은 부모를
+참조하는 INSERT가 무조건 직렬화된다고 표현하는 것은 정확하지 않다. 여기서 FK를
+두지 않은 이유는 주문 핫패스가 부모 행의 변경·삭제와 결합되는 것을 피하고,
+서비스 경계를 넘는 참조 무결성을 애플리케이션에서 관리하기 위해서다.
 
-참조 무결성은 애플리케이션이 본다. 방송당 상품이 수십 건 수준이라
-인덱스 하나가 더 싸다.
+주문 접수는 방송 스냅샷에서 `broadcast_id`와 `sku_id`의 편성을 확인한다.
+DB에는 조회용 인덱스만 두고, 누락·고아 데이터는 reconciliation으로 탐지한다.
 
 ### 5.2 상태 컬럼에 ENUM 을 쓰지 않는다
 
-MySQL 은 ENUM 값이 늘 때마다 테이블을 다시 쓴다. 방송 중에 상태 하나를
-추가해야 하는 상황이 오면 그 시간이 곧 장애다.
-
-검증은 애플리케이션이 한다. 값은 `VARCHAR(16)`.
+ENUM 변경이 항상 테이블 재작성인 것은 아니지만, 값의 삽입 위치와 MySQL 버전에
+따라 적용 방식이 달라지고 상태 추가가 DB 마이그레이션과 결합된다. 상태는
+애플리케이션 계약이므로 `VARCHAR(16)`으로 저장하고 Pydantic의 `Literal` 및 내부
+상태 전이 코드에서 검증한다.
 
 ### 5.3 `DATETIME(3)` — 밀리초를 지킨다
 
@@ -300,6 +312,10 @@ Alembic. `apps/api/migrations/versions/`.
 |---|---|
 | `6ba206d5374d` | 초기 스키마 |
 | `ccdd5120aa51` | `orders.unit_price` · `orders.amount` 추가 |
+
+`ccdd5120aa51`은 당시 `orders`가 비어 있다는 전제에서 NOT NULL 컬럼을 바로
+추가했다. 앞으로 운영 데이터가 있는 테이블에 필수 컬럼을 추가할 때는
+nullable 추가 → backfill → NOT NULL 전환 순서로 새 리비전을 만든다.
 
 이미지에 `alembic.ini` 와 `migrations/` 가 들어간다. 넣지 않으면
 `No 'script_location'` 로 실패한다. `alembic.ini` 의 `prepend_sys_path = .`

@@ -15,7 +15,7 @@
 구현은 이 문서를 따르고, 이 문서가 틀렸으면 코드가 아니라 이 문서를 먼저 고친다.
 
 관련 문서: 결정의 근거는 [`decisions.md`](decisions.md), 부하 가정과 캐싱 전략은
-설계 문서(`live-commerce-architecture-decisions.md`).
+[`architecture.md`](architecture.md), 물리 데이터 구조는 [`schema.md`](schema.md).
 
 ---
 
@@ -56,6 +56,7 @@ Ingress 규칙은 **구체적인 경로를 먼저** 둔다. `/`를 먼저 두면
 | `sku_id` | 숫자 문자열 | `"88213"` |
 | `order_id` | `od_` + ULID | `od_01JB2X…` |
 | `Idempotency-Key` | UUID v4 | 클라이언트가 생성 |
+| `X-Session-Key` | UUID v4 | 클라이언트가 생성, 서버는 HMAC만 저장 |
 
 `Idempotency-Key`는 **클라이언트가 만든다.** 서버가 만들면 재시도할 때 같은 키를
 다시 보낼 수 없어 멱등성이 성립하지 않는다.
@@ -75,7 +76,11 @@ Ingress 규칙은 **구체적인 경로를 먼저** 둔다. `/`를 먼저 두면
 | `NOT_STARTED` | 409 | 특가 오픈 전 |
 | `RATE_LIMITED` | 429 | 요청 과다 |
 | `INVALID_REQUEST` | 400 | 형식 오류 |
+| `NOT_FOUND` | 404 | 방송·주문을 찾을 수 없음 |
 | `INTERNAL_ERROR` | 500 | 그 외 |
+
+FastAPI의 기본 422 응답은 쓰지 않는다. 본문·경로·헤더 검증 실패도 모두
+`INVALID_REQUEST` / 400 봉투로 변환한다.
 
 ---
 
@@ -83,6 +88,10 @@ Ingress 규칙은 **구체적인 경로를 먼저** 둔다. `/`를 먼저 두면
 
 **폴링 엔드포인트는 만들지 않는다.** 상태 변화는 전부 WebSocket으로 밀어준다(D-14).
 REST는 진입 시 1회 조회와 쓰기 요청에만 쓴다.
+
+실행 코드에서 생성한 명세는 `/api/docs`, 원본 JSON은 `/api/openapi.json`에 있다.
+요청·응답의 실제 타입은 OpenAPI에서 확인하고, 서비스 사이의 합의와 설계 이유는
+이 문서를 원본으로 삼는다.
 
 ### 2.1 방송 진입 스냅샷
 
@@ -118,6 +127,7 @@ GET /api/broadcasts/{broadcast_id}
 ```
 POST /api/orders
 Idempotency-Key: <UUID v4>
+X-Session-Key: <UUID v4>
 ```
 
 ```json
@@ -138,6 +148,11 @@ SQS를 거쳐 워커가 한다. 200을 주면 클라이언트가 "주문이 저�
 **같은 `Idempotency-Key`로 다시 오면 재고를 다시 깎지 않고 첫 응답을 그대로 준다.**
 방어선은 두 겹이다 — Valkey `idem:{key}`가 1차, MySQL `uk_idem`이 최종이다
 (설계 문서 4.4).
+
+`X-Session-Key`도 클라이언트가 만든다. API는 원문을 저장하지 않고 이벤트 SDK와
+같은 HMAC-SHA256 규칙으로 `user_key`를 만든 뒤 SQS와 MySQL에 전달한다.
+API와 chat-gateway에는 같은 `O2_EVENTS_SALT`를 Secret으로 주입해야 한다. 로컬
+Compose는 개발 전용 기본값을 쓰며, 운영 Secret 배선은 아직 남아 있다.
 
 ### 2.3 주문 상태 조회
 
@@ -269,19 +284,22 @@ Pub/Sub은 at-most-once이므로 채팅 유실 가능성이 있다. **채팅은 
 
 ## 4. 캐시 키
 
-| 키 | 계층 | 타입 | TTL | 비고 |
+| 키 | 계층 | 타입 | TTL | 상태·비고 |
 |---|---|---|---|---|
-| `bcast:{id}:meta` | 로컬 + Valkey | String(JSON) | 1s / 30s | 2.1 응답 |
-| `sku:{id}:detail` | 로컬 + Valkey | String(JSON) | 1s / 60s | |
-| `stock:{sku}` | Valkey 전용 | Integer | **없음** | 캐시가 아니라 원본 |
-| `sess:{token}` | Valkey 전용 | Hash | 1800s | |
-| `idem:{key}` | Valkey 전용 | String | 600s | 주문 멱등 1차 방어선 |
-| `room:{bcast}:pods` | Valkey 전용 | Set | 60s | |
-| `chat:{bcast}` | Pub/Sub 채널 | - | - | 3.7 |
-| `cache:invalidate` | Pub/Sub 채널 | - | - | |
+| `bcast:{id}:meta` | 로컬 + Valkey | String(JSON) | 1s / 30s | 구현됨. 2.1 메타 응답 |
+| `stock:{sku}` | Valkey 전용 | Integer | **없음** | 구현됨. 캐시가 아니라 원본 |
+| `idem:{key}` | Valkey 전용 | String | 600s | 구현됨. 주문 멱등 1차 방어선 |
+| `order:{id}` | Valkey 전용 | String(JSON) | 600s | 구현됨. MySQL 기록 전 `ACCEPTED` 표식 |
+| `chat:{bcast}` | Pub/Sub 채널 | - | - | 구현됨. 3.7 |
+| `chat:rate:{bcast}:{user}` | Valkey 전용 | Integer | 60s | 구현됨. 사용자별 채팅 제한 |
+| `sku:{id}:detail` | 로컬 + Valkey | String(JSON) | 1s / 60s | 예정 |
+| `sess:{token}` | Valkey 전용 | Hash | 1800s | 예정 |
+| `room:{bcast}:pods` | Valkey 전용 | Set | 60s | 예정 |
+| `cache:invalidate` | Pub/Sub 채널 | - | - | 예정 |
 
 **`stock:{sku}`에 TTL을 걸지 않는다.** 만료되는 순간 재고가 소실된다.
-방송 종료 시 명시적으로 삭제하고 MySQL에 최종 수량을 반영한다.
+방송 종료 후 영속화할 테이블과 배치는 아직 없다. 그 경로를 구현하기 전에는
+키를 삭제하지 않는다. 종료 정합성 처리의 목적지부터 계약한 뒤 삭제 배치를 만든다.
 
 로컬 캐시는 **엔트리 수 상한이 있는 LRU여야 한다.** 무제한이면 파드가 OOM으로
 죽는다(R-10).

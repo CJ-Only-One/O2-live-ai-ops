@@ -66,6 +66,7 @@ services:
       O2_SERVICE: ${O2_SERVICE:-api}
       O2_SERVICE_VERSION: ${O2_SERVICE_VERSION:-local}
       O2_EVENTS_SINK: ${O2_EVENTS_SINK:-stdout}
+      O2_EVENTS_SALT: ${O2_EVENTS_SALT:-local-dev-only}
     depends_on:
       - valkey
       - mysql
@@ -80,6 +81,7 @@ services:
       VALKEY_TLS: ${VALKEY_TLS:-false}
       O2_SERVICE: chat-gateway
       O2_SERVICE_VERSION: local
+      O2_EVENTS_SALT: ${O2_EVENTS_SALT:-local-dev-only}
       # 수집단이 모르는 event_name 을 어떻게 처리하는지 확인되기 전까지 꺼둔다.
       EMIT_CHAT_EVENTS: ${EMIT_CHAT_EVENTS:-false}
     ports:

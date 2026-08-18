@@ -52,4 +52,7 @@ export const config = {
 
   service: process.env.O2_SERVICE ?? 'chat-gateway',
   serviceVersion: process.env.O2_SERVICE_VERSION ?? 'unknown',
+  // Python SDK의 hash_key와 같은 salt를 써야 API·채팅 이벤트의 user_key를
+  // 같은 사용자 기준으로 조인할 수 있다.
+  eventsSalt: process.env.O2_EVENTS_SALT ?? '',
 };
