@@ -19,7 +19,7 @@ import Redis from 'ioredis';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { config } from './config.js';
-import { digest, emitChatSend } from './events.js';
+import { digest, emitChatSend, hashUserKey } from './events.js';
 
 // ── Valkey ────────────────────────────────────────────────────
 // 구독 전용 연결과 명령용 연결을 나눈다. 구독 모드에 들어간 연결은 다른
@@ -176,8 +176,10 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 async function open(socket: WebSocket, broadcastId: string, token: string): Promise<void> {
-  // 로그인이 없다. 클라이언트가 만든 데모 세션 키를 그대로 쓴다.
-  const userKey = token || `anon-${Math.random().toString(36).slice(2, 10)}`;
+  // 원본 세션 키를 채팅 프레임·Valkey 키·이벤트에 남기지 않는다. API의 이벤트
+  // SDK와 같은 HMAC 규칙을 써야 서비스 사이에서 같은 사용자를 조인할 수 있다.
+  const rawUserKey = token || `anon-${Math.random().toString(36).slice(2, 10)}`;
+  const userKey = hashUserKey(rawUserKey);
   const conn: Conn = { socket, broadcastId, userKey, pending: [], lastHash: null };
   conns.add(conn);
 

@@ -130,8 +130,8 @@ def _compensate(idem_key: str, sku_id: str, qty: int) -> None:
     지워야 같은 키의 재시도가 처음부터 다시 시도할 수 있다.
 
     파드가 이 사이에 죽으면 재고가 묶인 채 남는다. 그 창을 없애려면 예약을
-    durable 하게 만들어야 하는데, 이 규모에서는 방송 종료 배치의 정합성
-    확인으로 흡수한다.
+    durable 하게 만들거나 reconciliation 배치가 필요하다. 현재 종료 재고의
+    영속화 경로와 배치는 미구현이므로 알려진 정합성 구멍이다.
     """
     try:
         valkey.delete(f"idem:{idem_key}")
@@ -169,7 +169,7 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
         raise ApiError("SOLD_OUT", "품절되었습니다")
 
     if code == -2:
-        # 재고 키가 없다. 시드가 안 돌았거나 방송 종료 배치가 지운 것이다.
+        # 재고 키가 없다. 시드가 안 돌았거나 운영 중 잘못 삭제된 것이다.
         # 이것을 SOLD_OUT 으로 응답하면 운영 실수가 정상 품절로 묻힌다.
         logger.error("재고 키 미초기화: stock:%s", req.sku_id)
         # failure_code 는 SDK 의 COUPON_FAILURE 안에서만 골라야 한다.

@@ -132,6 +132,10 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 둘 다 `infra/04-platform` 이 `03-data` 의 remote state 를 읽어 만든다.
 데이터 스택을 다시 만들어도 그 스택을 apply 하면 따라간다.
 
+이벤트와 DB의 `user_key`를 같은 값으로 만들려면 API와 chat-gateway에 동일한
+`O2_EVENTS_SALT`도 필요하다. 로컬 Compose에는 개발용 기본값이 있지만 클러스터용
+Secret 배선은 아직 없으므로, Kinesis 전환 전에 별도 ExternalSecret으로 추가한다.
+
 ### 이름이 계약이다
 
 ```

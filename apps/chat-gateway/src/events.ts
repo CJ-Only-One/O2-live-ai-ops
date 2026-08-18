@@ -11,7 +11,7 @@
  * 길이·해시·중복 여부만으로 부하 분석 목적은 전부 달성된다.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 
 import { config } from './config.js';
 
@@ -45,6 +45,12 @@ export type EmitContext = {
   broadcastId: string;
   userKey: string | null;
 };
+
+/** Python SDK의 hash_key("u", raw)와 같은 사용자 키를 만든다. */
+export function hashUserKey(raw: string): string {
+  const digest = createHmac('sha256', config.eventsSalt).update(raw).digest('hex').slice(0, 16);
+  return `u_${digest}`;
+}
 
 /** 본문 대신 남기는 파생값. 같은 문구 도배는 해시로 탐지된다. */
 export function digest(message: string): string {

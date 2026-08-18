@@ -331,7 +331,9 @@ if cur < tonumber(ARGV[1]) then return -1 end     -- 재고 부족
 return redis.call('DECRBY', KEYS[1], ARGV[1])
 ```
 
-한 번의 왕복으로 판정과 차감을 처리한다. 애플리케이션 레벨 롤백이 불필요하다.
+한 번의 왕복으로 판정과 차감을 원자적으로 처리한다. 다만 차감 성공 뒤 SQS 발행이
+실패하면 API가 재고와 멱등 키를 보상해야 한다. 차감과 SQS 사이에서 파드가 죽는
+구간은 아직 남아 있으며, 종료 reconciliation 경로를 구현하기 전까지 알려진 구멍이다.
 
 **표시값과 판정값의 분리**
 
@@ -357,7 +359,7 @@ return redis.call('DECRBY', KEYS[1], ARGV[1])
 | 상품 정보 변경 | `DEL sku:{id}:detail` | Pub/Sub 즉시 삭제 | TTL 3초 대기 | 최대 3초 |
 | 가격 변경 | `DEL` + 재적재 | Pub/Sub 즉시 삭제 | TTL 3초 대기 | 최대 3초 |
 | 재고 소진 | `stock:{sku}` 유지, 표시용 키만 갱신 | Pub/Sub 즉시 삭제 | TTL 3초 대기 | 판정은 즉시 |
-| 방송 종료 | `stock:{sku}` 삭제 + MySQL 반영 | Pub/Sub 삭제 | TTL 만료 | 배치 |
+| 방송 종료 | 영속화 경로 구현 전에는 유지 | Pub/Sub 삭제(예정) | TTL 만료 | 배치 예정 |
 
 **CDN Invalidation API를 쓰지 않는 이유**
 
@@ -437,17 +439,11 @@ const key = `sku:${id}:detail:${Math.floor(Math.random() * REPLICAS)}`;
 
 ### 3.9 키 스키마
 
-| 키 | 계층 | 타입 | TTL |
-|---|---|---|---|
-| `bcast:{id}:meta` | 로컬 + Valkey | String(JSON) | 1s / 30s |
-| `sku:{id}:detail` | 로컬 + Valkey | String(JSON) | 1s / 60s |
-| `stock:{sku}` | Valkey 전용 | Integer | **없음** |
-| `sess:{token}` | Valkey 전용 | Hash | 1800s |
-| `room:{bcast}:pods` | Valkey 전용 | Set | 60s |
-| `idem:{key}` | Valkey 전용 | String | 600s |
-| `cache:invalidate` | Pub/Sub 채널 | - | - |
+전체 키와 구현 상태는 `contracts.md` 4를 원본으로 삼는다.
 
-`stock:{sku}`에 TTL을 걸지 않는다. 만료되는 순간 재고가 소실된다. 방송 종료 시 명시적으로 삭제하고 MySQL에 최종 수량을 반영하는 배치를 둔다.
+`stock:{sku}`에 TTL을 걸지 않는다. 만료되는 순간 재고가 소실된다. 종료 재고의
+영속화 스키마와 배치는 아직 미구현이므로, 그 경로가 생기기 전에는 방송 종료만으로
+키를 삭제하지 않는다.
 
 ### 3.10 흡수율 목표
 
