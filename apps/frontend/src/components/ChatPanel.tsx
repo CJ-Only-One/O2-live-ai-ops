@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChatMessage } from '../types'
+import type { ChatItem } from '../types'
 import './ChatPanel.css'
 
 interface Props {
-  messages: ChatMessage[]
+  messages: ChatItem[]
   onSend: (text: string) => void
 }
 
@@ -24,10 +24,12 @@ function ChatPanel({ messages, onSend }: Props) {
   return (
     <div className="chat-panel">
       <div className="chat-panel__list" ref={listRef}>
-        {messages.map((m) => (
-          <div key={m.id} className={`chat-msg chat-msg--${m.kind}`}>
-            <span className="chat-msg__author">{m.author}</span>
-            <span className="chat-msg__text">{m.text}</span>
+        {messages.map((m, i) => (
+          // 서버가 메시지 id 를 주지 않는다. 채팅은 유실을 감수하는 흐름이라
+          // 안정적인 키가 필요 없고, 화면에서만 순서를 유지하면 된다.
+          <div key={`${m.ts}-${i}`} className="chat-msg chat-msg--chat">
+            <span className="chat-msg__author">{m.nick}</span>
+            <span className="chat-msg__text">{m.msg}</span>
           </div>
         ))}
       </div>

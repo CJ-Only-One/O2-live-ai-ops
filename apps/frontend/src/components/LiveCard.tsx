@@ -1,12 +1,14 @@
-import type { LiveItem } from '../types'
+import { approximateViewers, broadcastView } from '../presentation'
+import type { Broadcast } from '../types'
 import './LiveCard.css'
 
 interface Props {
-  live: LiveItem
-  onOpen: (live: LiveItem) => void
+  broadcast: Broadcast
+  onOpen: (broadcast: Broadcast) => void
 }
 
-function formatTime(iso: string) {
+function formatTime(iso: string | null) {
+  if (!iso) return ''
   const d = new Date(iso)
   const days = ['일', '월', '화', '수', '목', '금', '토']
   const hh = d.getHours().toString().padStart(2, '0')
@@ -14,19 +16,21 @@ function formatTime(iso: string) {
   return `${d.getMonth() + 1}.${d.getDate().toString().padStart(2, '0')} (${days[d.getDay()]}) ${hh}:${mm}`
 }
 
-function LiveCard({ live, onOpen }: Props) {
-  const isLive = live.status === 'LIVE'
-  const isEnded = live.status === 'ENDED'
+function LiveCard({ broadcast, onOpen }: Props) {
+  // 상태·시각은 서버 값, 제목·썸네일·뱃지는 화면 장식이다 (presentation.ts).
+  const view = broadcastView(broadcast.broadcast_id)
+  const isLive = broadcast.state === 'LIVE'
+  const isEnded = broadcast.state === 'ENDED'
 
   return (
     <button
       className={`live-card${isEnded ? ' live-card--ended' : ''}`}
-      onClick={() => onOpen(live)}
+      onClick={() => onOpen(broadcast)}
     >
-      <img src={live.thumbnail} alt={live.title} className="live-card__img" />
+      <img src={view.thumbnail} alt={view.title} className="live-card__img" />
 
       <div className="live-card__top">
-        {live.badges.map((badge) => (
+        {view.badges.map((badge) => (
           <span key={badge} className="badge">
             {badge}
           </span>
@@ -36,15 +40,20 @@ function LiveCard({ live, onOpen }: Props) {
       {isLive && <span className="badge badge-live live-card__live-tag">LIVE</span>}
 
       <div className="live-card__bottom">
-        <p className="live-card__title">{live.title}</p>
+        <p className="live-card__brand">{view.brand}</p>
+        <p className="live-card__title">{view.title}</p>
         <div className="live-card__meta">
-          <span className="live-card__time">{formatTime(live.startAt)}</span>
+          <span className="live-card__time">{formatTime(broadcast.started_at)}</span>
           {!isLive && !isEnded && (
             <span className="live-card__bell" aria-hidden>
               🔔 알림받기
             </span>
           )}
-          {isLive && <span className="live-card__viewers">👁 {live.viewerCount.toLocaleString()}</span>}
+          {isLive && (
+            <span className="live-card__viewers">
+              👁 {approximateViewers(broadcast.broadcast_id).toLocaleString()}
+            </span>
+          )}
         </div>
       </div>
     </button>

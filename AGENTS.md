@@ -26,6 +26,7 @@ sed -n '553,607p' docs/decisions.md     # 그 절만 읽는다
 | 왜 이렇게 만들었나 / 함정 | `docs/decisions.md` (인덱스 → 해당 절만) |
 | 부하 수치, 캐싱, 스케일링 | `docs/architecture.md` (인덱스 → 해당 절만) |
 | API·WebSocket·캐시 키·이벤트 규격 | `docs/contracts.md` |
+| 테이블·컬럼·인덱스, MySQL/Valkey 경계 | `docs/schema.md` |
 | 저장소 사용법, 배포 흐름 | `README.md` |
 | 특정 인프라 스택 | `infra/<스택>/README.md` |
 

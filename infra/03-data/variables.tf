@@ -57,11 +57,14 @@ variable "db_name" {
 variable "db_engine_version" {
   description = <<-EOT
     메이저 버전만 적으면 AWS가 그 안의 최신 마이너를 고른다.
-    MySQL 8.0 을 쓰는 이유는 설계 문서 4장이 InnoDB 버퍼 풀과
-    REPEATABLE READ 기준으로 쓰여 있어서다.
+    설계 문서 4장은 InnoDB 버퍼 풀과 REPEATABLE READ 기준으로 쓰여 있고,
+    8.4 도 이 둘은 동일하다.
+
+    8.0 으로 되돌리지 말 것. 표준 지원이 끝나 확장 지원 요금이 붙는다
+    (실측 $5.47/day, 인스턴스 요금의 10배). 8.4 는 LTS 라 해당 요금이 없다.
   EOT
   type        = string
-  default     = "8.0"
+  default     = "8.4"
 }
 
 variable "db_instance_class" {

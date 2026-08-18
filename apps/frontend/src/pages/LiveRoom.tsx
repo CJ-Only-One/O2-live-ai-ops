@@ -1,41 +1,105 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { fetchLiveById } from '../services/liveService'
-import { fetchProductsByLiveId } from '../services/productService'
-import { issueCoupon } from '../services/couponService'
-import { mockCoupons } from '../mocks/coupons'
-import { useChatStream } from '../services/useChatStream'
-import type { LiveItem, Product } from '../types'
+
 import ChatPanel from '../components/ChatPanel'
 import LiveProductCard from '../components/LiveProductCard'
+import ProductSheet from '../components/ProductSheet'
+import { approximateViewers, broadcastView } from '../presentation'
+import { ApiError } from '../services/api'
+import { fetchBroadcast } from '../services/broadcastService'
+import { createOrder } from '../services/orderService'
+import { useChat } from '../services/useChat'
+import type { Broadcast, Product } from '../types'
+import { uuid } from '../utils/uuid'
 import '../styles/common.css'
 import './LiveRoom.css'
 
+type OrderPhase =
+  | { kind: 'idle' }
+  | { kind: 'sending' }
+  | { kind: 'accepted'; orderId: string }
+  | { kind: 'failed'; message: string }
+
 function LiveRoom() {
-  const { liveId } = useParams()
+  const { broadcastId } = useParams()
   const navigate = useNavigate()
-  const { messages, sendMessage } = useChatStream()
 
-  const [live, setLive] = useState<LiveItem | null>(null)
-  const [products, setProducts] = useState<Product[]>([])
+  const [broadcast, setBroadcast] = useState<Broadcast | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [muted, setMuted] = useState(true)
-  const [couponState, setCouponState] = useState<'idle' | 'loading' | 'issued'>('idle')
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const [couponIssued, setCouponIssued] = useState(false)
+  const [order, setOrder] = useState<OrderPhase>({ kind: 'idle' })
 
+  const { messages, connected, send } = useChat(broadcastId)
+
+  /**
+   * 재시도는 같은 멱등키를 다시 보내야 한다. 서버가 만들어주지 않으므로
+   * 상품별로 하나씩 들고 있는다 (contracts.md 1.2).
+   *
+   * 주문이 성사되면 버린다. 남겨두면 같은 상품을 또 살 때 서버가 첫 주문을
+   * 그대로 돌려준다.
+   */
+  const idemKeys = useRef(new Map<string, string>())
+
+  const load = useCallback(() => {
+    if (!broadcastId) return
+    setLoadError(null)
+    fetchBroadcast(broadcastId)
+      .then(setBroadcast)
+      .catch((e: ApiError) => setLoadError(e.message))
+  }, [broadcastId])
+
+  // 진입 시 1회 조회. 이후 변화는 WebSocket 으로 온다 — 폴링하지 않는다.
+  useEffect(load, [load])
+
+  // 끊겼다 다시 붙으면 스냅샷을 다시 받는다. 끊긴 동안의 변경은 푸시로
+  // 오지 않았기 때문이다 (contracts.md 3.6).
+  const wasConnected = useRef(false)
   useEffect(() => {
-    if (!liveId) return
-    fetchLiveById(liveId).then((data) => data && setLive(data))
-    fetchProductsByLiveId(liveId).then(setProducts)
-  }, [liveId])
+    if (connected && wasConnected.current) load()
+    wasConnected.current = connected
+  }, [connected, load])
 
-  function handleIssueCoupon() {
-    if (couponState !== 'idle') return
-    setCouponState('loading')
-    issueCoupon(mockCoupons[0].id)
-      .then(() => setCouponState('issued'))
-      .catch(() => setCouponState('idle'))
+  function buy(product: Product, qty: number) {
+    if (!broadcastId || order.kind === 'sending') return
+
+    let key = idemKeys.current.get(product.sku_id)
+    if (!key) {
+      key = uuid()
+      idemKeys.current.set(product.sku_id, key)
+    }
+
+    setOrder({ kind: 'sending' })
+    createOrder(broadcastId, product.sku_id, qty, key)
+      .then((res) => {
+        idemKeys.current.delete(product.sku_id)
+        setSheetOpen(false)
+        setOrder({ kind: 'accepted', orderId: res.order_id })
+        // 재고가 줄었으므로 스냅샷을 다시 받는다. stock.update 푸시가
+        // 붙으면 이 호출은 필요 없어진다 (contracts.md 3.3).
+        load()
+      })
+      .catch((e: ApiError) => {
+        // code 로 분기한다. message 는 예고 없이 바뀐다 (contracts.md 1.3).
+        const text =
+          e.code === 'SOLD_OUT'
+            ? '주문 처리 중 품절되었습니다'
+            : e.code === 'RATE_LIMITED'
+              ? '잠시 후 다시 시도해 주세요'
+              : '주문을 접수하지 못했습니다'
+        setOrder({ kind: 'failed', message: text })
+      })
   }
 
-  if (!live) {
+  if (loadError) {
+    return (
+      <div className="phone-frame">
+        <p className="lobby-loading">{loadError}</p>
+      </div>
+    )
+  }
+  if (!broadcast) {
     return (
       <div className="phone-frame">
         <p className="lobby-loading">방송을 불러오는 중...</p>
@@ -43,23 +107,27 @@ function LiveRoom() {
     )
   }
 
+  const view = broadcastView(broadcast.broadcast_id)
+  const featured = broadcast.products.find((p) => p.state === 'ON_SALE') ?? broadcast.products[0]
+
   return (
     <div className="phone-frame room">
       <div className="room__video">
-        <img src={live.thumbnail} alt="" className="room__video-img" />
+        {/*
+          영상 자리. 05-media(MediaMTX·CloudFront)가 생기면 hls_url 로
+          플레이어를 붙인다 — 오버레이 구조는 그대로라 교체가 이 한 줄이다.
+        */}
+        <img src={view.thumbnail} alt="" className="room__video-img" />
         <div className="room__video-scrim" />
 
         <div className="room__topbar">
-          <span className="room__logo">올영 LIVE.</span>
+          <span className="room__logo">올영LIVE</span>
           <div className="room__topbar-icons">
+            <span className="room__viewers">
+              👁 {approximateViewers(broadcast.broadcast_id).toLocaleString()}
+            </span>
             <button className="icon-btn" onClick={() => setMuted((m) => !m)} aria-label="음소거">
               {muted ? '🔇' : '🔊'}
-            </button>
-            <button className="icon-btn" aria-label="공유">
-              🔗
-            </button>
-            <button className="icon-btn" aria-label="설정">
-              ⚙️
             </button>
             <button className="icon-btn" onClick={() => navigate('/')} aria-label="닫기">
               ✕
@@ -68,35 +136,53 @@ function LiveRoom() {
         </div>
 
         <div className="room__headline">
-          <span className="badge badge-live">LIVE</span>
-          <h1 className="room__title">{live.title}</h1>
-          <button className="btn-ghost">풀영상 보기</button>
-          {live.segment && <p className="room__segment">📍 {live.segment}</p>}
+          {broadcast.state === 'LIVE' && <span className="badge badge-live">LIVE</span>}
+          <p className="room__brand">{view.brand}</p>
+          <h1 className="room__title">{view.title}</h1>
+          {view.segment && <p className="room__segment">📍 {view.segment}</p>}
+          {!connected && <p className="room__segment">채팅 다시 연결 중...</p>}
         </div>
 
         <div className="room__overlay-bottom">
-          <ChatPanel messages={messages} onSend={sendMessage} />
+          <ChatPanel messages={messages} onSend={send} />
 
+          {order.kind === 'accepted' && (
+            <button className="room__toast" onClick={() => navigate(`/orders/${order.orderId}`)}>
+              주문이 접수되었습니다 · 상태 보기 →
+            </button>
+          )}
+          {order.kind === 'failed' && <p className="room__toast is-error">{order.message}</p>}
+
+          {/*
+            쿠폰 API 는 계약에 없다. 화면 장식이고 실제 발급이 일어나지 않는다 —
+            특가 자체가 쿠폰을 대신한다 (contracts.md 5.2).
+          */}
           <button
-            className="room__coupon"
-            onClick={handleIssueCoupon}
-            disabled={couponState !== 'idle'}
+            className={`room__coupon${couponIssued ? ' is-issued' : ''}`}
+            onClick={() => setCouponIssued(true)}
+            disabled={couponIssued}
           >
-            {couponState === 'issued'
-              ? '✅ 쿠폰 발급 완료'
-              : couponState === 'loading'
-                ? '발급 중...'
-                : `🎟 ${mockCoupons[0].discountLabel} 쿠폰 받기`}
+            {couponIssued ? '✓ 쿠폰이 발급되었습니다' : '🎟 라이브 전용 쿠폰 받기'}
           </button>
 
-          {products[0] && (
+          {featured && (
             <LiveProductCard
-              product={products[0]}
-              onBuy={(p) => navigate(`/checkout/${p.id}`)}
+              product={featured}
+              count={broadcast.products.length}
+              onOpen={() => setSheetOpen(true)}
             />
           )}
         </div>
       </div>
+
+      {sheetOpen && (
+        <ProductSheet
+          products={broadcast.products}
+          onClose={() => setSheetOpen(false)}
+          onBuy={buy}
+          pending={order.kind === 'sending'}
+        />
+      )}
     </div>
   )
 }

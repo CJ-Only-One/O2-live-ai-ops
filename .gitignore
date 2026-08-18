@@ -63,3 +63,6 @@ kubeconfig*
 *.iml
 .vscode/
 .DS_Store
+
+# playwright MCP 가 남기는 스냅샷·스크린샷. 검증 중에만 쓰이고 저장소에 남을 이유가 없다.
+.playwright-mcp/

@@ -1,13 +1,17 @@
 from fastapi import APIRouter
 
-from app.core.errors import ApiError
+from app.core.errors import ApiError, openapi_errors
 from app.schemas.broadcast import BroadcastOut
 from app.services import broadcast as broadcast_service
 
 router = APIRouter()
 
 
-@router.get("/broadcasts/{broadcast_id}", response_model=BroadcastOut)
+@router.get(
+    "/broadcasts/{broadcast_id}",
+    response_model=BroadcastOut,
+    responses=openapi_errors(("INVALID_REQUEST", 404)),
+)
 def get_broadcast(broadcast_id: str):
     """방송 진입 스냅샷 (contracts.md 2.1).
 

@@ -78,3 +78,11 @@
   font-size: 11.5px;
   opacity: 0.95;
 }
+
+/* 브랜드명. 서버가 주지 않는 장식이라 제목보다 작고 흐리게 둔다. */
+.live-card__brand {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.85);
+}

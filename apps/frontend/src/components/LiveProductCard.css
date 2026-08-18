@@ -72,3 +72,25 @@
   font-size: 11px;
   opacity: 0.9;
 }
+
+/* 브랜드와 재고 표시. 재고는 표시용이고 주문 가부는 서버가 정한다. */
+.live-product__brand {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.live-product__stock {
+  margin: 2px 0 4px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* 상품이 여러 개일 때 시트를 열도록 유도한다. */
+.live-product__more {
+  margin: 3px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+}

@@ -100,3 +100,73 @@
 .room__coupon:disabled {
   opacity: 0.8;
 }
+
+/* 브랜드명과 시청자 수. 서버가 주지 않는 장식이다.
+   영상 위에 얹히므로 밝은 프레임에서도 읽히게 그림자를 준다. */
+.room__brand {
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+.room__viewers {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  align-self: center;
+  white-space: nowrap;
+}
+
+/* 주문 결과 안내. 채팅 위에 잠깐 뜬다. */
+.room__order-note {
+  margin: 6px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 주문 결과 안내. 눌러서 상태 화면으로 갈 수 있다. */
+.room__toast {
+  display: block;
+  width: 100%;
+  margin: 6px 0;
+  padding: 10px 12px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.room__toast.is-error {
+  background: rgba(224, 32, 32, 0.85);
+  cursor: default;
+}
+
+/* 쿠폰 버튼. 계약에 API 가 없어 화면 장식이다. */
+.room__coupon {
+  width: 100%;
+  margin: 6px 0 8px;
+  padding: 13px;
+  border: none;
+  border-radius: var(--radius-m);
+  background: var(--green);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.room__coupon.is-issued {
+  background: rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: default;
+}

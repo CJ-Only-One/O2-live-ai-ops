@@ -15,6 +15,8 @@ RUN npm run build
 # nginx 공식 이미지는 root로 시작해 K8s의 runAsNonRoot: true와 부딪힌다.
 # unprivileged 변형은 처음부터 UID 101로 돌고 8080을 듣는다.
 FROM nginxinc/nginx-unprivileged:1.31-alpine
+# 기본 설정을 갈아끼운다. 없으면 SPA 경로가 404 가 된다.
+COPY --chown=101:101 nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build --chown=101:101 /app/dist /usr/share/nginx/html
 
 USER 101

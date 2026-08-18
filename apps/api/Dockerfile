@@ -47,4 +47,9 @@ USER 10001
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# ddtrace-run 이 임포트를 가로채 FastAPI·SQLAlchemy·redis·boto3 를 계측한다.
+# 코드에 임포트를 넣지 않는 이유는, 넣으면 계측을 끄려 할 때 이미지를 다시
+# 빌드해야 하기 때문이다. 이 방식은 DD_TRACE_ENABLED=false 로 끌 수 있다.
+#
+# 에이전트에 못 붙어도 애플리케이션은 그대로 뜬다. 트레이스만 버려진다.
+CMD ["ddtrace-run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
