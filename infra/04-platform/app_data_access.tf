@@ -67,6 +67,11 @@ resource "kubectl_manifest" "app_data_config" {
       VALKEY_TLS = tostring(local.datastore.valkey_tls_required)
 
       SQS_ORDER_QUEUE_URL = local.datastore.order_queue_url
+
+      # 이벤트 목적지. 이 키가 없으면 SDK 기본값인 stdout 이 쓰여, 이벤트가
+      # 파드 로그로 나갔다가 로테이션과 함께 사라진다. 나머지 O2_* 는 SDK
+      # 기본값이 실물과 같아 주입하지 않는다 (app_events.tf).
+      O2_EVENTS_SINK = var.enable_app_events ? "kinesis" : "stdout"
     }
   })
 }

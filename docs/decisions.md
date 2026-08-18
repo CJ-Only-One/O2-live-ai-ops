@@ -41,6 +41,7 @@
 | D-024 | ESO 게이트를 Datadog에서 분리 | `enable_external_secrets`, `moved` |
 | D-025 | MySQL 8.0 → 8.4 | 확장 지원 요금, `name_prefix`, 파라미터 그룹 교체 |
 | D-026 | APM을 켠다 (D-024 뒤집기) | `portEnabled`, `ddtrace-run`, `status.hostIP` |
+| D-027 | 이벤트를 Kinesis 로 보낸다 | `O2_EVENTS_SINK`, salt, `PutRecords`, chat-gateway 보류 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -1252,3 +1253,73 @@ Pub/Sub 호출 시간과 런타임 지표다.
 채팅 쪽 판단 근거는 결국 커스텀 지표여야 한다 — 연결 수, tick 당 드롭 수,
 발화율. 그것은 무엇을 재야 하는지가 장애 시나리오로 확정된 뒤에 설계한다.
 이름과 태그를 먼저 박으면 시나리오가 지표에 맞춰지는 역전이 일어난다.
+
+---
+
+## D-027. 이벤트를 Kinesis 로 보낸다
+
+SDK 배선은 D-016 때 끝나 있었다. `apps/api` 와 `apps/order-worker` 는
+`coupon.issue`·`order.create`·`inventory.check`·`order.cancel` 을 이미 발행한다.
+빠져 있던 것은 목적지 하나다.
+
+`O2_EVENTS_SINK` 의 기본값이 `stdout` 이라, 배선이 없는 동안 이벤트는 파드
+로그로 나갔다. Datadog 로그 수집은 꺼져 있으므로(D-026) **어디에도 남지
+않았다.** 로테이션과 함께 사라진 것이 전부다. 에이전트가 장애를 조사할 때 읽을
+재료를 쌓는 것이 이 이벤트의 존재 이유인데, 쌓이는 곳이 없었다.
+
+### 스트림은 만들지 않는다
+
+`stream-business` / `stream-client` 는 백데이터 파트 소유이고 이미 ACTIVE 다.
+우리는 생산자로서 쓰기 권한만 받는다. 이름이 SDK 기본값과 같아서
+`O2_STREAM_*` 을 주입할 필요도 없다 — 주입하면 두 곳에 같은 사실이 생긴다.
+
+### 권한은 두 스트림 모두에 준다
+
+지금 우리가 내는 네 이벤트는 전부 `stream-business` 로 간다. 그런데도
+`stream-client` 까지 주는 이유는 SDK 의 `sinks.py` 때문이다.
+
+```python
+def send(self, records):     # KinesisSink
+    ...                      # 예외를 밖으로 던지지 않는다
+```
+
+`_stream_for()` 가 `client.*` / `live.*` 를 client 스트림으로 보내는데, sink 는
+전송 예외를 삼킨다. 권한이 없으면 **이벤트가 사라진 줄도 모른 채 사라진다.**
+나중에 `client.*` 를 하나 추가하는 순간 조용히 새는 구멍이 된다. 두 스트림
+모두 우리는 생산자일 뿐이라 넓혀서 잃는 것도 없다.
+
+### salt 는 Secrets Manager 에 둔다
+
+SDK 는 `user_key` 를 그대로 싣지 않고 HMAC 으로 바꿔 담는다. 그 salt 를 세
+서비스가 같은 값으로 봐야 같은 사용자로 조인된다. chat-gateway 는 Node 라
+SDK 를 안 쓰지만 `events.ts` 의 `hashUserKey()` 가 같은 규칙을 구현하고 있어
+**발행 스위치와 무관하게** 접속 시점에 이미 해싱한다. 그래서 세 파드 모두에
+넣는다.
+
+값이 바뀌면 같은 사용자가 다른 키로 보이고 과거 이벤트와의 조인이 끊긴다.
+한 번 정하면 바꾸지 않는다.
+
+ConfigMap 이 아니라 Secret 인 이유는, salt 가 새면 가명화된 `user_key` 를
+역추적할 수 있기 때문이다. 경로는 Datadog 키와 같다 — 원본은 Secrets Manager,
+ESO 가 동기화, Terraform 은 ARN 만 안다. **ESO 역할 정책에 그 ARN 을 같이
+넣어야 한다.** 빠뜨리면 `SecretSyncedError` 로 Secret 이 안 생기고, 파드는
+그것을 `envFrom` 하므로 `CreateContainerConfigError` 로 기동조차 못 한다.
+
+### chat-gateway 의 Kinesis 경로는 안 만든다
+
+`events.ts` 는 아직 stdout 하드코딩이다. 고치지 않는 이유는 `emitChatEvents`
+스위치가 꺼져 있고, 켜는 조건이 우리 손에 없기 때문이다 — 모르는 `event_name`
+이 들어갔을 때 수집단이 어떻게 처리하는지가 `contracts.md` 5.5 의 미확인
+항목으로 남아 있다. 답이 오기 전에 경로를 만들면 쓰이지 않는 코드와 새 의존성
+(`@aws-sdk/client-kinesis`)만 남는다. 답이 오면 그때 `emitChatSend()` 안쪽만
+바꾼다.
+
+### 적용 순서
+
+Secret 이 없는 상태로 매니페스트가 먼저 동기화되면 파드가 기동하지 못한다.
+
+```
+1. Secrets Manager 에 o2/dev/events-salt 생성   (사람이 한 번)
+2. infra/04-platform apply                      (ExternalSecret → Secret o2-events)
+3. O2-live-deploy 푸시                          (Argo CD 가 envFrom 을 붙인다)
+```

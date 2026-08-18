@@ -202,6 +202,38 @@ variable "app_service_accounts" {
   default     = ["api", "order-worker", "chat-gateway"]
 }
 
+variable "enable_app_events" {
+  description = <<-EOT
+    이벤트 발행 배선을 켠다 — Kinesis 쓰기 권한과 해싱 salt 주입.
+
+    켜기 전에 Secrets Manager 에 events_salt_secret_name 시크릿이 있어야 한다.
+    없으면 data source 가 plan 단계에서 깨진다 (Datadog 키와 같은 방식이다).
+
+    끄면 SDK 기본값인 stdout 으로 돌아간다. 파드는 정상으로 뜨고 이벤트만
+    아무 데도 남지 않는다.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "events_stream_business" {
+  description = "주문·재고·쿠폰 이벤트가 가는 스트림. 백데이터 파트 소유이며 SDK 기본값과 같아야 한다"
+  type        = string
+  default     = "stream-business"
+}
+
+variable "events_stream_client" {
+  description = "client.* / live.* 이벤트가 가는 스트림. 지금 우리가 내는 이벤트는 없지만 권한은 준다 (app_events.tf 참고)"
+  type        = string
+  default     = "stream-client"
+}
+
+variable "events_salt_secret_name" {
+  description = "user_key HMAC salt 가 든 Secrets Manager 시크릿 이름. 평문 문자열로 저장한다"
+  type        = string
+  default     = "o2/dev/events-salt"
+}
+
 variable "enable_external_secrets" {
   description = <<-EOT
     External Secrets Operator 와 ClusterSecretStore 를 설치한다.
