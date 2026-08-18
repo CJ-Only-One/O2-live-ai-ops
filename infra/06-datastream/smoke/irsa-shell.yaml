@@ -1,0 +1,21 @@
+# 검증 항목을 하나씩 따로 확인하려고 띄우는 대기 파드.
+# irsa-check.yaml 은 세 가지를 한 번에 돌리고 죽지만, 이건 살아 있어서
+# kubectl exec 로 항목별 재확인이 가능하다. 확인이 끝나면 반드시 삭제할 것.
+#
+#   kubectl apply -f smoke/irsa-shell.yaml
+#   kubectl -n data-stream wait --for=condition=Ready pod/irsa-shell --timeout=90s
+#   ... 항목별 exec ...
+#   kubectl -n data-stream delete pod irsa-shell
+apiVersion: v1
+kind: Pod
+metadata:
+  name: irsa-shell
+  namespace: data-stream
+spec:
+  serviceAccountName: o2-producer
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: awscli
+      image: amazon/aws-cli:latest
+      command: ["/bin/sh", "-c", "sleep 3600"]

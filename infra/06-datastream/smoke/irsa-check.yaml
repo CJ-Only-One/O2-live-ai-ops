@@ -1,0 +1,37 @@
+# IRSA 검증용 일회성 파드.
+# kubectl run --overrides 의 JSON 을 PowerShell 5.1 이 망가뜨리는 문제를 피하려고
+# 매니페스트로 분리했다. 3단계 kinesis-roundtrip.ps1 과 같은 이유.
+#
+#   kubectl apply -f smoke/irsa-check.yaml
+#   kubectl -n data-stream logs -f irsa-check
+#   kubectl -n data-stream delete pod irsa-check
+apiVersion: v1
+kind: Pod
+metadata:
+  name: irsa-check
+  namespace: data-stream
+spec:
+  serviceAccountName: o2-producer
+  restartPolicy: Never
+  containers:
+    - name: awscli
+      image: amazon/aws-cli:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -e
+          echo "== 1. 주입된 환경변수 =="
+          echo "AWS_ROLE_ARN=$AWS_ROLE_ARN"
+          echo "AWS_WEB_IDENTITY_TOKEN_FILE=$AWS_WEB_IDENTITY_TOKEN_FILE"
+
+          echo "== 2. 실제 자격증명 =="
+          aws sts get-caller-identity
+
+          echo "== 3. Kinesis 쓰기 =="
+          aws kinesis put-record \
+            --stream-name stream-business \
+            --partition-key irsa \
+            --data "$(echo -n '{"irsa":true}' | base64)" \
+            --no-cli-pager
+
+          echo "== ALL CHECKS PASSED =="
