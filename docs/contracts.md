@@ -179,6 +179,48 @@ GET /api/orders/{order_id}
 **둘을 나누는 이유:** liveness에서 의존성을 검사하면 DB가 잠깐 끊겼을 때
 전 파드가 재시작 루프에 빠진다(설계 문서 9.4-4).
 
+### 2.5 클라이언트 행동 수집
+
+```
+POST /api/broadcasts/{broadcast_id}/events
+X-Session-Key: <UUID v4>
+```
+
+```json
+{ "events": [
+    { "action": "COUPON_BUTTON_CLICK", "target_id": "88213" },
+    { "action": "CHECKOUT_CLICK", "target_id": "88213" }
+] }
+```
+
+```json
+{ "accepted": 2 }
+```
+
+`202`. 한 요청에 1~20건. `action`은 `LIVE_ENTER` / `LIVE_LEAVE` /
+`COUPON_BUTTON_CLICK` / `CHECKOUT_CLICK` (SDK `schemas.py`의 `CLIENT_ACTION`),
+`target_id`는 `^[A-Za-z0-9_-]{1,64}$`.
+
+**브라우저는 Kinesis에 직접 쓸 수 없다.** 자격증명을 번들에 넣어야 하기 때문이다.
+그래서 api가 수집 지점이 되고, 여기서 `client.action`이 되어 `stream-client`로
+간다(5.1). 이것이 유일한 클라이언트 이벤트 경로다.
+
+**자유 문자열을 받지 않는다.** 이 엔드포인트는 인증 없이 열려 있고 들어온 값은
+에이전트가 읽는 저장소까지 간다. `action`은 enum, `target_id`는 식별자 패턴으로
+막는다 — `chat.send`가 본문을 싣지 않는 것과 같은 이유다(5.3).
+
+**`device_type`과 `ua_key`는 서버가 채운다.** 클라이언트가 보낸 값을 실으면
+세그먼트 축이 조작 가능해진다. `client_ts`도 받지 않는다 — 집계는 서버 도착
+시각으로만 윈도우를 나눈다.
+
+**봉투의 `broadcast_id`는 경로에서 나온다.** 이벤트 SDK 미들웨어는 라우팅 전에
+돌아 `path_params`가 비어 있으므로, 경로 문자열에서 뽑는다. 방송을 경로에 둔
+이유가 그것이다.
+
+`accepted`는 계약 검증을 통과해 발행을 시도한 건수이고 스트림 도착을 보장하지
+않는다. 발행 실패는 요청을 실패시키지 않는다(5.1) — 계측이 구매를 막는 것은
+언제나 손해다.
+
 ---
 
 ## 3. WebSocket
@@ -321,7 +363,7 @@ SDK가 자동으로 채운다.
 | `coupon.issue` | api | 특가 구매 시도 — 성공·실패 **모두** |
 | `order.create` | api | 2.2 접수 성공 시 |
 | `order.cancel` | order-worker | 워커 단계 실패 시 |
-| `client.action` | frontend → 수집 엔드포인트 | 진입·이탈·버튼 클릭 |
+| `client.action` | frontend → api (2.5) | 진입·이탈·버튼 클릭 |
 | `chat.send` (신규) | chat-gateway | **인입 1건당 1회** — 5.3 참조 |
 
 **실패 건을 빠뜨리면 안 된다.** 매크로 트래픽은 대부분 `SOLD_OUT`이나
@@ -341,8 +383,19 @@ SDK의 이벤트 이름은 쿠폰 도메인 기준이고 우리는 특가 판매
 | `DECR` 실패 (재고 부족) | `coupon.issue` | `result=FAILED`, `failure_code=SOLD_OUT` |
 | 주문 접수 | `order.create` | `channel=LIVE` |
 | 워커 단계 실패 | `order.cancel` | `reason_code=INVENTORY_SHORTAGE` 등 |
+| 방송 진입·이탈 | `client.action` | `LIVE_ENTER` / `LIVE_LEAVE` |
+| 구매 버튼 누름 | `client.action` **2건** | `COUPON_BUTTON_CLICK` + `CHECKOUT_CLICK` |
 
 `payment.process`는 결제 연동이 범위 밖이라 발행하지 않는다.
+
+**구매 버튼 한 번이 클릭 둘을 낸다.** 우리는 특가와 주문이 한 요청이라 그 누름
+하나가 서버에서 `coupon.issue`와 `order.create` 둘을 만든다. 클릭을 하나만 내면
+집계의 짝(`click_ratio`)이 한쪽만 성립해, 정상 트래픽에서도 비율이 0.5로 눌린다.
+화면의 "쿠폰 받기" 버튼은 서버를 부르지 않는 장식이라 이벤트를 내지 않는다 —
+그것을 `COUPON_BUTTON_CLICK`으로 쓰면 서버 요청 없는 클릭이 섞인다.
+
+집계는 클릭과 서버 이벤트가 **같은 10초 윈도우**에서 만나야 성립하므로,
+클릭은 주문 요청 **직전**에 보낸다.
 
 ### 5.3 채팅 이벤트 (`chat.send`) — SDK에 없는 신규 이벤트
 

@@ -4,13 +4,18 @@ AI 에이전트가 쓰는 **내부 데이터 시스템**. 서비스가 내보내
 데이터 레이크에 쌓고(cold), 10초 윈도우로 집계해 에이전트에게 먹인다(warm).
 
 ```
-파드(data-stream/o2-producer)
+파드(o2-dev/api·order-worker, data-stream/o2-producer)
    └─ Kinesis  stream-business / stream-client
         ├─ Firehose ──▶ S3 o2-data-lake-*/raw/…      (cold)
         │                  └─ Glue o2-ml-data-prep-job ──▶ ml-ready/
         └─ Lambda o2-agg ──▶ DynamoDB o2-agent-context (warm)
                                   └─ Lambda o2-warm-api (Function URL) ──▶ 에이전트
 ```
+
+`stream-client` 로 가는 `client.action` 은 브라우저가 아니라 **api 의 수집
+엔드포인트**가 낸다 (`POST /api/broadcasts/{id}/events`, D-032). 클릭이 서버
+이벤트와 같은 윈도우에서 만나야 `click_ratio` 가 나오므로, `warm-path.tf` 의
+`O2_WARM_CLICK_ROUTE` 는 실제 서비스 이름(`api`)과 같아야 한다.
 
 ## `03-data` 와 무엇이 다른가
 

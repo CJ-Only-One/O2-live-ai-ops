@@ -1,0 +1,8 @@
+# 시험에만 쓰는 의존. 런타임 이미지에는 들어가지 않는다 (Dockerfile 은
+# requirements.txt 만 설치한다). CI 는 requirements.txt 다음에 이 파일이
+# 있으면 함께 설치한다 (.github/workflows/app.yml).
+pytest==8.3.3
+
+# starlette 의 TestClient 가 httpx 위에 올라간다. starlette 의 선택 의존이라
+# 여기 적지 않으면 TestClient import 가 그 자리에서 깨진다.
+httpx==0.27.2
