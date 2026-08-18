@@ -5,13 +5,14 @@ from sqlalchemy import text
 
 from app.db.session import engine
 from app.db.valkey import valkey
+from app.schemas.health import HealthOut, ReadinessOut
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-@router.get("/health")
+@router.get("/health", response_model=HealthOut)
 def health():
     """liveness. 프로세스 생존만 본다.
 
@@ -21,7 +22,16 @@ def health():
     return {"status": "ok"}
 
 
-@router.get("/readyz")
+@router.get(
+    "/readyz",
+    response_model=ReadinessOut,
+    responses={
+        503: {
+            "model": ReadinessOut,
+            "description": "MySQL 또는 Valkey 연결 실패",
+        }
+    },
+)
 def readyz(response: Response):
     """readiness. 의존성이 닿는지 본다. 하나라도 실패하면 503.
 
