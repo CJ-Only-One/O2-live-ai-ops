@@ -25,6 +25,28 @@ output "security_group_id" {
   value = aws_security_group.dify.id
 }
 
+# ── 알림 중계 Lambda ─────────────────────────────────────────────
+
+output "alert_relay_function_url" {
+  description = <<-EOT
+    Datadog webhook 에 등록하는 주소.
+
+    ★ 인증이 x-dd-secret 헤더 하나뿐이라 **URL 자체를 비밀로 취급한다.**
+      공유 문서에 적지 않는다. 필요하면 이 출력이나 콘솔에서 확인한다.
+  EOT
+  value       = aws_lambda_function_url.alert_relay.function_url
+  sensitive   = true
+}
+
+output "alert_relay_security_group_id" {
+  value = aws_security_group.alert_relay.id
+}
+
+output "alert_relay_log_command" {
+  description = "알림이 안 올 때 제일 먼저 볼 곳"
+  value       = "aws logs tail /aws/lambda/${local.alert_relay_name} --follow --region ${var.region}"
+}
+
 output "ssm_session_command" {
   value = "aws ssm start-session --target ${aws_instance.dify.id} --region ${var.region}"
 }

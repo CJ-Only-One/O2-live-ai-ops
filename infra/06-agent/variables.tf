@@ -100,6 +100,46 @@ variable "enable_bedrock_access" {
   default     = true
 }
 
+# ── 알림 중계 Lambda ─────────────────────────────────────────────
+
+variable "alert_secret_name" {
+  description = <<-EOT
+    Datadog 알림 중계 Lambda 가 실행 시점에 읽는 **Secrets Manager 시크릿 이름**.
+
+    이 스택은 시크릿을 만들지 않고 이름만 참조한다. 값을 Terraform 으로
+    넣으면 state 에 평문으로 남기 때문이다 (06-datastream 의
+    `datadog_secret_name` 과 같은 패턴).
+
+    시크릿은 apply 전에 손으로 한 번 만든다. 키 두 개가 필요하다:
+
+      dify-api-key    Dify 앱의 서비스 API 키 (app- 로 시작)
+      webhook-secret  Datadog webhook 커스텀 헤더 x-dd-secret 과 같은 값
+                      (openssl rand -hex 32)
+
+      aws secretsmanager create-secret --name o2/dev/dify-alert \
+        --secret-string '{"dify-api-key":"app-...","webhook-secret":"..."}' \
+        --region ap-northeast-2
+
+    회전할 때는 이 시크릿과 Datadog webhook 의 커스텀 헤더를 함께 바꾼다.
+    한쪽만 바꾸면 Lambda 가 403 을 내고 알림이 조용히 사라진다.
+  EOT
+  type        = string
+  default     = "o2/dev/dify-alert"
+}
+
+variable "alert_relay_max_concurrency" {
+  description = <<-EOT
+    알림 중계 Lambda 의 예약 동시성. **폭주 상한이다.**
+
+    라이브 방송이 시작되면 CPU·DB 커넥션·응답시간 모니터가 한꺼번에 울린다.
+    상한이 없으면 알림 수만큼 AI 워크플로가 돌고 그대로 토큰 요금이 된다.
+    상한에 걸린 호출은 버려지지만, 알림이 동시에 5개를 넘는 상황이면
+    이미 Lambda 가 아니라 모니터 조건을 고쳐야 하는 상태다.
+  EOT
+  type        = number
+  default     = 5
+}
+
 # ── Session Manager ──────────────────────────────────────────────
 
 variable "manage_session_preferences" {
