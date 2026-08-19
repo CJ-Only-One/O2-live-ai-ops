@@ -191,8 +191,10 @@ function LivePlayer({ src, poster, muted, live, onCircuitOpen }: Props) {
         muted={muted}
         playsInline
       />
-      {/* 썸네일은 실패 화면이 아니라 재연결 중 임시 화면이다. */}
-      {showPoster && <img src={poster} alt="" className="room__video-img" />}
+      {/* 썸네일은 실패 화면이 아니라 재연결 중 임시 화면이다.
+          video 와 클래스를 나눠 쓰되 흐림 처리는 이쪽에만 건다. 같은 클래스에
+          걸면 방송 영상까지 흐려진다. */}
+      {showPoster && <img src={poster} alt="" className="room__video-img room__video-poster" />}
       {showPoster && live && src && state === 'recovering' && (
         <p className="room__reconnect">방송을 다시 연결하는 중...</p>
       )}

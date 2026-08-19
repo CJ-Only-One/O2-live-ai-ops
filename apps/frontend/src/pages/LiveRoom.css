@@ -17,6 +17,15 @@
   object-fit: cover;
 }
 
+/* 재생이 안 될 때 대신 깔리는 썸네일. 그 위에 "다시 연결하는 중" 같은 안내가
+   올라가므로 사진 속 판촉 문구와 싸우지 않게 흐리게 둔다.
+   **영상 자체에는 걸지 않는다** — 같은 클래스를 video 와 나눠 쓰면 방송이
+   통째로 흐려진다. 그래서 poster 전용 클래스를 따로 둔다. */
+.room__video-poster {
+  filter: blur(22px) brightness(0.7);
+  transform: scale(1.15);
+}
+
 .room__video-scrim {
   position: absolute;
   inset: 0;

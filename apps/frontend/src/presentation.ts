@@ -31,7 +31,7 @@ export interface ProductPresentation {
 const DEFAULT_BROADCAST: BroadcastPresentation = {
   title: '올영라이브',
   brand: '올리브영',
-  thumbnail: '/live/bc_1042.svg',
+  thumbnail: '/live/bc_1042.jpg',
   teaser: '라이브 특가로 만나보세요',
   badges: [],
   segment: '',
@@ -41,7 +41,7 @@ const BROADCASTS: Record<string, BroadcastPresentation> = {
   bc_1042: {
     title: '토리든 다이브인 세럼 · 제로이드 선크림 단독 특가',
     brand: '올리브영 단독',
-    thumbnail: '/live/bc_1042.svg',
+    thumbnail: '/live/bc_1042.jpg',
     teaser: '1등 수분세럼 리필 기획 1시간 라이브 특가!',
     badges: ['라이브 특가', '리필 증정'],
     segment: '토리든 다이브인 세럼 리필 기획 소개 중',
@@ -49,7 +49,7 @@ const BROADCASTS: Record<string, BroadcastPresentation> = {
   bc_1043: {
     title: '이니스프리 비타민C 세럼 · 에스네이처 수분크림 기획전',
     brand: '올영 PICK',
-    thumbnail: '/live/bc_1043.svg',
+    thumbnail: '/live/bc_1043.jpg',
     teaser: '1+1 더블 기획 · 라이브 단독 구성!',
     badges: ['1+1', '호텔스파권 증정'],
     segment: '비타민C 캡슐 세럼 사용법 시연 중',
@@ -57,7 +57,7 @@ const BROADCASTS: Record<string, BroadcastPresentation> = {
   bc_1050: {
     title: '딜라이트 프로젝트 단백질쉐이크 8월 올영픽',
     brand: '딜라이트 프로젝트',
-    thumbnail: '/live/bc_1050.svg',
+    thumbnail: '/live/bc_1050.jpg',
     teaser: '단백질쉐이크 45g 택1 · 올영픽 라이브!',
     badges: ['8월 올영픽'],
     segment: '',
@@ -65,7 +65,7 @@ const BROADCASTS: Record<string, BroadcastPresentation> = {
   bc_1051: {
     title: '덴프스 덴마크 유산균이야기 1+1 기획전',
     brand: '덴프스',
-    thumbnail: '/live/bc_1051.svg',
+    thumbnail: '/live/bc_1051.jpg',
     teaser: '60일분 1+1 · 카카오프렌즈 키링 증정!',
     badges: ['1+1', '키링 증정'],
     segment: '',
@@ -73,7 +73,7 @@ const BROADCASTS: Record<string, BroadcastPresentation> = {
   bc_1030: {
     title: '메디힐 에센셜 마스크팩 10+1 골라담기',
     brand: '메디힐',
-    thumbnail: '/live/bc_1030.svg',
+    thumbnail: '/live/bc_1030.jpg',
     teaser: '15년 연속 1위 마스크팩 7종 골라담기!',
     badges: [],
     segment: '',
@@ -123,30 +123,38 @@ export function approximateViewers(broadcastId: string): number {
 /**
  * 메인 이벤트 배너. 서버가 주지 않는 장식이다 — 기획전은 이 프로젝트의
  * 범위 밖이고, 화면이 앱처럼 보이려면 필요하다.
+ *
+ * 배경은 **그 배너가 말하는 상품의 사진**이다. 방송 썸네일을 그대로 재사용하므로
+ * 파일이 늘지 않는다. 히어로에서는 흐리지 않는다 — 상품이 무엇인지 보이는 것이
+ * 목적이고, 글자 대비는 `tint` 가 맡는다.
+ *
+ * 카피는 **실제로 편성된 상품과 맞춘다.** 없는 기획전을 말하면 배너를 눌러볼
+ * 이유가 없고, 시연 중 "저건 뭐냐" 는 질문만 남는다.
  */
 export const HOME_BANNERS = [
   {
     id: 'ev-summer',
     eyebrow: 'OLIVE YOUNG LIVE',
-    title: '여름 마무리 세일\n최대 50% 단독 특가',
-    sub: '라이브 방송 중 · 선착순 쿠폰 증정',
-    image: '/banners/ev-summer.svg',
+    // 메디힐 마스크팩이 실제로 20,000 → 10,000 이다.
+    title: '메디힐 마스크팩\n10+1 골라담기 50%',
+    sub: '15년 연속 1위 · 7종 골라담기',
+    image: '/live/bc_1030.jpg',
     tint: 'linear-gradient(180deg, rgba(0,0,0,.05) 30%, rgba(0,0,0,.62) 100%)',
   },
   {
     id: 'ev-skin',
     eyebrow: 'SKINCARE WEEK',
-    title: '스킨케어 위크\n앰플·세럼 1+1',
-    sub: '오늘드림 주문 시 무료배송',
-    image: '/banners/ev-skin.svg',
+    title: '스킨케어 위크\n토리든 리필기획 · 비타민C 1+1',
+    sub: '1등 수분세럼 리필 증정 · 라이브 단독',
+    image: '/live/bc_1042.jpg',
     tint: 'linear-gradient(180deg, rgba(0,0,0,.05) 30%, rgba(0,0,0,.6) 100%)',
   },
   {
     id: 'ev-inner',
     eyebrow: 'INNER BEAUTY',
-    title: '이너뷰티 기획전\n유산균·프로틴 모음',
-    sub: '구매 시 쉐이커 증정',
-    image: '/banners/ev-inner.svg',
+    title: '이너뷰티 기획전\n덴프스 유산균 1+1',
+    sub: '60일분 · 카카오프렌즈 키링 증정',
+    image: '/live/bc_1051.jpg',
     tint: 'linear-gradient(180deg, rgba(0,0,0,.05) 30%, rgba(0,0,0,.6) 100%)',
   },
 ]
