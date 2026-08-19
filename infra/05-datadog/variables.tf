@@ -152,3 +152,83 @@ variable "cpu_throttling_warning" {
   type        = number
   default     = 25
 }
+
+# ── Monitor — 장애 시나리오 alert ──────────────────────────────────
+#
+# `works/prompt.md` 요구사항과 Confluence "Datadog 장애 대응 Alert 시스템
+# 제안서"(2026-08-19)를 근거로 만든 임계치다. 위 그룹1 임계치(failure_rate_*,
+# latency_p95_*)와 마찬가지로 **잠정치**다 — 트랜스크립트 예시 시나리오의
+# 숫자이지 우리 서비스의 평시 분포가 아니다. `monitor.tf` 가 이 값들을 쓴다.
+#
+# 알림 라우팅(Slack 등)은 이번 세션 범위 밖이다 — 인프라팀이 별도 webhook
+# push 경로로 Datadog Monitor 를 에이전트에 연결하는 작업을 진행 중이다.
+# 여기서는 그 webhook 이 받을 Monitor(임계치·쿼리)만 만든다.
+
+variable "enable_chat_ingest_monitor" {
+  description = <<-EOT
+    시나리오 2 조기 경보(`chat_ingest_surge`) 활성화 여부. 기본 `false`.
+
+    `apps/chat-gateway/src/events.ts` 를 실측한 결과 `chat.send` 발행은 지금
+    (1) `EMIT_CHAT_EVENTS` 기본값이 false 라 꺼져 있고, (2) 켜더라도 목적지가
+    Kinesis 가 아니라 `process.stdout.write` 뿐이라 Datadog까지 오지 않는다
+    (monitor.tf 의 이 리소스 위 주석 참고). 이 상태로 Monitor를 켜면 영구
+    No Data 다. chat-gateway 를 Kinesis 로 잇고 배포한 뒤 `true` 로 켠다.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "chat_rps_ratio_warning" {
+  description = <<-EOT
+    시나리오 2(특가 오픈 캐스케이드) 조기 경보 임계.
+    `o2.warm.rps_ratio{service:chat-gateway}` 가 평시 대비 몇 배로 뛰면
+    경고할지. 트랜스크립트 예시는 20→210 msg/s(10.5배)다 — 절반 정도인
+    5배를 잠정치로 둔다.
+  EOT
+  type        = number
+  default     = 5
+}
+
+variable "cache_hit_rate_critical" {
+  description = <<-EOT
+    시나리오 4(캐시 흡수 실패) 임계. `o2.warm.cache_hit_rate{service:api}` 가
+    이 아래로 떨어지고 동시에 `latency_p95` 가 위험 임계를 넘으면 알림.
+    README 실측 사례(71%→34%, 절반 이하)를 근거로 0.5를 잠정치로 둔다.
+    단독으로는 쓰지 않는다 — latency_p95 동반 조건 없이는 표본 부족 노이즈에
+    오탐한다(제안서 4·7절).
+  EOT
+  type        = number
+  default     = 0.5
+}
+
+variable "enable_queue_backlog_monitor" {
+  description = <<-EOT
+    시나리오 6(주문 확정 큐 적체) Monitor 활성화 여부. 기본 `false`.
+
+    이 Monitor는 `aws.sqs.approximate_age_of_oldest_message` 를 쓰는데, 이
+    지표가 실제로 이 Datadog 조직에 들어오고 있는지 이 스택에서 확인하지
+    못했다(DD_APP_KEY 로 Metrics Explorer 조회가 필요 — 제안서 4·8절).
+    확인 후 `true` 로 켠다. 켜지 않은 채 두면 Monitor 자체가 안 만들어지므로
+    "확인 안 된 지표에 조용히 죽은 Monitor를 걸지 않는다"는 원칙을 지킨다.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "order_confirm_queue_name" {
+  description = "주문 확정 SQS 큐 이름. `03-data/sqs.tf` 의 `aws_sqs_queue.order.name` 과 같아야 한다."
+  type        = string
+  default     = "o2-dev-order"
+}
+
+variable "queue_backlog_age_warning_seconds" {
+  description = "주문 확정 큐 — 가장 오래된 미처리 메시지 나이 경고 임계 (초)."
+  type        = number
+  default     = 60
+}
+
+variable "queue_backlog_age_critical_seconds" {
+  description = "주문 확정 큐 — 가장 오래된 미처리 메시지 나이 위험 임계 (초)."
+  type        = number
+  default     = 300
+}

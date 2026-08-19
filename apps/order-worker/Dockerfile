@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # 토큰을 ARG 나 ENV 로 받지 않는다. 그렇게 하면 이미지 히스토리에 남아
 # `docker history` 로 읽힌다. BuildKit 시크릿은 이 RUN 동안만 파일로
 # 마운트되고 레이어에 기록되지 않는다.
-ARG SDK_REF=0f26876
+ARG SDK_REF=4792fca
 RUN --mount=type=secret,id=sdk_token \
     pip install --no-cache-dir --prefix=/install \
     "o2events @ git+https://x-access-token:$(cat /run/secrets/sdk_token)@github.com/CJ-Only-One/o2-sdk-for-event.git@${SDK_REF}"

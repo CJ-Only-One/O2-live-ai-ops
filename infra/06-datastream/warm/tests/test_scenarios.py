@@ -94,6 +94,28 @@ def test_cache_miss_storm_shows_only_in_cache_hit_rate():
     assert m["interval_cv"] > 0.2
 
 
+def test_pod_cache_skew_invisible_in_service_average_but_visible_by_pod():
+    """시나리오 1(README) — 파드 하나만 무효화를 놓쳐도 service 단위 지표는 정상입니다.
+
+    이것이 이 시나리오가 "알림으로 절대 안 잡힌다"고 문서에 적힌 이유입니다.
+    cache_hit_rate_by_pod 축이 있어야만 갈라집니다.
+    """
+    events = []
+    for pod, hit in (("pod-1", True), ("pod-2", True), ("pod-3", True), ("pod-4", False)):
+        for i in range(50):
+            events.append(
+                factory.inventory(factory.BASE + i, f"u{pod}{i}", "1.1.1.1", cache_hit=hit, pod_name=pod)
+            )
+
+    m = metrics_for(events)
+
+    # service 단위 평균 — 파드 4개 중 1개만 죽어도 75%는 "정상"으로 보인다.
+    assert m["cache_hit_rate"] > 0.7
+    # pod 단위로 쪼개면 pod-4 만 0%다.
+    assert m["cache_hit_rate_by_pod"]["pod-4"] == 0.0
+    assert m["cache_hit_rate_by_pod"]["pod-1"] == 1.0
+
+
 def test_pg_and_db_outage_have_identical_failure_rate():
     """실패율만으로는 두 장애가 완전히 같아 보입니다."""
     pg = metrics_for(factory.pg_outage(), service="payment-api", deploy=None)

@@ -18,7 +18,8 @@ BROADCAST = "LIVE-20260813-01"
 
 
 def envelope(name, ts, *, service="coupon-api", user=None, ip=None,
-             version="v1.4.2", payload=None, session=None, broadcast=BROADCAST):
+             version="v1.4.2", payload=None, session=None, broadcast=BROADCAST,
+             pod_name=None):
     return {
         "event_id": f"E{int(ts * 1000)}{random.randint(0, 999999)}",
         "event_name": name,
@@ -32,6 +33,7 @@ def envelope(name, ts, *, service="coupon-api", user=None, ip=None,
         "user_key": user,
         "client_ip_key": ip,
         "session_id": session or user,
+        "pod_name": pod_name,
         "payload": payload or {},
     }
 
@@ -81,9 +83,10 @@ def payment(ts, user, ip, *, result="SUCCESS", code=None, pg_ms=40, total_ms=200
                     version=version, payload=p)
 
 
-def inventory(ts, user, ip, *, cache_hit=True, fallback=False, latency=12):
+def inventory(ts, user, ip, *, cache_hit=True, fallback=False, latency=12, pod_name=None):
     return envelope(
         "inventory.check", ts, service="coupon-api", user=user, ip=ip,
+        pod_name=pod_name,
         payload={"product_id": "SKU-1", "requested_qty": 1, "available_qty": 5,
                  "source": "CACHE" if cache_hit else "DB_PRIMARY",
                  "cache_hit": cache_hit, "fallback_used": fallback,

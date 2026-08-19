@@ -77,7 +77,7 @@ def build_series(metrics: dict, *, prefix: str | None = None, env: str | None = 
     ]
 
     # 실패율은 이벤트 종류별로 갈라야 알림 조건을 세울 수 있습니다.
-    # event_name 은 값의 종류가 6개로 고정이라 태그로 안전합니다.
+    # event_name 은 값의 종류가 고정이라 태그로 안전합니다.
     for event, rate in (metrics.get("failure_rate") or {}).items():
         if rate is None:
             continue
@@ -87,6 +87,39 @@ def build_series(metrics: dict, *, prefix: str | None = None, env: str | None = 
                 "type": GAUGE,
                 "points": [{"timestamp": ts, "value": float(rate)}],
                 "tags": tags + [f"event:{event}"],
+            }
+        )
+
+    # rps 는 service 단위 합산이라 event.confirm 정지 같은 것을 못 봅니다.
+    # failure_rate 와 같은 이유로 event 태그로 갈라 보냅니다 — metrics.py
+    # 의 derive() 가 이미 known EVENT_NAMES 로만 제한해 뒀습니다.
+    for event, rate in (metrics.get("event_rate") or {}).items():
+        if rate is None:
+            continue
+        series.append(
+            {
+                "metric": f"{prefix}event_rate",
+                "type": GAUGE,
+                "points": [{"timestamp": ts, "value": float(rate)}],
+                "tags": tags + [f"event:{event}"],
+            }
+        )
+
+    # 파드 하나만 캐시 무효화를 놓쳐도 service 단위 cache_hit_rate 평균에는
+    # 안 잡힙니다(README 시나리오 1). 같은 메트릭 이름에 pod_name 태그만 얹어
+    # 보냅니다 — 위 DATADOG_SCALARS 루프가 이미 보낸 service 단위 값과
+    # 시계열이 다르게 잡혀 outlier 탐지 쿼리(`by {pod_name}`)가 이 태그가
+    # 있는 시계열만 골라 씁니다. pod_name 은 K8s 가 정하는 값이라 카디널리티가
+    # 입력값에 안 좌우됩니다(failure_rate/event_rate 와 같은 이유).
+    for pod, rate in (metrics.get("cache_hit_rate_by_pod") or {}).items():
+        if rate is None:
+            continue
+        series.append(
+            {
+                "metric": f"{prefix}cache_hit_rate",
+                "type": GAUGE,
+                "points": [{"timestamp": ts, "value": float(rate)}],
+                "tags": tags + [f"pod_name:{pod}"],
             }
         )
 

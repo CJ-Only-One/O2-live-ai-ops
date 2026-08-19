@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 #
 # 커밋 SHA 로 고정한다. 저장소에 태그가 없어 브랜치로 두면 SDK 가 바뀔 때마다
 # 우리 빌드 결과가 조용히 달라진다.
-ARG SDK_REF=0f26876
+ARG SDK_REF=4792fca
 RUN --mount=type=secret,id=sdk_token \
     pip install --no-cache-dir --prefix=/install \
     "o2events @ git+https://x-access-token:$(cat /run/secrets/sdk_token)@github.com/CJ-Only-One/o2-sdk-for-event.git@${SDK_REF}"

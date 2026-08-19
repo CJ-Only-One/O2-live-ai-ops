@@ -139,6 +139,56 @@ def test_merge_does_not_mutate_other():
     assert partial.to_dict() == before
 
 
+def test_cache_hit_by_pod_isolates_one_bad_pod():
+    """파드 하나만 무효화를 놓쳐도 전체 평균에 묻히지 않는지.
+
+    시나리오 1(README) — 파드 3개 중 1개만 캐시가 계속 미스나도 service 단위
+    평균은 여전히 정상 범위로 보인다. pod_name 축이 있어야 그 파드만 집을 수 있다.
+    """
+    events = []
+    ts = factory.BASE
+    for pod in ("pod-a", "pod-b", "pod-c"):
+        for i in range(10):
+            hit = pod != "pod-c"  # pod-c 만 전부 미스
+            events.append(factory.inventory(ts + i, f"u{pod}{i}", "1.1.1.1", cache_hit=hit, pod_name=pod))
+
+    s = build("coupon-api", window_start(factory.BASE), events)
+
+    assert s.cache_hit_by_pod == {"pod-a": 10, "pod-b": 10}
+    assert s.cache_miss_by_pod == {"pod-c": 10}
+    # service 단위 합산은 20 히트 / 10 미스 — pod-c 하나가 완전히 죽어도
+    # 전체 히트율은 2/3(66.7%)로, 단독으로는 "위험"이라 보기 어렵다.
+    assert s.cache_hit == 20
+    assert s.cache_miss == 10
+
+
+def test_cache_hit_by_pod_merges_across_batches():
+    events = []
+    ts = factory.BASE
+    for pod in ("pod-a", "pod-b"):
+        for i in range(6):
+            events.append(
+                factory.inventory(ts + i, f"u{pod}{i}", "1.1.1.1", cache_hit=(pod == "pod-a"), pod_name=pod)
+            )
+
+    whole = build("coupon-api", window_start(factory.BASE), events)
+    for chunks in (2, 3, 5):
+        merged = _split_build(events, chunks)
+        assert merged.cache_hit_by_pod == whole.cache_hit_by_pod, chunks
+        assert merged.cache_miss_by_pod == whole.cache_miss_by_pod, chunks
+
+
+def test_cache_hit_by_pod_roundtrips():
+    events = [
+        factory.inventory(factory.BASE, "u1", "1.1.1.1", cache_hit=True, pod_name="pod-a"),
+        factory.inventory(factory.BASE + 1, "u2", "1.1.1.1", cache_hit=False, pod_name="pod-b"),
+    ]
+    s = build("coupon-api", window_start(factory.BASE), events)
+    restored = WindowSketch.from_dict(s.to_dict())
+    assert restored.cache_hit_by_pod == s.cache_hit_by_pod == {"pod-a": 1}
+    assert restored.cache_miss_by_pod == s.cache_miss_by_pod == {"pod-b": 1}
+
+
 def test_roundtrip_serialization():
     events = factory.macro(rng=random.Random(14))
     s = build("coupon-api", window_start(factory.BASE), events)

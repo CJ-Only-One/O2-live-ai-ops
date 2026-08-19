@@ -484,6 +484,13 @@ class WindowSketch:
 
         self.cache_hit = 0
         self.cache_miss = 0
+        # 파드별 캐시 히트/미스. 무효화 유실이 파드 하나에만 나는 장애는
+        # service 단위 평균에 묻힌다(파드 3개 중 1개만 고장이어도 평균 75%는
+        # 멀쩡해 보인다) — pod_name 축이 있어야만 그 파드 하나만 잡아낼 수
+        # 있다. pod_name 은 K8s 가 정하는 축이라(사용자 입력이 아니다)
+        # SegmentStats 처럼 상한을 두지 않는다 — 파드 수는 원래 작다.
+        self.cache_hit_by_pod: dict[str, int] = {}
+        self.cache_miss_by_pod: dict[str, int] = {}
 
         # "event_name|CODE" 형태로 눌러 담습니다. 중첩 맵은 병합만 번거롭습니다.
         self.results: dict[str, int] = {}
@@ -549,7 +556,7 @@ class WindowSketch:
         if client:
             self._add_client(payload)
         else:
-            self._add_business(name, payload, version)
+            self._add_business(name, payload, version, env.get(C.E_POD_NAME))
 
         self._add_segments(payload, env, payload.get(C.F_RESULT) == C.RESULT_FAILED)
 
@@ -573,7 +580,7 @@ class WindowSketch:
         if ua:
             self.distinct_ua.add(ua)
 
-    def _add_business(self, name: str, payload: dict, version: str | None) -> None:
+    def _add_business(self, name: str, payload: dict, version: str | None, pod_name: str | None = None) -> None:
         result = payload.get(C.F_RESULT)
         if result:
             self.results[f"{name}|{result}"] = self.results.get(f"{name}|{result}", 0) + 1
@@ -605,8 +612,12 @@ class WindowSketch:
             hit = payload.get(C.F_CACHE_HIT)
             if hit is True:
                 self.cache_hit += 1
+                if pod_name:
+                    self.cache_hit_by_pod[pod_name] = self.cache_hit_by_pod.get(pod_name, 0) + 1
             elif hit is False:
                 self.cache_miss += 1
+                if pod_name:
+                    self.cache_miss_by_pod[pod_name] = self.cache_miss_by_pod.get(pod_name, 0) + 1
             # 폴백은 '성공했지만 정상 경로가 아니었다'는 뜻입니다.
             # 결과가 SUCCESS 라 실패율에는 전혀 안 잡힙니다.
             if payload.get(C.F_FALLBACK_USED) is True:
@@ -676,6 +687,8 @@ class WindowSketch:
             (other.clicks, self.clicks),
             (other.cancel_reasons, self.cancel_reasons),
             (other.cancel_by, self.cancel_by),
+            (other.cache_hit_by_pod, self.cache_hit_by_pod),
+            (other.cache_miss_by_pod, self.cache_miss_by_pod),
         ):
             for k, v in src.items():
                 table[k] = table.get(k, 0) + v
@@ -721,6 +734,7 @@ class WindowSketch:
             "dip": self.distinct_ip.to_dict(),
             "iv": self.intervals.to_dict(),
             "cache": [self.cache_hit, self.cache_miss],
+            "cache_pod": [self.cache_hit_by_pod, self.cache_miss_by_pod],
             "results": self.results,
             "failures": self.failures,
             "clicks": self.clicks,
@@ -752,6 +766,9 @@ class WindowSketch:
         s.intervals = IntervalStats.from_dict(d.get("iv") or {}, settings.interval_capacity)
         cache = d.get("cache") or [0, 0]
         s.cache_hit, s.cache_miss = int(cache[0]), int(cache[1])
+        cache_pod = d.get("cache_pod") or [{}, {}]
+        s.cache_hit_by_pod = dict(cache_pod[0] or {})
+        s.cache_miss_by_pod = dict(cache_pod[1] or {})
         s.results = dict(d.get("results") or {})
         s.failures = dict(d.get("failures") or {})
         s.clicks = dict(d.get("clicks") or {})

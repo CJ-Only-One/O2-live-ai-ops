@@ -24,11 +24,12 @@ EVENT_PAYMENT = "payment.process"
 EVENT_INVENTORY = "inventory.check"
 EVENT_ORDER_CREATE = "order.create"
 EVENT_ORDER_CANCEL = "order.cancel"
+EVENT_ORDER_CONFIRM = "order.confirm"
 EVENT_CLIENT = "client.action"
 
 EVENT_NAMES = frozenset({
     EVENT_COUPON, EVENT_PAYMENT, EVENT_INVENTORY,
-    EVENT_ORDER_CREATE, EVENT_ORDER_CANCEL, EVENT_CLIENT,
+    EVENT_ORDER_CREATE, EVENT_ORDER_CANCEL, EVENT_ORDER_CONFIRM, EVENT_CLIENT,
 })
 
 # 클라이언트 스트림으로 가는 이벤트. sinks._stream_for 와 같은 규칙입니다.
@@ -92,6 +93,7 @@ E_CLIENT_IP_KEY = "client_ip_key"
 E_RECEIVED_TS = "received_ts"
 E_EVENT_TS = "event_ts"
 E_PAYLOAD = "payload"
+E_POD_NAME = "pod_name"
 
 ENVELOPE_FIELDS = frozenset({
     E_EVENT_NAME, E_BROADCAST_ID, E_SERVICE, E_SERVICE_VERSION, E_USER_KEY,
