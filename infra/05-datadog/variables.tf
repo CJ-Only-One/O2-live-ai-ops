@@ -105,3 +105,50 @@ variable "cancel_rate_critical" {
   type        = number
   default     = 0.15
 }
+
+# ── 인프라 대시보드 축 ──────────────────────────────────────────
+#
+# `dashboard_infra.tf` 가 쓰는 값이다. 04-platform/02-eks 의 값과 갈리면
+# "대시보드가 빈다" 증상이 여기서도 그대로 재현된다 — 원격 상태 참조 없이
+# 값만 맞추는 이유는 versions.tf 의 주석과 같다(클러스터가 죽어도 이 스택은
+# 살아 있어야 한다).
+
+variable "kube_cluster_name" {
+  description = <<-EOT
+    Datadog 이 붙이는 `kube_cluster_name` 태그 값.
+
+    `04-platform/datadog.tf` 의 Helm values `datadog.clusterName` 이 이 값을
+    보낸다. 그 값은 `02-eks` 의 `cluster_name` 변수(`local.cluster_name`)에서
+    온다 — 지금은 `o2-eks`.
+  EOT
+  type        = string
+  default     = "o2-eks"
+}
+
+variable "kube_namespace" {
+  description = <<-EOT
+    애플리케이션 파드가 도는 네임스페이스.
+
+    `04-platform` 의 `app_namespace` 변수와 같아야 한다 — 지금은 `o2-dev`.
+    datadog-agent·kube-system 등 플랫폼 네임스페이스까지 같이 보고 싶으면
+    대시보드를 연 뒤 상단 템플릿 변수에서 `*` 로 바꾼다.
+  EOT
+  type        = string
+  default     = "o2-dev"
+}
+
+# ── 인프라 임계치 ────────────────────────────────────────────────
+#
+# 위 "임계치" 절과 같은 성격이다 — 잠정치이고, 대시보드 마커 색깔만 바꾼다.
+
+variable "cpu_request_pct_warning" {
+  description = "CPU 사용률(request 대비) 경고 임계 (%). request 를 넘기기 시작하는 지점."
+  type        = number
+  default     = 100
+}
+
+variable "cpu_throttling_warning" {
+  description = "CPU CFS 스로틀링 비율 경고 임계 (%)."
+  type        = number
+  default     = 25
+}

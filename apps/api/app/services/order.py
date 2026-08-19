@@ -31,7 +31,11 @@ IDEM_TTL_SECONDS = 600
 _SCRIPT_PATH = Path(__file__).with_name("reserve_stock.lua")
 
 # 스크립트를 미리 등록해 매 요청 본문을 보내지 않는다.
-_reserve = valkey.register_script(_SCRIPT_PATH.read_text())
+#
+# encoding 을 명시한다. 없으면 로케일 기본값이라, 컨테이너(UTF-8)에서는 읽히는
+# 파일이 Windows 개발 환경(cp949)에서는 주석의 한글에서 깨진다 — import 시점에
+# 죽어서 시험 수집조차 되지 않는다.
+_reserve = valkey.register_script(_SCRIPT_PATH.read_text(encoding="utf-8"))
 
 _sqs = boto3.client("sqs", region_name=settings.AWS_REGION) if settings.SQS_ORDER_QUEUE_URL else None
 

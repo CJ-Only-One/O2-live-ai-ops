@@ -11,7 +11,7 @@ import { uuid } from '../utils/uuid'
 // 상대 경로가 기본이다. 배포에서는 ALB 가, 로컬에서는 vite 프록시가
 // 같은 오리진에서 /api 를 받아 넘긴다. 절대 주소를 기본값으로 두면
 // 개발과 배포에서 코드가 갈린다.
-const BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
+export const BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
 
 /** 계약의 오류 봉투를 그대로 옮긴 것. code 로 분기한다. */
 export class ApiError extends Error {

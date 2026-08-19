@@ -1,10 +1,12 @@
+import re
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
 from o2events.middleware import install_fastapi
 
-from app.api.routes import broadcasts, health, orders
+from app.api.routes import broadcasts, client_events, health, orders
 from app.core import errors
 from app.core.config import settings
 
@@ -25,12 +27,29 @@ app = FastAPI(
 # 계약의 오류 봉투로 응답하게 한다 (contracts.md 1.3).
 errors.register(app)
 
-# 이벤트 봉투에 사용자·IP·trace 를 자동으로 담게 한다. 서비스당 한 번이면 되고,
-# 이후 emit 호출은 도메인 값만 넘긴다.
+# 봉투의 broadcast_id 는 경로에서 뽑는다.
+#
+# `request.path_params` 를 쓸 수 없다. SDK 의 미들웨어는 BaseHTTPMiddleware 라
+# **라우팅 전에** 돈다 — 그 시점에는 path_params 가 비어 있고, 봉투에는 조용히
+# null 이 들어간다. 실제로 그렇게 비어 있었다.
+_BROADCAST_ID = re.compile(r"/broadcasts/(bc_[0-9]+)(?:/|$)")
+
+
+def _broadcast_id_from_path(request) -> str | None:
+    m = _BROADCAST_ID.search(request.url.path)
+    return m.group(1) if m else None
+
+
+# 이벤트 봉투에 사용자·IP·trace·방송을 자동으로 담게 한다. 서비스당 한 번이면
+# 되고, 이후 emit 호출은 도메인 값만 넘긴다.
 #
 # 로그인이 없으므로 사용자 식별은 클라이언트가 만든 데모 세션 키를 쓴다.
 # SDK 가 이 값을 그대로 저장하지 않고 HMAC 으로 바꿔 봉투에 담는다.
-install_fastapi(app, user_id_getter=lambda r: r.headers.get("x-session-key"))
+install_fastapi(
+    app,
+    user_id_getter=lambda r: r.headers.get("x-session-key"),
+    broadcast_id_getter=_broadcast_id_from_path,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,6 +63,7 @@ app.add_middleware(
 # 규약은 docs/contracts.md 1.1.
 app.include_router(health.router, prefix="/api")
 app.include_router(broadcasts.router, prefix="/api")
+app.include_router(client_events.router, prefix="/api")
 app.include_router(orders.router, prefix="/api")
 
 

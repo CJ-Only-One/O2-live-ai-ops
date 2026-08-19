@@ -8,6 +8,7 @@ import ProductSheet from '../components/ProductSheet'
 import { approximateViewers, broadcastView } from '../presentation'
 import { ApiError } from '../services/api'
 import { fetchBroadcast } from '../services/broadcastService'
+import { track } from '../services/clientEvents'
 import { createOrder } from '../services/orderService'
 import { useChat } from '../services/useChat'
 import type { Broadcast, Product } from '../types'
@@ -54,6 +55,36 @@ function LiveRoom() {
   // 진입 시 1회 조회. 이후 변화는 WebSocket 으로 온다 — 폴링하지 않는다.
   useEffect(load, [load])
 
+  /**
+   * 진입·이탈 (contracts.md 2.5).
+   *
+   * 이탈은 언마운트(다른 화면으로 이동)와 pagehide(탭을 닫음) 양쪽에서 온다.
+   * 둘 다 일어날 수 있어 한 번만 보내도록 잠근다 — 이탈이 두 번 세어지면
+   * 동시 시청자 추정이 음수 쪽으로 흐른다.
+   *
+   * 개발 모드에서는 StrictMode 가 effect 를 두 번 돌려 진입이 두 번 나간다.
+   * 빌드에서는 일어나지 않는다.
+   */
+  const leftRef = useRef(false)
+  useEffect(() => {
+    if (!broadcastId) return
+
+    leftRef.current = false
+    track(broadcastId, [{ action: 'LIVE_ENTER' }])
+
+    const leave = () => {
+      if (leftRef.current) return
+      leftRef.current = true
+      track(broadcastId, [{ action: 'LIVE_LEAVE' }], true)
+    }
+
+    window.addEventListener('pagehide', leave)
+    return () => {
+      window.removeEventListener('pagehide', leave)
+      leave()
+    }
+  }, [broadcastId])
+
   // 끊겼다 다시 붙으면 스냅샷을 다시 받는다. 끊긴 동안의 변경은 푸시로
   // 오지 않았기 때문이다 (contracts.md 3.6).
   const wasConnected = useRef(false)
@@ -64,6 +95,19 @@ function LiveRoom() {
 
   function buy(product: Product, qty: number) {
     if (!broadcastId || order.kind === 'sending') return
+
+    /*
+      이 한 번의 누름이 서버에서 이벤트 둘(coupon.issue · order.create)이 되므로
+      클릭도 둘로 낸다 (contracts.md 5.2). 짝이 1:1 이어야 click_ratio 가
+      "버튼 없이 API 를 부르는 트래픽"을 가려낸다.
+
+      요청 **직전에** 낸다. 클릭과 서버 이벤트가 같은 10초 윈도우에서 만나야
+      집계에서 짝이 지어진다 (infra/06-datastream/warm).
+    */
+    track(broadcastId, [
+      { action: 'COUPON_BUTTON_CLICK', target_id: product.sku_id },
+      { action: 'CHECKOUT_CLICK', target_id: product.sku_id },
+    ])
 
     let key = idemKeys.current.get(product.sku_id)
     if (!key) {

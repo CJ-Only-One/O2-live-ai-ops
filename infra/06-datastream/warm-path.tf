@@ -45,10 +45,21 @@ locals {
     # (variables.tf 의 datadog_site 설명 참고 — 틀리면 조용히 실패한다)
     DD_SITE = var.datadog_site
     # 클릭이 어느 서비스의 요청으로 이어지는지. 서비스가 늘면 여기만 고칩니다.
+    #
+    # **실제 서비스 이름과 같아야 합니다.** 기본값(coupon-api / order-api)은
+    # SDK 예제의 이름이고, 우리 봉투의 service 는 `api` 하나입니다
+    # (contracts.md 5.4). 어긋나면 클릭은 METRIC#coupon-api 로, 서버 이벤트는
+    # METRIC#api 로 갈라져 click_ratio 가 영원히 null 입니다 — 파드도 apply 도
+    # 정상이라 알아채기 어렵습니다.
     O2_WARM_CLICK_ROUTE = jsonencode({
-      COUPON_BUTTON_CLICK = "coupon-api"
-      CHECKOUT_CLICK      = "order-api"
+      COUPON_BUTTON_CLICK = "api"
+      CHECKOUT_CLICK      = "api"
     })
+
+    # click_route 에 없는 클라이언트 이벤트(LIVE_ENTER·LIVE_LEAVE)가 갈 곳.
+    # 기본값 live-web 으로 두면 서버 이벤트가 하나도 없는 파티션이 따로 생기고,
+    # ua_diversity 가 그쪽으로 빠져 api 윈도우에서는 계속 null 입니다.
+    O2_WARM_CLIENT_SERVICE = "api"
   }
 
   # 패키지에 담을 파이썬 소스. __pycache__ 를 넣으면 아키텍처가 안 맞을 때
