@@ -22,5 +22,8 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // 테스트는 node:test 를 쓰고 브라우저 번들에 들어가지 않는다.
+  // 앱 빌드에 포함하면 Node 타입이 없어 타입 검사가 깨진다.
+  "exclude": ["src/**/*.test.ts"]
 }

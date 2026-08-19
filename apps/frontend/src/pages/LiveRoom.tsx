@@ -182,9 +182,9 @@ function LiveRoom() {
           poster={view.thumbnail}
           muted={muted}
           live={broadcast.state === 'LIVE'}
-          // 재생이 오래 안 돌아오면 방송이 끝난 것일 수 있다. 그때만
-          // 스냅샷을 다시 받는다 — 폴링하지 않는다 (contracts.md 3.6).
-          onStalled={load}
+          // 회로가 열릴 때만 스냅샷을 다시 받는다. 영상 복구 판정은
+          // 매니페스트로 하고, 이건 LIVE → ENDED 확인용 보조다.
+          onCircuitOpen={load}
         />
         <div className="room__video-scrim" />
 
