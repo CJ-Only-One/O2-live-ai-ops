@@ -162,8 +162,9 @@ SQS를 거쳐 워커가 한다. 200을 주면 클라이언트가 "주문이 저�
 
 `X-Session-Key`도 클라이언트가 만든다. API는 원문을 저장하지 않고 이벤트 SDK와
 같은 HMAC-SHA256 규칙으로 `user_key`를 만든 뒤 SQS와 MySQL에 전달한다.
-API와 chat-gateway에는 같은 `O2_EVENTS_SALT`를 Secret으로 주입해야 한다. 로컬
-Compose는 개발 전용 기본값을 쓰며, 운영 Secret 배선은 아직 남아 있다.
+세 서비스가 같은 `O2_EVENTS_SALT`를 봐야 한다. 클러스터에서는 Secret `o2-events`가
+그 값을 나른다 — 원본은 Secrets Manager에 있고 ESO가 동기화한다(D-027). 로컬
+Compose는 개발 전용 기본값을 쓴다.
 
 ### 2.3 주문 상태 조회
 

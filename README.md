@@ -15,9 +15,13 @@ infra/
   01-network/    VPC, 서브넷, 라우팅, NAT
   02-eks/        클러스터, 노드그룹, EKS 애드온
   03-data/       RDS, Valkey, SQS (backend key는 `datastore/` · D-015, D-017)
-  04-platform/   Argo CD, Load Balancer Controller, 클러스터 접근 권한
+  04-platform/   Argo CD, Load Balancer Controller, ESO, Datadog 에이전트,
+                 클러스터 접근 권한과 앱 배선
+  05-datadog/    Datadog 대시보드
+  06-agent/      Dify 호스트 — EKS 밖의 EC2 (D-028)
   06-datastream/ Kinesis, Firehose, S3 레이크, Glue, DynamoDB, Lambda
-                 에이전트가 쓰는 내부 데이터 시스템 (backend key는 `data/` · D-025)
+                 에이전트가 쓰는 내부 데이터 시스템 (backend key는 `data/` · D-029)
+  07-media/      MediaMTX, NLB, CloudFront — 영상 (미작성 · D-033)
 apps/<service>/  Dockerfile + src
 loadtest/        부하 테스트 시나리오
 CLAUDE.md        작업 시작 전에 읽을 것 — 규약과 함정 요약
@@ -39,7 +43,7 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 
 `03-data`와 `06-datastream`은 이름이 비슷하지만 다른 것이다. 앞은 서비스가
 읽고 쓰는 저장소, 뒤는 그 서비스를 관찰한 결과다. **state 키를 서로 바꿔 쓰면
-상대 리소스를 지운다** (D-015, D-025).
+상대 리소스를 지운다** (D-015, D-029).
 
 배경과 근거는 [`docs/decisions.md`](docs/decisions.md)에 있다.
 
@@ -108,7 +112,7 @@ PR 하나가 곧 인프라 변경 수단이 된다. (D-011)
 
 ```
 푸시 → app.yml
-        ├ verify   바뀐 서비스만. `build.gradle.kts` 가 없으면 건너뛴다 (D-013)
+        ├ verify   바뀐 서비스만. 언어를 판별하지 못하면 건너뛴다 (D-013)
         ├ image    이미지 빌드 → Trivy 스캔 → ECR (태그: 커밋 SHA)
         └ deploy   O2-live-deploy 의 <service>-deployment.yaml 태그 갱신 후 커밋
                      → Argo CD가 감지 → 클러스터에 반영
@@ -135,13 +139,14 @@ CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004�
 |---|---|---|
 | `o2-data` | ConfigMap | RDS·Valkey 엔드포인트, SQS 큐 URL |
 | `o2-db` | Secret | `DB_PASSWORD` 하나 |
+| `o2-events` | Secret | `O2_EVENTS_SALT` 하나 (D-027) |
 
 둘 다 `infra/04-platform` 이 `03-data` 의 remote state 를 읽어 만든다.
 데이터 스택을 다시 만들어도 그 스택을 apply 하면 따라간다.
 
-이벤트와 DB의 `user_key`를 같은 값으로 만들려면 API와 chat-gateway에 동일한
-`O2_EVENTS_SALT`도 필요하다. 로컬 Compose에는 개발용 기본값이 있지만 클러스터용
-Secret 배선은 아직 없으므로, Kinesis 전환 전에 별도 ExternalSecret으로 추가한다.
+이벤트와 DB의 `user_key`를 같은 값으로 만들려면 세 서비스가 동일한
+`O2_EVENTS_SALT`를 봐야 한다. `o2-events` Secret 이 그 값을 나른다 — 원본은
+Secrets Manager 에 있고 ESO 가 동기화한다 (D-027).
 
 ### 이름이 계약이다
 
@@ -208,16 +213,16 @@ ConfigMap/Secret 키  ==  apps/api 의 Settings 필드  ==  .env.example 항목
 - [x] `infra/01-network` — `enable_data_tier = true` (private-data 서브넷)
 - [x] `infra/04-platform` — 접속 정보를 클러스터로 넣는 배선 (D-018). 적용·검증 완료
 - [x] `apps/api` — 환경변수 계약 반영, `docker-compose` 에 Valkey 추가
-- [ ] `apps/frontend` — 계약(`contracts.md`)에 맞춰 전면 수정 (D-019)
-- [ ] DB 스키마와 마이그레이션 방식 — 정해진 것이 없다. `contracts.md` 2장·설계 문서 4.4 참고
+- [x] `apps/frontend` — 계약(`contracts.md`)에 맞춰 전면 수정 (D-019)
+- [x] DB 스키마와 마이그레이션 방식 — `docs/schema.md` + Alembic
 - [x] OIDC 프로바이더 소유권을 `00-cicd` 로 정리 (D-009)
 - [x] 배포 저장소 ruleset이 태그 갱신 커밋을 막던 문제 해결 (D-012)
 - [x] ~~`apps/testpage`~~ — 역할이 끝나 제거 (D-013 → D-020). ECR 저장소만 남겨둠
-- [x] `data/terraform.tfstate` 는 백데이터 파트 소관으로 확인 — 건드리지 않는다 (D-015)
+- [x] ~~`data/terraform.tfstate` 는 백데이터 파트 소관 (D-015)~~ — `06-datastream` 으로 흡수 (D-029)
 - [x] `app.yml` — Trivy 이미지 스캔, 결과를 Code Scanning으로 (D-014)
 - [x] Trivy를 CRITICAL 차단으로 승격 (D-014)
 - [x] `docs/contracts.md` — REST·WebSocket·캐시 키·이벤트 계약 (D-016)
-- [ ] `contracts.md` 5.3 — 백데이터 파트에 확인 필요 (개발 시작 전)
+- [ ] `contracts.md` 5.5 — 모르는 `event_name` 을 수집단이 어떻게 처리하는지 확인 필요. `chat.send` 발행이 여기 막혀 있다
 - [ ] `tf.yml` — `trivy config` 로 Terraform 미스컨피그 검사 (게이트 없이 리포트만)
 - [ ] `scan.yml` — gitleaks 결과도 Code Scanning으로 이전
 - [ ] 주 1회 ECR 최신 이미지 재스캔 — CI 스캔은 빌드 시점만 본다
