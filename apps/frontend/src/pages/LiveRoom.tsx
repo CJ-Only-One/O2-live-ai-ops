@@ -86,9 +86,11 @@ function LiveRoom() {
         const text =
           e.code === 'SOLD_OUT'
             ? '주문 처리 중 품절되었습니다'
-            : e.code === 'RATE_LIMITED'
-              ? '잠시 후 다시 시도해 주세요'
-              : '주문을 접수하지 못했습니다'
+            : e.code === 'NOT_STARTED'
+              ? '아직 특가가 시작되지 않았습니다'
+              : e.code === 'RATE_LIMITED'
+                ? '잠시 후 다시 시도해 주세요'
+                : '주문을 접수하지 못했습니다'
         setOrder({ kind: 'failed', message: text })
       })
   }
