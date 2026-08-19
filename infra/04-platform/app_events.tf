@@ -147,6 +147,16 @@ data "aws_secretsmanager_secret" "media_publish" {
   name  = var.media_publish_secret_name
 }
 
+# CDN 비밀값. CloudFront 가 오리진 요청에 Authorization: Bearer 로 붙이고,
+# MediaMTX 는 그 헤더를 보고 CDN 요청으로 판정해 시청자별 세션 ID 를 빼준다.
+# 어긋나면 재생은 되는데 캐시만 조용히 안 먹는다 (D-038).
+#
+# 07-media 가 같은 시크릿을 읽는다. 값이 한 곳에만 있어야 두 쪽이 갈리지 않는다.
+data "aws_secretsmanager_secret" "media_cdn" {
+  count = var.enable_media ? 1 : 0
+  name  = var.media_cdn_secret_name
+}
+
 data "aws_iam_policy_document" "external_secrets_read_media" {
   count = var.enable_media && var.enable_external_secrets ? 1 : 0
 
@@ -158,7 +168,10 @@ data "aws_iam_policy_document" "external_secrets_read_media" {
       "secretsmanager:GetSecretValue",
       "secretsmanager:ListSecretVersionIds",
     ]
-    resources = [data.aws_secretsmanager_secret.media_publish[0].arn]
+    resources = [
+      data.aws_secretsmanager_secret.media_publish[0].arn,
+      data.aws_secretsmanager_secret.media_cdn[0].arn,
+    ]
   }
 }
 
@@ -197,6 +210,12 @@ resource "kubectl_manifest" "app_media_secret" {
           secretKey = "MTX_PUBLISH_PASS"
           remoteRef = {
             key = data.aws_secretsmanager_secret.media_publish[0].name
+          }
+        },
+        {
+          secretKey = "MTX_HLSCDNSECRET"
+          remoteRef = {
+            key = data.aws_secretsmanager_secret.media_cdn[0].name
           }
         },
       ]
