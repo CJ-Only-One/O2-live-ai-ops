@@ -283,6 +283,17 @@ variable "media_publish_secret_name" {
   default     = "o2/dev/media-publish"
 }
 
+variable "media_cdn_secret_name" {
+  description = <<-EOT
+    MediaMTX 의 `hlsCDNSecret` 이 든 Secrets Manager 시크릿 이름.
+
+    `07-media` 의 CloudFront 가 같은 시크릿을 읽어 오리진 요청 헤더에 넣는다.
+    두 쪽이 같은 값을 봐야 캐시가 먹는다 (D-038).
+  EOT
+  type        = string
+  default     = "o2/dev/media-cdn-secret"
+}
+
 variable "enable_external_secrets" {
   description = <<-EOT
     External Secrets Operator 와 ClusterSecretStore 를 설치한다.

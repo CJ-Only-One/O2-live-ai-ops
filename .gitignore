@@ -16,6 +16,7 @@ plan.txt
 !.terraform.lock.hcl
 # archive_file 이 apply 때마다 다시 만드는 Lambda 패키지. 빌드 산출물이다.
 infra/06-datastream/lambda/*.zip
+infra/06-agent/lambda/*.zip
 
 # ── JVM / Gradle ─────────────────────────────────────────
 .gradle/

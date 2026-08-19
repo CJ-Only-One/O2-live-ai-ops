@@ -177,7 +177,15 @@ function LiveRoom() {
           오버레이 구조는 그대로다. 재생이 안 되면 LivePlayer 가 알아서
           썸네일로 떨어진다 — 송출이 없는 상태가 흔하다.
         */}
-        <LivePlayer src={broadcast.hls_url} poster={view.thumbnail} muted={muted} />
+        <LivePlayer
+          src={broadcast.hls_url}
+          poster={view.thumbnail}
+          muted={muted}
+          live={broadcast.state === 'LIVE'}
+          // 재생이 오래 안 돌아오면 방송이 끝난 것일 수 있다. 그때만
+          // 스냅샷을 다시 받는다 — 폴링하지 않는다 (contracts.md 3.6).
+          onStalled={load}
+        />
         <div className="room__video-scrim" />
 
         <div className="room__topbar">
