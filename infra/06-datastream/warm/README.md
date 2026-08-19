@@ -18,7 +18,7 @@ warm/
 ├── handlers/
 │   ├── aggregate.py    Lambda o2-agg
 │   └── serve.py        Lambda o2-warm-api
-├── tests/              59건 — 감별표 6개 + UX 저하 5개 시나리오
+├── tests/              감별표 6개 + UX 저하 5개 시나리오 (정확한 건수는 `pytest -q`)
 └── DEPLOY.md           배포 절차
 ```
 
@@ -108,9 +108,15 @@ Datadog 의 일이 아닙니다.
 ```
 
 이래야 요구사항 문서 §2 의 "감지는 Datadog 하나로 일원화"와 충돌하지
-않습니다. 보내는 것은 **스칼라 20개**뿐이고, `segments`·`segment_skew`·
-`failure_codes`·`top_contributors` 같은 맵·목록은 보내지 않습니다
-(`metrics.DATADOG_SCALARS`).
+않습니다. 보내는 것은 **고정 스칼라**(`metrics.DATADOG_SCALARS`)뿐이고,
+`segments`·`segment_skew`·`failure_codes`·`top_contributors` 같은 맵·목록은
+보내지 않습니다.
+
+카디널리티가 **입력값이 아니라 고정된 열거값**으로 갈리는 지표는 예외로
+태그 분해를 허용합니다 — `failure_rate`(event 종류), `event_rate`(event 종류),
+`cache_hit_rate`(pod_name, 파드 수는 K8s가 정함)가 여기 해당하고
+`datadog.py`의 `build_series()`에 있습니다. `user_key`·`campaign_id`처럼
+입력값이 카디널리티를 정하는 축은 절대 여기 넣지 않습니다.
 
 ### 세 경로에서 Warm 이 맡는 것
 

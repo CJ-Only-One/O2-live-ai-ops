@@ -91,7 +91,10 @@ resource "datadog_monitor" "chat_ingest_surge" {
   query = "min(last_2m):avg:${var.metric_prefix}rps_ratio{service:chat-gateway,env:${local.monitor_env}} >= ${var.chat_rps_ratio_warning}"
 
   monitor_thresholds {
-    warning = var.chat_rps_ratio_warning
+    # Datadog metric alert의 query 비교값은 critical(Alert) 임계와 일치해야 한다.
+    # warning만 정의하면 /api/v1/monitor/validate가 "Alert status is required"를
+    # 반환한다. 이 Monitor 자체가 조기 경보이므로 현재 단일 임계를 Alert로 쓴다.
+    critical = var.chat_rps_ratio_warning
   }
 
   # EWMA 표본이 30개(~5분) 쌓이기 전에는 rps_ratio 자체가 없다(README 실측
