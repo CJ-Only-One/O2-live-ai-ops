@@ -76,6 +76,17 @@ resource "kubectl_manifest" "app_data_config" {
       # 파드 로그로 나갔다가 로테이션과 함께 사라진다. 나머지 O2_* 는 SDK
       # 기본값이 실물과 같아 주입하지 않는다 (app_events.tf).
       O2_EVENTS_SINK = var.enable_app_events ? "kinesis" : "stdout"
+
+      # chat-gateway 전용 스위치다. o2-data 는 전체 app 파드가 envFrom 으로
+      # 받는 공유 ConfigMap이라 api·order-worker 에도 이 키가 들어가지만,
+      # 그쪽 코드는 이 이름을 읽지 않으므로 무해하다 — chat-gateway 만
+      # 전용 ConfigMap을 새로 만들 이유가 아직 없다.
+      #
+      # O2_EVENTS_SINK 와 별개로 게이트를 둔 이유 — chat.send 가 Kinesis 로
+      # 가는 코드는 준비됐지만(apps/chat-gateway), 이 값이 true 로 바뀌는
+      # 순간부터 실제로 발행이 시작된다. 이미지 배포와 별개로 켤 시점을
+      # 고를 수 있게 변수로 둔다.
+      EMIT_CHAT_EVENTS = tostring(var.enable_chat_events)
     }
   })
 }

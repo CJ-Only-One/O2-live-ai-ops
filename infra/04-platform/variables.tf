@@ -216,6 +216,23 @@ variable "enable_app_events" {
   default     = true
 }
 
+variable "enable_chat_events" {
+  description = <<-EOT
+    chat-gateway 의 chat.send 발행 스위치(EMIT_CHAT_EVENTS). 기본 false.
+
+    apps/chat-gateway 가 stdout 대신 Kinesis(stream-business)로 실제 전송하는
+    코드는 이미 있다 — O2_EVENTS_SINK(위 O2_EVENTS_SINK 값, enable_app_events
+    가 켜져 있으면 "kinesis")를 그대로 따라간다. 이 변수는 그와 별개로
+    "chat.send 를 실제로 발행하기 시작할지"만 고른다.
+
+    켜기 전에 새 chat-gateway 이미지(Kinesis 전송 코드 포함)가 배포됐는지
+    확인한다 — 구버전 이미지에서 켜도 에러는 안 나지만(예전처럼 stdout 으로
+    감) Datadog 쪽 chat_ingest_surge Monitor 는 계속 No Data 다.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "events_stream_business" {
   description = "주문·재고·쿠폰 이벤트가 가는 스트림. 백데이터 파트 소유이며 SDK 기본값과 같아야 한다"
   type        = string
