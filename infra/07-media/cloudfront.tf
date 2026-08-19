@@ -12,6 +12,22 @@ locals {
   origin_id = "alb-hls"
 }
 
+# /hls 외의 경로를 엣지에서 끊는다.
+#
+# 기본 동작에 붙인다. 경로 패턴이 /hls/* 만 오리진으로 보내고, 그 밖의 것은
+# 전부 여기로 떨어져 403 이 된다. **오리진까지 가지 않으므로 요금도 안 든다.**
+#
+# 처음 판에서는 "이 배포에는 /hls 만 보낼 것" 이라는 주석만 두고 강제하지
+# 않았다. 그래서 /api 와 프론트가 그대로 통과했다 — 주소를 아는 사람이 치면
+# 그만이었다. 의도를 주석에 적는 것과 막는 것은 다르다.
+resource "aws_cloudfront_function" "deny_non_hls" {
+  name    = "${var.project}-${var.environment}-deny-non-hls"
+  runtime = "cloudfront-js-2.0"
+  comment = "/hls 외의 경로를 403 으로 끊는다 (D-039)"
+  publish = true
+  code    = file("${path.module}/deny-function.js")
+}
+
 # CDN 비밀값. 원본은 Secrets Manager 에만 있고 여기서는 값을 읽어 쓴다.
 #
 # 이 스택은 값을 state 에 남긴다 — CloudFront 의 오리진 커스텀 헤더가
@@ -104,27 +120,46 @@ resource "aws_cloudfront_distribution" "media" {
     }
   }
 
-  # 기본 동작. 아래 ordered_cache_behavior 에 안 걸리는 것은 여기로 온다.
-  # /hls 외에는 이 배포로 보내지 않을 것이므로 플레이리스트 정책을 쓴다.
+  # 기본 동작 = 거부. 아래 경로 패턴에 안 걸리면 전부 여기로 온다.
+  #
+  # 오리진을 지정해야 하지만 함수가 먼저 403 을 돌려주므로 도달하지 않는다.
   default_cache_behavior {
     target_origin_id       = local.origin_id
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]
     cache_policy_id        = aws_cloudfront_cache_policy.playlist.id
-    compress               = true
+    compress               = false
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.deny_non_hls.arn
+    }
   }
 
-  # 세그먼트만 길게 잡는다. 확장자로 가른다 — MediaMTX 의 mpegts 변형은
-  # .ts 를 낸다 (mediamtx-config.yaml 의 hlsVariant).
+  # 세그먼트. 파일명이 콘텐츠 해시라 길게 잡는다.
+  #
+  # 확장자만 보고 가르면 /api/x.ts 같은 경로도 걸린다. 접두사를 함께 둔다 —
+  # 순서가 중요하다. 위에 있는 것이 먼저 걸린다.
   ordered_cache_behavior {
-    path_pattern           = "*.ts"
+    path_pattern           = "/hls/*.ts"
     target_origin_id       = local.origin_id
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]
     cache_policy_id        = aws_cloudfront_cache_policy.segment.id
     compress               = false
+  }
+
+  # 플레이리스트를 포함한 나머지 /hls 경로.
+  ordered_cache_behavior {
+    path_pattern           = "/hls/*"
+    target_origin_id       = local.origin_id
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    cache_policy_id        = aws_cloudfront_cache_policy.playlist.id
+    compress               = true
   }
 
   restrictions {
