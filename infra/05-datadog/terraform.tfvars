@@ -26,3 +26,11 @@ retry_rate_warning    = 0.05
 retry_rate_critical   = 0.15
 cancel_rate_warning   = 0.05
 cancel_rate_critical  = 0.15
+
+# 인프라 대시보드(dashboard_infra.tf) 축. 02-eks 의 cluster_name,
+# 04-platform 의 app_namespace 와 같아야 한다 — 지금은 각각 o2-eks / o2-dev.
+kube_cluster_name = "o2-eks"
+kube_namespace    = "o2-dev"
+
+cpu_request_pct_warning = 100
+cpu_throttling_warning  = 25

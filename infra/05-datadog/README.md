@@ -20,6 +20,21 @@ Datadog 안의 객체만 소유한다. AWS 리소스를 만들지 않으므로 `
 변수로 받으면 plan 파일에 남고, Secrets Manager data source 로 읽으면
 **state 에 평문으로 남는다**(data source 결과도 state 에 저장된다). D-026 과 같은 이유다.
 
+**한 번에 하려면 `apply.ps1` 을 쓴다.** 아래 수동 절차를 그대로 스크립트로
+옮긴 것뿐이다 — 새로운 저장 방식이 아니라 "매번 손으로 치는 다섯 줄"을
+한 명령으로 줄인 것이다. 키는 이 스크립트 실행 중에만 그 프로세스의
+환경변수로 존재하고, 끝나면 지운다. **파일에는 절대 적지 않는다** — 이
+디렉터리의 모든 `*.ps1`·`*.tfvars` 는 커밋되므로, 값을 적으면 그 순간부터
+git 히스토리가 곧 비밀이 된다.
+
+```powershell
+.\apply.ps1            # init + plan 까지. 사람이 tfplan 을 보고 승인은 따로
+.\apply.ps1 -Apply     # plan 을 보여준 뒤 확인받고 적용까지
+.\apply.ps1 -Apply -Yes  # 확인 없이 적용 — 무인 실행용, 대화형 세션에서는 쓰지 않는다
+```
+
+수동으로 하고 싶거나(디버깅 등) 스크립트가 하는 일을 보고 싶으면:
+
 ```powershell
 $env:AWS_PROFILE = "o2-data"      # S3 백엔드용. 이 스택에 aws 프로바이더는 없지만 백엔드는 쓴다
 
@@ -49,7 +64,37 @@ terraform apply tfplan
 US1 기본값으로 보내면 403이 나고, `datadog.py` 가 그것을 삼켜 집계를 막지
 않기 때문이다(의도된 설계).
 
-## 대시보드 구성 — 위에서 아래가 진단 순서
+## 대시보드 둘
+
+| 파일 | 제목 | 데이터 출처 | 축 |
+|---|---|---|---|
+| `dashboard.tf` | O2 라이브커머스 — 비즈니스 관측 | `06-datastream` 집계 Lambda (`o2.warm.*`) | `service` · `env` |
+| `dashboard_infra.tf` | O2 라이브커머스 — 인프라 · 쿠버네티스 운영 | `04-platform` 의 Datadog Agent (kubelet·kube-state-metrics·APM) | `kube_cluster_name` · `kube_namespace` (HTTP 그룹만 `service`·`env`) |
+
+`dashboard_infra.tf` 는 Agent 가 이미 보내는 원시 지표(`kubernetes.*`,
+`kubernetes_state.*`, `trace.http.request.*`)만 쓴다 — 이쪽은 집계 Lambda를
+거치지 않으므로 `06-datastream` 이 죽어도 화면은 계속 채워진다. 구성:
+
+| 그룹 | 무엇 |
+|---|---|
+| 1. 리소스 사용률 | CPU(request 대비 %)·메모리(limit 대비 %)·CPU throttling·Disk I/O·Network I/O |
+| 2. 파드 생명주기 | Restart Count·Replicas(updated/available/unavailable/desired)·Pending Count·Restart/Waiting Reason 테이블 |
+| 3. 노드 · 프로브 | 노드별 Ready 파드·Probe Failed Events(Kubernetes 이벤트 스트림) |
+| 4. HTTP 트래픽 (APM) | RPS·성공률(non-5xx)·요청 rate·5xx count·응답시간·에러 |
+
+비율 위젯(CPU%, 메모리%, throttling%, 성공률)은 `request.formula` +
+`request.query.metric_query` 로 만든다 — provider 3.x 의 신형 문법이다.
+`request.q` 한 줄로 되는 절대값 위젯과 헷갈리지 않는다.
+
+**Probe Failed Events 는 게이지 메트릭이 없다.** 프로브 실패는
+`kubernetesEvents`(datadog.tf)로 들어오는 Kubernetes 이벤트라서 이 위젯만
+`event_stream_definition` 이다 — 다른 위젯처럼 timeseries 로 못 그린다.
+
+`kube_cluster_name`·`kube_namespace` 기본값은 `variables.tf` 에 있고
+`02-eks`/`04-platform` 의 실제 값과 맞춰 뒀다(`o2-eks` / `o2-dev`). 값이
+갈리면 이 대시보드도 "비즈니스 관측" 과 같은 증상 — 화면이 조용히 빈다.
+
+## 대시보드 구성 — 위에서 아래가 진단 순서 (`dashboard.tf`)
 
 | 그룹 | 무엇 | 알림 대상 |
 |---|---|---|
