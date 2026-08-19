@@ -3,7 +3,7 @@
 
 # 조직이 AP1 이다. 04-platform 의 datadog_site, 06-datastream 의 datadog_site 와
 # 같은 조직을 가리켜야 한다. 갈리면 대시보드가 빈다.
-datadog_api_url = "https://api.ap1.datadoghq.com/"
+datadog_api_url = "https://api.us5.datadoghq.com/"
 
 # 06-datastream 의 O2_DD_PREFIX 기본값과 같아야 한다.
 metric_prefix = "o2.warm."
