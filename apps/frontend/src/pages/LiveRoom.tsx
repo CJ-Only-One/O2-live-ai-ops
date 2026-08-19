@@ -129,7 +129,7 @@ function LiveRoom() {
     <div className="phone-frame room">
       <div className="room__video">
         {/*
-          영상 자리. 05-media(MediaMTX·CloudFront)가 생기면 hls_url 로
+          영상 자리. 07-media(MediaMTX·CloudFront)가 생기면 hls_url 로
           플레이어를 붙인다 — 오버레이 구조는 그대로라 교체가 이 한 줄이다.
         */}
         <img src={view.thumbnail} alt="" className="room__video-img" />

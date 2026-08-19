@@ -121,10 +121,6 @@ jobs:
             LANG=python
           elif [ -f package.json ]; then
             LANG=node
-          elif [ -f build.gradle.kts ]; then
-            # TODO: apps/api 가 FastAPI로 교체되면 이 분기를 지운다.
-            # 지금 지우면 교체 전까지 그 서비스가 무검증 상태가 된다.
-            LANG=gradle
           else
             LANG=none
             echo "::warning::${{ matrix.service }} 의 언어를 판별하지 못했습니다. 검증을 건너뜁니다."
@@ -219,24 +215,6 @@ jobs:
           # 빌드는 반드시 돈다. 프론트는 여기서 깨지는 것을 잡는 게 핵심이다.
           npm run build
 
-      # ── Gradle (교체 예정) ────────────────────────────────
-      - if: steps.kind.outputs.lang == 'gradle'
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - if: steps.kind.outputs.lang == 'gradle'
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.14'
-          # 포크 PR이 캐시를 오염시키지 못하게 한다.
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
-
-      - name: Gradle 빌드 + 테스트
-        if: steps.kind.outputs.lang == 'gradle'
-        run: gradle build --no-daemon
-
       # 언어마다 리포트가 나오는 위치가 다르다. 전부 적고 없는 것은 무시한다.
       - name: 테스트 리포트
         if: always()
@@ -244,7 +222,6 @@ jobs:
         with:
           name: test-${{ matrix.service }}
           path: |
-            apps/${{ matrix.service }}/build/reports/tests/
             apps/${{ matrix.service }}/htmlcov/
             apps/${{ matrix.service }}/junit.xml
             apps/${{ matrix.service }}/coverage/
