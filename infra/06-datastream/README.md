@@ -23,12 +23,12 @@ AI 에이전트가 쓰는 **내부 데이터 시스템**. 서비스가 내보내
 
 이름이 비슷해 헷갈리기 쉽다. **state 키를 서로 바꿔 쓰면 상대 리소스를
 자기 것으로 인식하고 다음 destroy 에 지운다.** 근거는
-[D-015](../../docs/decisions.md) · [D-025](../../docs/decisions.md).
+[D-015](../../docs/decisions.md) · [D-029](../../docs/decisions.md).
 
 ## 이 저장소로 들어오기 전에 다른 곳에 있었다
 
 원래 `dataInfra/infra-data/` 에서 관리했고 리소스 30개는 **이미 apply 되어
-있다.** 옮긴 것은 코드뿐이고 state 와 리소스는 그대로다 (D-025).
+있다.** 옮긴 것은 코드뿐이고 state 와 리소스는 그대로다 (D-029).
 그래서 첫 `plan` 은 **`No changes`** 가 나와야 한다. 뭔가 뜨면 옮기는 과정에서
 어긋난 것이니 apply 하지 말고 원인을 찾는다.
 
@@ -87,11 +87,15 @@ aws ssm put-parameter --name /o2/datadog/api-key `
 동작이지만, **Glue 가 30일보다 오래된 원본을 다시 읽는 일은 없다**는 전제가
 깔린다. 재처리가 필요해지면 규칙부터 확인한다.
 
-### Function URL 은 `authorization_type = "NONE"`
+### Function URL 은 인터넷에서 403 이다
 
-IAM 이 아니라 `X-O2-Key` 헤더로 막는다. `warm_api_key` 가 비어 있으면
-**인터넷에 열린 채로 뜬다.** 데모용으로는 그래도 되지만 그 상태를 모르고
-두지는 않는다.
+`authorization_type = "NONE"` 에 리소스 정책도 `Principal: "*"` 인데 모든
+요청이 거부된다. 계정 밖의 조직 정책으로 보인다 — **Dify 가 이 경로로 붙을 수
+없다**는 뜻이라 인그레스를 다시 정해야 한다. 조사 기록은 D-031,
+재현 절차와 대안은 `warm/DEPLOY.md` 함정 절.
+
+`warm_api_key` 는 그래도 채운다. URL 이 열리는 순간 필요해지고, 비어 있으면
+**인증 없이 열린 채로** 뜬다.
 
 ### 배치 창 2초는 성능 설정이 아니다
 

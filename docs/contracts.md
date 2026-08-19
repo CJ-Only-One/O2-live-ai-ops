@@ -86,7 +86,8 @@ FastAPI의 기본 422 응답은 쓰지 않는다. 본문·경로·헤더 검증 
 
 ## 2. REST
 
-**폴링 엔드포인트는 만들지 않는다.** 상태 변화는 전부 WebSocket으로 밀어준다(D-14).
+**폴링 엔드포인트는 만들지 않는다.** 상태 변화는 전부 WebSocket으로 밀어준다
+(`architecture.md` D-14).
 REST는 진입 시 1회 조회와 쓰기 요청에만 쓴다.
 
 실행 코드에서 생성한 명세는 `/api/docs`, 원본 JSON은 `/api/openapi.json`에 있다.
@@ -285,7 +286,7 @@ Ingress의 `idle_timeout.timeout_seconds`도 함께 올린다. 하트비트 주�
 구조의 전부다.
 
 파드 간 트래픽은 인입량 × 파드 수라 Peak에서도 초당 수백 건이다.
-Kafka나 Streams가 낄 자리가 없다(D-15, 설계 문서 6.3).
+Kafka나 Streams가 낄 자리가 없다(`architecture.md` D-15 · 6.3).
 
 Pub/Sub은 at-most-once이므로 채팅 유실 가능성이 있다. **채팅은 유실을 감수한다.**
 반면 `product.update` / `stock.update`는 유실되면 화면이 낡은 채로 남으므로,

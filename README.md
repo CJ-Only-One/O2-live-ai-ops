@@ -16,15 +16,18 @@ infra/
   02-eks/        클러스터, 노드그룹, EKS 애드온
   03-data/       RDS, Valkey, SQS (backend key는 `datastore/` · D-015, D-017)
   04-platform/   Argo CD, Load Balancer Controller, 클러스터 접근 권한
+  05-datadog/    대시보드, 지표 사전 (state key 는 `observability/` — 번호가 아니다)
+  06-agent/      Dify 호스트 — EKS 밖의 EC2 (D-028)
   06-datastream/ Kinesis, Firehose, S3 레이크, Glue, DynamoDB, Lambda
-                 에이전트가 쓰는 내부 데이터 시스템 (backend key는 `data/` · D-025)
+                 에이전트가 쓰는 내부 데이터 시스템 (backend key는 `data/` · D-029)
 apps/<service>/  Dockerfile + src
 loadtest/        부하 테스트 시나리오
-CLAUDE.md        작업 시작 전에 읽을 것 — 규약과 함정 요약
+AGENTS.md        작업 시작 전에 읽을 것 — 규약과 함정, 문서 지도 (D-022)
 docs/
   architecture.md  전체 설계 (부하 가정, 캐싱, 스케일링, 리스크)
   decisions.md   결정 기록
   contracts.md   인터페이스 계약 (REST, WebSocket, 캐시 키, 이벤트)
+  schema.md      MySQL 테이블·Valkey 키·마이그레이션
 ```
 
 **쿠버네티스 매니페스트는 이 저장소에 없다.**
@@ -39,7 +42,7 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 
 `03-data`와 `06-datastream`은 이름이 비슷하지만 다른 것이다. 앞은 서비스가
 읽고 쓰는 저장소, 뒤는 그 서비스를 관찰한 결과다. **state 키를 서로 바꿔 쓰면
-상대 리소스를 지운다** (D-015, D-025).
+상대 리소스를 지운다** (D-015, D-029).
 
 배경과 근거는 [`docs/decisions.md`](docs/decisions.md)에 있다.
 
@@ -209,7 +212,7 @@ ConfigMap/Secret 키  ==  apps/api 의 Settings 필드  ==  .env.example 항목
 - [x] `infra/04-platform` — 접속 정보를 클러스터로 넣는 배선 (D-018). 적용·검증 완료
 - [x] `apps/api` — 환경변수 계약 반영, `docker-compose` 에 Valkey 추가
 - [ ] `apps/frontend` — 계약(`contracts.md`)에 맞춰 전면 수정 (D-019)
-- [ ] DB 스키마와 마이그레이션 방식 — 정해진 것이 없다. `contracts.md` 2장·설계 문서 4.4 참고
+- [x] DB 스키마와 마이그레이션 방식 — `docs/schema.md`. Alembic, `apps/api/migrations/`
 - [x] OIDC 프로바이더 소유권을 `00-cicd` 로 정리 (D-009)
 - [x] 배포 저장소 ruleset이 태그 갱신 커밋을 막던 문제 해결 (D-012)
 - [x] ~~`apps/testpage`~~ — 역할이 끝나 제거 (D-013 → D-020). ECR 저장소만 남겨둠

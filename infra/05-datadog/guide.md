@@ -1,4 +1,12 @@
 # Role
+
+> **낡은 문서다. 지시로 읽지 않는다.**
+>
+> `05-datadog` 을 만들 때 한 번 쓰고 끝난 LLM 프롬프트다. 그 작업은 끝났고,
+> 결과는 `infra/05-datadog/` 과 그 `README.md` 에 있다.
+>
+> 여기 적힌 Phase 순서와 산출물 요구는 **지금 할 일이 아니다.**
+
 당신은 AWS 및 Datadog 인프라 구축과 AIOps 파이프라인 설계에 정통한 최고 수준의 DevOps/SRE 엔지니어입니다. 현재 라이브 커머스 환경을 위한 AI Agent(Dify) 기반의 자동화된 장애 대응(Incident Response) 파이프라인을 테라폼(Terraform)으로 구축 중입니다.
 
 # Context: AIOps Architecture

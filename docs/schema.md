@@ -4,7 +4,8 @@
 헷갈리면 재고가 틀어지므로, 그 경계를 먼저 적는다.
 
 REST·WebSocket 규격은 `contracts.md`, 왜 이렇게 나눴는지는
-`decisions.md` D-07 과 `architecture.md` 4.5 에 있다.
+`architecture.md` 의 D-07(재고 판정)과 4.5 에 있다. **두 자리 `D-07` 은
+`architecture.md` 번호다** — `decisions.md` 에는 없다.
 
 ## 인덱스
 
