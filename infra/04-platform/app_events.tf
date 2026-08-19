@@ -134,3 +134,77 @@ resource "kubectl_manifest" "app_events_secret" {
     aws_iam_role_policy.external_secrets_read_events_salt,
   ]
 }
+
+# ── 영상 송출 비밀번호 ────────────────────────────────────────
+# MediaMTX 의 publish 사용자 비밀번호. RTMP 인제스트가 인터넷에 열려 있어
+# 이것이 유일한 방어선이다 — 없으면 NLB 주소를 아는 누구나 우리 방송으로
+# 송출할 수 있다.
+#
+# 경로는 salt 와 같다. 원본은 Secrets Manager 에만 있고 Terraform 은 ARN 만
+# 안다. 파드는 환경변수 하나로 받는다 (MTX_AUTHINTERNALUSERS_1_PASS).
+data "aws_secretsmanager_secret" "media_publish" {
+  count = var.enable_media ? 1 : 0
+  name  = var.media_publish_secret_name
+}
+
+data "aws_iam_policy_document" "external_secrets_read_media" {
+  count = var.enable_media && var.enable_external_secrets ? 1 : 0
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:GetResourcePolicy",
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:ListSecretVersionIds",
+    ]
+    resources = [data.aws_secretsmanager_secret.media_publish[0].arn]
+  }
+}
+
+resource "aws_iam_role_policy" "external_secrets_read_media" {
+  count = var.enable_media && var.enable_external_secrets ? 1 : 0
+
+  name   = "read-media-publish"
+  role   = aws_iam_role.external_secrets[0].id
+  policy = data.aws_iam_policy_document.external_secrets_read_media[0].json
+}
+
+resource "kubectl_manifest" "app_media_secret" {
+  count = var.enable_media && var.enable_external_secrets ? 1 : 0
+
+  yaml_body = yamlencode({
+    apiVersion = "external-secrets.io/v1"
+    kind       = "ExternalSecret"
+    metadata = {
+      name      = "o2-media"
+      namespace = var.app_namespace
+    }
+    spec = {
+      refreshPolicy   = "Periodic"
+      refreshInterval = "1h"
+      secretStoreRef = {
+        name = "aws-secrets-manager"
+        kind = "ClusterSecretStore"
+      }
+      target = {
+        name           = "o2-media"
+        creationPolicy = "Owner"
+      }
+      data = [
+        {
+          # 시크릿 본문이 평문 문자열이라 property 를 쓰지 않는다.
+          secretKey = "MTX_PUBLISH_PASS"
+          remoteRef = {
+            key = data.aws_secretsmanager_secret.media_publish[0].name
+          }
+        },
+      ]
+    }
+  })
+
+  depends_on = [
+    kubectl_manifest.aws_secret_store,
+    aws_iam_role_policy.external_secrets_read_media,
+  ]
+}

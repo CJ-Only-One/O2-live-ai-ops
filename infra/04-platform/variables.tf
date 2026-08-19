@@ -234,6 +234,26 @@ variable "events_salt_secret_name" {
   default     = "o2/dev/events-salt"
 }
 
+variable "enable_media" {
+  description = <<-EOT
+    영상 스택 배선을 켠다 — MediaMTX 의 송출 비밀번호를 Secret 으로 넣는다.
+
+    켜기 전에 Secrets Manager 에 media_publish_secret_name 시크릿이 있어야 한다.
+    없으면 data source 가 plan 단계에서 깨진다 (Datadog 키·salt 와 같은 방식이다).
+
+    MediaMTX 자체는 매니페스트 저장소가 배포한다. 여기서 만드는 것은 비밀번호
+    하나뿐이다 (D-033 — 영상은 Terraform 스택을 따로 두지 않는다).
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "media_publish_secret_name" {
+  description = "MediaMTX publish 비밀번호가 든 Secrets Manager 시크릿 이름. 평문 문자열로 저장한다"
+  type        = string
+  default     = "o2/dev/media-publish"
+}
+
 variable "enable_external_secrets" {
   description = <<-EOT
     External Secrets Operator 와 ClusterSecretStore 를 설치한다.
