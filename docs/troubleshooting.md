@@ -27,6 +27,7 @@
 | T-009 | `terraform plan` 출력에 비밀값이 평문으로 찍힌다 | import, state, 키 교체 |
 | T-010 | 문서·자료의 메뉴 이름이 화면과 다르다 | Dify 출력 노드, Datadog Test 버튼, Monitor 섹션명 |
 | T-011 | Dify 는 워크플로가 실패해도 HTTP 200 을 준다 | `data.status`, 비동기, `raise` |
+| T-012 | Dify 가 넘긴 값을 안 쓰는데 에러도 안 난다 | 모르는 입력 키 무시, 계약 불일치 |
 
 ---
 
@@ -417,3 +418,47 @@ if status != "succeeded":
 
 큐도 DLQ 도 알람도 전부 정상으로 보이는데 알림만 사라진다.
 **감시 장치를 다 만들어두고도 못 잡는 종류**라, 겪고 나서 찾으면 오래 걸린다.
+
+---
+
+## T-012. Dify 가 넘긴 값을 안 쓰는데 에러도 안 난다
+
+**증상**
+
+Lambda 는 `alert_query` 를 넘기는데 LLM 답변에 그 내용이 전혀 반영되지 않는다.
+워크플로는 `succeeded` 로 끝나고 로그에도 아무 이상이 없다.
+
+**원인**
+
+**Dify 는 모르는 입력 키를 조용히 무시한다.** 400 을 내지 않는다.
+
+즉 Lambda 가 보내는 `inputs` 의 키 이름과 Dify 시작 노드의 변수 이름이
+어긋나면 그 값은 그냥 사라진다. 실제로 Datadog webhook 을 15필드로 바꾸고
+DSL 도 고쳤는데 **Lambda 만 옛 5필드로 남아** 있어서, 계약이 중간에서
+끊긴 채로 한동안 돌았다.
+
+**해결**
+
+계약을 한 곳에 적고 네 지점을 같이 고친다 —
+Datadog webhook Payload, Lambda 의 `inputs`, Dify 시작 노드 변수, 프롬프트.
+목록은 [`../infra/06-agent/dify/README.md`](../infra/06-agent/dify/README.md) 1절.
+
+확인은 **값이 실제로 답변에 반영되는지**로 한다. 마커를 하나 심어 보면 확실하다.
+
+```bash
+curl -s -X POST 'http://localhost:17080/v1/workflows/run' \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"inputs":{"alert_query":"MARKER_5512 > 0.1", ...},"response_mode":"blocking","user":"c"}'
+```
+
+답변에 `MARKER_5512` 가 안 나오면 그 변수는 워크플로에 닿지 않은 것이다.
+
+**왜 늦게 찾았나**
+
+에러가 안 난다. `succeeded` 가 뜨고 LLM 이 그럴듯한 답까지 만든다.
+T-002 와 같은 종류인데 더 나쁘다 — T-002 는 답변에 `{{변수}}` 라는 흔적이라도
+남지만, 이건 **아무 흔적도 남지 않는다.** 답변 품질이 조금 나쁜 것과
+구분이 안 된다.
+
+계약을 바꿀 때 "어디를 같이 고쳐야 하는가" 를 문서에 적어두지 않으면
+반드시 한 곳이 남는다.

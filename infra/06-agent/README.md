@@ -190,7 +190,7 @@ Dify 안에서 만든 워크플로는 Terraform 이 만들지 않는다. DSL 로
 [`dify/`](dify/) 에 커밋한다 — 입력 계약과 내보내기 절차는 [`dify/README.md`](dify/README.md).
 
 알림을 여기까지 실어 나르는 Lambda 는 [`lambda.tf`](lambda.tf) 와
-[`lambda/datadog_to_dify.py`](lambda/datadog_to_dify.py) 에 있다.
+[`lambda/ingress.py`](lambda/ingress.py) 와 [`lambda/worker.py`](lambda/worker.py) 에 있다.
 
 ## 아직 안 한 것
 

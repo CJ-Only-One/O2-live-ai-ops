@@ -39,12 +39,32 @@ output "alert_relay_function_url" {
 }
 
 output "alert_relay_security_group_id" {
-  value = aws_security_group.alert_relay.id
+  description = "Worker 만 VPC 안에 있으므로 이 SG 는 Worker 것이다"
+  value       = aws_security_group.alert_relay.id
+}
+
+output "alert_dlq_url" {
+  description = "세 번 실패한 알림이 쌓이는 곳. 원본은 requestPayload 안에 있다"
+  value       = aws_sqs_queue.alert_dlq.url
+}
+
+output "alert_alarm_topic_arn" {
+  description = <<-EOT
+    알람 세 개가 여기로 보낸다. **구독은 사람이 붙여야 한다** —
+    이메일 구독은 수신자가 확인 메일을 눌러야 활성화되므로 apply 로 끝나지 않는다.
+
+      aws sns subscribe --topic-arn <이 값> --protocol email \
+        --notification-endpoint <주소> --region ap-northeast-2
+  EOT
+  value       = aws_sns_topic.alert_relay_alarm.arn
 }
 
 output "alert_relay_log_command" {
-  description = "알림이 안 올 때 제일 먼저 볼 곳"
-  value       = "aws logs tail /aws/lambda/${local.alert_relay_name} --follow --region ${var.region}"
+  description = "알림이 안 올 때 제일 먼저 볼 곳. Ingress 가 받았는지, Worker 가 돌았는지 순서로 본다"
+  value = join("\n", [
+    "aws logs tail /aws/lambda/${local.alert_ingress_name} --follow --region ${var.region}",
+    "aws logs tail /aws/lambda/${local.alert_worker_name} --follow --region ${var.region}",
+  ])
 }
 
 output "ssm_session_command" {
