@@ -33,7 +33,7 @@ locals {
   warm_env = {
     O2_WARM_TABLE  = aws_dynamodb_table.agent_context.name
     O2_WARM_WINDOW = "10"
-    DD_ENV         = "prod"
+    DD_ENV         = var.environment
 
     # 키가 **어디 있는지**만 넣습니다. 값을 넣으면 state 와 Lambda 콘솔에
     # 평문으로 남습니다. 조회는 o2warm/secrets.py 가 실행 시점에 합니다.

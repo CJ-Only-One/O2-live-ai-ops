@@ -23,6 +23,30 @@ headings=$(grep -oE '^## (D-[0-9]{3})\.' "$DOC" | grep -oE 'D-[0-9]{3}' | sort -
 # 인덱스 행: "| D-015 | ... |" 에서 D-015 만 뽑는다.
 indexed=$(grep -oE '^\| (D-[0-9]{3}) \|' "$DOC" | grep -oE 'D-[0-9]{3}' | sort -u)
 
+# 같은 번호를 두 절이 쓰면 부분 읽기가 엉뚱한 절로 간다. sort -u 로 비교하면
+# 중복이 지워져 보이지 않으므로 따로 센다 — 실제로 병합 사고가 이렇게 통과했다.
+dup_head=$(grep -oE '^## (D-[0-9]{3})\.' "$DOC" | grep -oE 'D-[0-9]{3}' | sort | uniq -d)
+dup_index=$(grep -oE '^\| (D-[0-9]{3}) \|' "$DOC" | grep -oE 'D-[0-9]{3}' | sort | uniq -d)
+
+if [ -n "$dup_head" ]; then
+  echo "✗ 같은 번호를 쓰는 절이 둘 이상이다:"
+  echo "$dup_head" | sed 's/^/    /'
+  fail=1
+fi
+
+if [ -n "$dup_index" ]; then
+  echo "✗ 인덱스에 같은 번호가 두 번 있다:"
+  echo "$dup_index" | sed 's/^/    /'
+  fail=1
+fi
+
+# 병합 충돌 표식. 남은 채로 커밋된 적이 있다.
+if grep -qE '^(<<<<<<<|=======$|>>>>>>>)' "$DOC"; then
+  echo "✗ 병합 충돌 표식이 남아 있다:"
+  grep -nE '^(<<<<<<<|=======$|>>>>>>>)' "$DOC" | sed 's/^/    /'
+  fail=1
+fi
+
 missing=$(comm -23 <(echo "$headings") <(echo "$indexed"))
 orphan=$(comm -13 <(echo "$headings") <(echo "$indexed"))
 
