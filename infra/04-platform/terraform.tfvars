@@ -4,3 +4,6 @@ enable_datadog = true
 # 먼저 켜도 에러는 안 나지만(구버전은 그냥 stdout으로 감), 배포 순서를
 # 맞추는 편이 chat_ingest_surge Monitor의 No Data 구간을 줄인다.
 enable_chat_events = true
+# 영상 재생 주소. 07-media 의 `terraform output hls_base_url` 값이다.
+# CloudFront 를 통해야 캐시가 팬아웃을 흡수한다 (D-039).
+hls_base_url = "https://dq8dzhb390eet.cloudfront.net/hls"
