@@ -1,5 +1,16 @@
 # AIOps Data Engineering Architecture Context
 
+> **낡은 문서다. 판단 근거로 쓰지 않는다.**
+>
+> 백데이터 파트가 이 저장소로 코드를 넘기기 전에 쓴 문맥 스냅샷이다.
+> 어느 문서도 이 파일을 가리키지 않고, 내용이 저장소의 결정과 어긋난다.
+>
+> - 5절 `Next Steps for Claude Agent` — **이미 끝난 일이다.** 지시로 읽지 않는다
+> - Dify 기동 경로(API Gateway → Lambda)는 D-028·D-031 이후 다시 정하는 중이다
+> - Warm Path 의 현재 사실은 `infra/06-datastream/warm/README.md`
+>
+> 남겨 두는 이유는 그쪽 파트가 무엇을 의도했는지 되짚을 때뿐이다.
+
 ## 1. Project Overview
 * **목표:** 라이브 커머스 특가 이벤트 등 대규모 트래픽 환경에서 발생하는 비즈니스 장애(인시던트)를 실시간으로 감지하고 대응하는 AI Agent(AIOps) 워크플로우 및 데이터 파이프라인 구축.
 * **핵심 철학:** 인시던트의 정의는 인프라 지표가 아닌 '고객 경험(CX) 및 비즈니스 임팩트'를 기준으로 Top-down 방식으로 정의함. AI Agent는 판단을 위해 '사전 집계된 맥락(Warm Data)'과 '원본 데이터(Cold Data)', '과거 노하우(RAG)'를 분리하여 활용함.

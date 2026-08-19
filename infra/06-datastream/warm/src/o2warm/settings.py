@@ -137,7 +137,8 @@ class WarmSettings:
         default_factory=lambda: os.environ.get("O2_DD_PREFIX", "o2.warm.")
     )
     dd_timeout: float = field(default_factory=lambda: _float("O2_DD_TIMEOUT", 2.0))
-    dd_env: str = field(default_factory=lambda: os.environ.get("DD_ENV", "prod"))
+    # 기본값이 prod 면 주입을 빠뜨렸을 때 개발 데이터가 운영 이름으로 나간다.
+    dd_env: str = field(default_factory=lambda: os.environ.get("DD_ENV", "dev"))
 
     # --- 조회 API ---
     # 값을 직접 넣는 경로(api_key)는 남겨 두지만 배포에는 쓰지 않습니다.

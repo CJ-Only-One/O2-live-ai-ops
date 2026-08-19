@@ -11,7 +11,8 @@ Argo CD와 그 위의 모든 것이 자동으로 복원된다.
 | Argo CD 설치 | README 절차를 손으로 따라감 | `helm_release` |
 | Argo Application 등록 | `kubectl apply` 수동 | `argocd-apps` 차트 |
 | Load Balancer Controller | `terraform output` 을 복사해 실행 | `helm_release` |
-| Datadog EKS 메트릭 | 미설치 | `helm_release` (API/App Key는 Kubernetes Secret) |
+| Datadog EKS 메트릭·APM | 미설치 | `helm_release` (API/App Key는 Kubernetes Secret) |
+| 앱의 DB·큐·이벤트 배선 | 매니페스트에 손으로 적음 | `app_data_access.tf` · `app_events.tf` |
 
 ## 헬름 릴리스가 둘인 이유
 
@@ -78,7 +79,8 @@ Argo CD는 클러스터 전체에 대한 배포 권한을 가지므로 이 계�
 
 ## Datadog EKS 메트릭 설치
 
-Datadog은 기본적으로 꺼져 있다. API/App Key 원문은 Terraform state나 Kubernetes
+Datadog은 `enable_datadog` 으로 켠다 (현재 `terraform.tfvars` 에서 켜져 있다).
+API/App Key 원문은 Terraform state나 Kubernetes
 매니페스트에 넣지 않는다. AWS Secrets Manager의 JSON Secret(`o2/dev/datadog`)에만
 보관하고, External Secrets Operator(ESO)가 `datadog/datadog-secret`으로 동기화한다.
 따라서 EKS/platform stack을 destroy한 뒤 다시 apply해도 원본 키를 다시 입력할 필요가 없다.
@@ -115,8 +117,14 @@ terraform apply
 
 설치 구성은 ESO, EKS Pod Identity, 노드·파드·컨테이너 메트릭(kubelet/cAdvisor),
 Kubernetes 상태 메트릭, 제한된 Kubernetes 이벤트, EKS control plane(API Server,
-Controller Manager, Scheduler)을 수집한다. 로그, APM, 프로세스 목록 수집은 비용과
-데이터 범위를 분리하기 위해 활성화하지 않았다.
+Controller Manager, Scheduler)을 수집한다.
+
+**APM 은 켜져 있다** (D-026). 파드 지표는 "api 가 느리다" 까지만 말하고 그 안에서
+Valkey 냐 MySQL 이냐를 가르지 못하기 때문이다. UDS 가 아니라 hostPort 8126 으로
+받고, 애플리케이션은 `DD_AGENT_HOST` 를 `status.hostIP` 로 주입받는다.
+
+로그와 프로세스 목록은 계속 끈다. 데이터량이 곧 요금이고, 지금 필요한 것은 로그
+본문이 아니라 구간별 시간이다.
 
 ```bash
 kubectl -n datadog get pods
@@ -146,10 +154,28 @@ Argo CD가 [`O2-live-deploy`](https://github.com/CJ-Only-One/O2-live-deploy)를
 감시하며, 거기 있는 매니페스트대로 `o2-dev` 네임스페이스를 채운다.
 이미지 태그는 앱 저장소의 `app.yml` 이 자동으로 갱신한다.
 
+## 앱 배선 (`app_data_access.tf` · `app_events.tf`)
+
+파드가 데이터 계층과 이벤트 스트림에 닿는 경로를 여기서 만든다.
+
+| 만드는 것 | 내용 |
+|---|---|
+| ConfigMap `o2-data` | RDS·Valkey 엔드포인트, SQS 큐 URL, `O2_EVENTS_SINK` |
+| Secret `o2-db` | `DB_PASSWORD` — RDS 관리형 시크릿을 ESO 가 동기화 |
+| Secret `o2-events` | `O2_EVENTS_SALT` — `user_key` HMAC salt (D-027) |
+| IAM | SQS 접근, Kinesis `PutRecords`, ESO 의 시크릿 읽기 |
+| ServiceAccount + Pod Identity | `api` · `order-worker` · `chat-gateway` |
+
+엔드포인트는 `03-data` 의 remote state 에서 읽는다. 데이터 스택을 다시 만들어도
+이 스택만 apply 하면 따라간다.
+
+**`enable_app_events` 를 켜기 전에** Secrets Manager 에 `o2/dev/events-salt` 가
+있어야 한다. 없으면 data source 가 plan 단계에서 깨진다 — Datadog 키와 같은 방식이다.
+
 ## 아직 안 들어간 것
 
 - `metrics-server` — 없으면 HPA 불가. `02-eks` 의 애드온 목록에 추가하는 편이 맞다
 - `aws-ebs-csi-driver` — 없으면 PVC 불가. 마찬가지
-- External Secrets Operator — 결제 연동 시 PG사 키를 다루려면 필수
+- KEDA — Phase 5. 파드 슬롯이 10칸 넘게 필요하다
 - Argo CD 외부 노출(Ingress) — 지금은 `port-forward` 로만 접근
 - SSO(dex), Slack 알림 — `enable_dex` 를 켜고 `configs.cm` 에 설정 추가

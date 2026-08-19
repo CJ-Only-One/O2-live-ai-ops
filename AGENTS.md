@@ -13,7 +13,7 @@
 
 ## 문서를 읽는 법 (토큰 절약)
 
-`docs/decisions.md`(~15k 토큰)와 `docs/architecture.md`(~20k 토큰)는
+`docs/decisions.md`(~29k 토큰)와 `docs/architecture.md`(~20k 토큰)는
 **절대 통째로 읽지 않는다.** 둘 다 상단에 인덱스가 있다.
 
 ```bash
@@ -29,6 +29,15 @@ sed -n '553,607p' docs/decisions.md     # 그 절만 읽는다
 | 테이블·컬럼·인덱스, MySQL/Valkey 경계 | `docs/schema.md` |
 | 저장소 사용법, 배포 흐름 | `README.md` |
 | 특정 인프라 스택 | `infra/<스택>/README.md` |
+
+**`D-` 번호가 두 벌이다. 자릿수로 구분한다.**
+
+| 표기 | 어디 | 무엇 |
+|---|---|---|
+| `D-007` (세 자리) | `docs/decisions.md` | 만들면서 겪은 결정 |
+| `D-07` (두 자리) | `docs/architecture.md` 1절 표 | 설계 시점의 기술 선택 |
+
+두 자리 번호를 `decisions.md` 에서 찾으면 엉뚱한 절이 나온다.
 
 ## 저장소 셋
 
@@ -47,7 +56,7 @@ sed -n '553,607p' docs/decisions.md     # 그 절만 읽는다
 | `03-data`는 **`datastore/`**, `06-datastream`은 **`data/`** | 바꿔 쓰면 상대 스택 리소스를 자기 것으로 보고 다음 destroy에 지운다 |
 | ConfigMap 키 == `Settings` 필드 == `.env.example` | 새 이름을 만들면 주입값이 무시되고 `localhost` 기본값이 쓰인다 |
 | 매니페스트 `serviceAccountName` == `04-platform`의 `app_service_accounts` | AWS 호출에서만 실패한다 |
-| apply 순서 `01`→`02`→(`03`∥`05`∥`06`)→`04`, **로컬에서 사람이** | CI는 `plan`만 돈다 |
+| apply 순서 `01`→`02`→(`03`∥`05`∥`06`∥`07`)→`04`, **로컬에서 사람이** | CI는 `plan`만 돈다 |
 
 ## 나중에 못 얹는 것
 

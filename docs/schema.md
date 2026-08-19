@@ -4,7 +4,8 @@
 헷갈리면 재고가 틀어지므로, 그 경계를 먼저 적는다.
 
 REST·WebSocket 규격은 `contracts.md`, 왜 이렇게 나눴는지는
-`decisions.md` D-07 과 `architecture.md` 4.5 에 있다.
+`architecture.md` 의 D-07(재고 판정)과 4.5 에 있다. **두 자리 `D-07` 은
+`architecture.md` 번호다** — `decisions.md` 에는 없다.
 
 ## 인덱스
 
@@ -154,8 +155,8 @@ erDiagram
 만든 세션 토큰을 쓰는데, SDK 가 HMAC 으로 바꾼 값만 담는다. 이벤트 봉투의
 `user_key` 와 같은 값이라 로그와 DB 를 이 키로 이을 수 있다.
 
-이 일치는 API와 chat-gateway가 같은 `O2_EVENTS_SALT`를 쓸 때만 보장된다. 로컬은
-Compose 기본값이 있고, 클러스터용 Secret 배선은 아직 미구현이다.
+이 일치는 세 서비스가 같은 `O2_EVENTS_SALT`를 쓸 때만 보장된다. 클러스터에서는
+Secret `o2-events`가 그 값을 나르고(D-027), 로컬은 Compose 기본값을 쓴다.
 
 HMAC 적용 전 만들어진 개발 주문에는 원본 세션 키나 빈 문자열이 남아 있을 수
 있다. salt에 의존하는 데이터 변환을 Alembic에 넣지 말고, 운영 데이터가 생기기

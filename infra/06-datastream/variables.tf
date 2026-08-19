@@ -1,3 +1,19 @@
+variable "environment" {
+  description = <<-EOT
+    지표에 붙는 `env` 태그. Datadog 이 이 값으로 APM 트레이스와 커스텀 지표를
+    묶는다.
+
+    **04-platform 의 environment 와 같아야 한다.** 다르면 같은 요청이 두 이름으로
+    갈려, 대시보드에서 스파이크를 보고 그 트레이스로 넘어가는 경로가 끊긴다.
+    apply 는 성공하고 화면만 조용히 안 이어진다.
+
+    태그를 바꾸면 Datadog 은 다른 계열로 본다 — 이전 값으로 쌓인 그래프는 그
+    시점에서 끝나고 새 값으로 다시 시작한다. 데이터가 지워지지는 않는다.
+  EOT
+  type        = string
+  default     = "dev"
+}
+
 variable "warm_api_key_param" {
   description = <<-EOT
     Agent 조회 API 의 X-O2-Key 값이 담긴 SSM SecureString 파라미터 **이름**.

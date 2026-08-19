@@ -86,7 +86,8 @@ FastAPI의 기본 422 응답은 쓰지 않는다. 본문·경로·헤더 검증 
 
 ## 2. REST
 
-**폴링 엔드포인트는 만들지 않는다.** 상태 변화는 전부 WebSocket으로 밀어준다(D-14).
+**폴링 엔드포인트는 만들지 않는다.** 상태 변화는 전부 WebSocket으로 밀어준다
+(`architecture.md` D-14).
 REST는 진입 시 1회 조회와 쓰기 요청에만 쓴다.
 
 실행 코드에서 생성한 명세는 `/api/docs`, 원본 JSON은 `/api/openapi.json`에 있다.
@@ -113,7 +114,18 @@ GET /api/broadcasts/{broadcast_id}
 ```
 
 `state`는 `SCHEDULED` / `LIVE` / `ENDED`.
-상품의 `state`는 `PENDING` / `ON_SALE` / `SOLD_OUT`.
+상품의 `state`는 `PENDING` / `ON_SALE` / `SOLD_OUT`이고, **주문 가부가 여기에 달려 있다.**
+
+| 상품 `state` | 뜻 | 주문 |
+|---|---|---|
+| `PENDING` | 특가가 아직 열리지 않음 | **거부.** `NOT_STARTED` / 409 |
+| `ON_SALE` | 특가 판매 중 | 허용 |
+| `SOLD_OUT` | 재고 소진 | 사실상 거부 — 판정은 `DECR` 이 하고 `SOLD_OUT` / 409 가 나간다 |
+
+**정가 판매 경로는 없다.** 주문은 `sku_id`와 `qty`만 받고 금액은 서버가 `sale_price`로
+정한다(2.2). 그래서 `PENDING` 상품을 파는 것은 "열리지도 않은 특가로 파는 것"이 되고,
+화면이 "특가 오픈 예정"이라 말하는 것과 어긋난다. 정가 판매가 필요해지면 그때는
+주문 본문에 적용가를 남기는 변경이 함께 와야 한다 — 계약을 먼저 고친다.
 
 **이 엔드포인트가 캐시 스탬피드의 발생 지점이다.** 푸시로 바꿔도 진입 시 1회 조회는
 남고, 방송 시작 30초에 그것이 몰린다(설계 문서 3.8). 사전 워밍과 singleflight의
@@ -151,8 +163,9 @@ SQS를 거쳐 워커가 한다. 200을 주면 클라이언트가 "주문이 저�
 
 `X-Session-Key`도 클라이언트가 만든다. API는 원문을 저장하지 않고 이벤트 SDK와
 같은 HMAC-SHA256 규칙으로 `user_key`를 만든 뒤 SQS와 MySQL에 전달한다.
-API와 chat-gateway에는 같은 `O2_EVENTS_SALT`를 Secret으로 주입해야 한다. 로컬
-Compose는 개발 전용 기본값을 쓰며, 운영 Secret 배선은 아직 남아 있다.
+세 서비스가 같은 `O2_EVENTS_SALT`를 봐야 한다. 클러스터에서는 Secret `o2-events`가
+그 값을 나른다 — 원본은 Secrets Manager에 있고 ESO가 동기화한다(D-027). 로컬
+Compose는 개발 전용 기본값을 쓴다.
 
 ### 2.3 주문 상태 조회
 
@@ -316,7 +329,7 @@ Ingress의 `idle_timeout.timeout_seconds`도 함께 올린다. 하트비트 주�
 구조의 전부다.
 
 파드 간 트래픽은 인입량 × 파드 수라 Peak에서도 초당 수백 건이다.
-Kafka나 Streams가 낄 자리가 없다(D-15, 설계 문서 6.3).
+Kafka나 Streams가 낄 자리가 없다(`architecture.md` D-15 · 6.3).
 
 Pub/Sub은 at-most-once이므로 채팅 유실 가능성이 있다. **채팅은 유실을 감수한다.**
 반면 `product.update` / `stock.update`는 유실되면 화면이 낡은 채로 남으므로,
@@ -381,6 +394,7 @@ SDK의 이벤트 이름은 쿠폰 도메인 기준이고 우리는 특가 판매
 |---|---|---|
 | 특가 구매 시도 (Valkey `DECR`) | `coupon.issue` | 성공 시 `remaining_qty`에 `DECR` 반환값 |
 | `DECR` 실패 (재고 부족) | `coupon.issue` | `result=FAILED`, `failure_code=SOLD_OUT` |
+| 특가 오픈 전 주문 시도 | `coupon.issue` | `result=FAILED`, `failure_code=NOT_ELIGIBLE` — SDK 열거에 `NOT_STARTED`가 없어 가장 가까운 값을 쓴다 |
 | 주문 접수 | `order.create` | `channel=LIVE` |
 | 워커 단계 실패 | `order.cancel` | `reason_code=INVENTORY_SHORTAGE` 등 |
 | 방송 진입·이탈 | `client.action` | `LIVE_ENTER` / `LIVE_LEAVE` |

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import ChatPanel from '../components/ChatPanel'
 import LiveProductCard from '../components/LiveProductCard'
+import PreBroadcast from '../components/PreBroadcast'
 import ProductSheet from '../components/ProductSheet'
 import { approximateViewers, broadcastView } from '../presentation'
 import { ApiError } from '../services/api'
@@ -129,9 +130,11 @@ function LiveRoom() {
         const text =
           e.code === 'SOLD_OUT'
             ? '주문 처리 중 품절되었습니다'
-            : e.code === 'RATE_LIMITED'
-              ? '잠시 후 다시 시도해 주세요'
-              : '주문을 접수하지 못했습니다'
+            : e.code === 'NOT_STARTED'
+              ? '아직 특가가 시작되지 않았습니다'
+              : e.code === 'RATE_LIMITED'
+                ? '잠시 후 다시 시도해 주세요'
+                : '주문을 접수하지 못했습니다'
         setOrder({ kind: 'failed', message: text })
       })
   }
@@ -151,6 +154,18 @@ function LiveRoom() {
     )
   }
 
+  // 방송 전에는 재생할 것이 없다. 상품 시트도 채팅도 열지 않고 예고 화면만
+  // 보여준다 — 시작 시각 전에 주문이 들어가면 서버가 NOT_STARTED 로 막는다.
+  if (broadcast.state === 'SCHEDULED') {
+    return (
+      <PreBroadcast
+        broadcastId={broadcast.broadcast_id}
+        startedAt={broadcast.started_at}
+        onClose={() => navigate('/')}
+      />
+    )
+  }
+
   const view = broadcastView(broadcast.broadcast_id)
   const featured = broadcast.products.find((p) => p.state === 'ON_SALE') ?? broadcast.products[0]
 
@@ -158,7 +173,7 @@ function LiveRoom() {
     <div className="phone-frame room">
       <div className="room__video">
         {/*
-          영상 자리. 05-media(MediaMTX·CloudFront)가 생기면 hls_url 로
+          영상 자리. 07-media(MediaMTX·CloudFront)가 생기면 hls_url 로
           플레이어를 붙인다 — 오버레이 구조는 그대로라 교체가 이 한 줄이다.
         */}
         <img src={view.thumbnail} alt="" className="room__video-img" />
