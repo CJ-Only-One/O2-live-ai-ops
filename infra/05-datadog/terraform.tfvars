@@ -34,3 +34,24 @@ kube_namespace    = "o2-dev"
 
 cpu_request_pct_warning = 100
 cpu_throttling_warning  = 25
+
+# Monitor(monitor.tf). 임계치는 잠정치다 — 근거는 Confluence "Datadog 장애
+# 대응 Alert 시스템 제안서"(2026-08-19). 알림 라우팅(Slack 등)은 이 세션
+# 범위 밖이다 — 인프라팀이 webhook push 로 별도 구축 중이라 여기서는
+# 임계치·쿼리만 정의한다.
+chat_rps_ratio_warning  = 5
+cache_hit_rate_critical = 0.5
+
+# 시나리오 6 Monitor는 기본 비활성이다 — SQS 지표(aws.sqs.*)가 이 조직에
+# 실제로 수집되는지 확인 전까지는 켜지 않는다. 확인되면 true 로 바꾼다.
+enable_queue_backlog_monitor       = true
+order_confirm_queue_name           = "o2-dev-order"
+queue_backlog_age_warning_seconds  = 60
+queue_backlog_age_critical_seconds = 300
+
+# Phase 2 — 신규 계측이 먼저 필요해 전부 기본 비활성이다. 각 Monitor 정의
+# 위 주석(monitor.tf)에 활성화 전 필요한 코드 변경이 적혀 있다.
+enable_chat_ingest_monitor         = false
+enable_pod_cache_outlier_monitor   = false
+pod_cache_outlier_tolerance        = 2.5
+enable_order_confirm_stall_monitor = false

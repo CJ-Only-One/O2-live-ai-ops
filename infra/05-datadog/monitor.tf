@@ -1,0 +1,480 @@
+###############################################################################
+# Monitor — failure-scenarios-transcript.md 의 5개 장애 시나리오
+#
+# 근거와 범위는 Confluence "Datadog 장애 대응 Alert 시스템 제안서"(2026-08-19,
+# 2026-08-19 개정)에 있다. 이 파일은 그 문서의 구현 계획을 코드로 옮긴
+# 것뿐이다 — 새 판단은 여기서 하지 않는다.
+#
+# 세 단계로 나뉜다 — "지표가 없으면 alert를 포기한다"가 아니라 "지금 되는
+# 것과 계측을 새로 넣어야 되는 것을 구분해서 코드로 남긴다"는 게 개정판 원칙.
+#
+#   Phase 0  지금 바로 켜짐 — 기존 o2.warm.* 지표만 쓴다
+#            order_latency_p95, cache_absorption_failure
+#   Phase 1  코드 변경 없이 확인만 필요 — 이미 연결된 AWS 통합 지표
+#            order_confirm_backlog_age (enable_queue_backlog_monitor)
+#   Phase 2  신규 계측이 먼저 필요 — 리소스는 만들어 두되 기본 비활성
+#            chat_ingest_surge          (chat-gateway 이벤트 싱크를 Kinesis로)
+#            cache_hit_rate_pod_outlier (시나리오 1 — pod_name 태그 신설)
+#            order_confirm_stall        (시나리오 6 — order.confirm 이벤트 신설)
+#
+# 시나리오 5(1차 조치 실패 후 자기교정)는 신규 Monitor가 없다 — 그 시나리오가
+# 검증하는 것은 "알림 이후" 에이전트 쪽 상태 기계(기준값 기록 → 60초 후
+# 재확인 → 실패 시 원복 → 재판단)이고, 이건 Datadog Monitor가 표현할 수
+# 있는 종류의 로직이 아니다. 알림 자체는 시나리오 2와 같은
+# order_latency_p95 를 그대로 재사용한다.
+###############################################################################
+
+locals {
+  # Datadog 은 모니터 쿼리에서 대시보드용 템플릿 변수($service 등)를 못 쓴다
+  # (dashboard.tf 의 local.scope 와는 다른 축 — 저건 대시보드 전용 문법이다).
+  # 여기서는 var 값을 그대로 문자열에 박아 넣는다.
+  monitor_env = var.environment
+
+  # 알림 라우팅(Slack 등)은 이 스택 범위 밖이다 — 인프라팀이 별도 webhook
+  # push 경로로 Datadog Monitor → 에이전트 연결을 구축 중이다. 여기서는
+  # 임계치와 진단 안내가 담긴 Monitor 자체만 만든다. 라우팅이 정해지면
+  # 각 Monitor의 message 본문에 그 수신자 핸들만 추가하면 된다.
+  monitor_tags = ["team:o2", "managed-by:terraform", "stack:05-datadog"]
+}
+
+###############################################################################
+# 시나리오 2 (조기 경보, Phase 2 — 기본 비활성) — 특가 오픈 캐스케이드의
+# 진짜 시작점
+#
+# 캐스케이드의 첫 도미노는 채팅 발화율이지 주문 API 가 아니다(트랜스크립트
+# 시간축: 채팅 인입 20→210 msg/s 가 T+6s, chat-gateway CPU 포화가 T+18s —
+# 12초 소요, 주문 p99 급등은 T+52s). chat.send 이벤트로 이 시작점을 잡는다는
+# 설계 자체는 맞다(contracts.md 5.1·5.3, service:chat-gateway 로 필터링한
+# rps_ratio) — 그런데 **지금은 이 이벤트가 Datadog까지 오지 않는다.**
+#
+# `apps/chat-gateway/src/events.ts` 의 `emitChatSend()` 를 실측한 결과:
+#   - 기본 OFF: `EMIT_CHAT_EVENTS`(config.emitChatEvents)가 false 면 아예 안 냄
+#   - 켜도 목적지가 stdout: 코드 주석 그대로 "지금은 stdout 싱크다. Kinesis
+#     전환은 이 함수 안쪽만 바꾸면 된다" — 즉 Kinesis 로 가는 경로 자체가
+#     아직 없다. api 의 `O2_EVENTS_SINK` 같은 싱크 선택 로직도 없다
+#   - `04-platform/datadog.tf` 의 `logs.enabled = false` 라 stdout 도 Datadog
+#     이 못 줍는다 — D-027 이 이미 겪은 것과 같은 모양의 함정이다
+#
+# 그래서 `o2.warm.rps_ratio{service:chat-gateway}` 는 지금 이 조직에 시계열
+# 자체가 없다. 이 Monitor 를 Phase 0 로 켜 두면 영구 No Data 로 조용히 죽는다
+# — 그게 오탐보다 나쁘다는 원칙(제안서 2절)을 그대로 적용해 게이트를 건다.
+#
+# 활성화 순서(코드 변경, 이 Terraform 스택 범위 밖):
+#   1. `apps/chat-gateway`: `emitChatSend()` 안의 `process.stdout.write(...)`
+#      를 Kinesis PutRecord 로 바꾼다(스트림 이름은 `06-datastream` 소유)
+#   2. 배포 매니페스트(O2-live-deploy)에서 `EMIT_CHAT_EVENTS=true` 로 켠다
+#   3. Datadog Metrics Explorer 에서 `o2.warm.rps{service:chat-gateway}` 에
+#      시계열이 잡히는지 확인한 뒤 `enable_chat_ingest_monitor = true`
+###############################################################################
+
+resource "datadog_monitor" "chat_ingest_surge" {
+  count = var.enable_chat_ingest_monitor ? 1 : 0
+
+  name    = "[O2][시나리오 2] 채팅 인입 급증 — 캐스케이드 조기 경보"
+  type    = "metric alert"
+  message = <<-EOT
+    채팅 인입(`chat.send`)이 평시 대비 ${var.chat_rps_ratio_warning}배를 넘었습니다.
+
+    **왜 지금 알리는가** — 특가 오픈 캐스케이드는 채팅 발화율 급증에서
+    시작해 chat-gateway CPU 포화 → WebSocket 재연결 폭증 → 주문 API 지연
+    순으로 번집니다. 트랜스크립트 실측 사례는 12초 만에 chat-gateway가
+    포화됐습니다. 이 alert는 그 연쇄의 첫 도미노를 잡기 위한 조기 경보이고,
+    아직 사용자 영향(주문 지연)이 발생했다는 뜻은 아닙니다.
+
+    **다음에 볼 것** — 1분 내외로 `order_latency_p95` 도 함께 울리면
+    상류(채팅)가 원인일 가능성이 높습니다. 1차 조치 후보는 채팅 표시 상한
+    하향입니다 — 주문 API 스케일아웃이나 Valkey 등급 상향은 원인이 아니므로
+    효과가 없습니다(제안서 시나리오 2 "조치가 갈리는 지점").
+
+  EOT
+
+  query = "min(last_2m):avg:${var.metric_prefix}rps_ratio{service:chat-gateway,env:${local.monitor_env}} >= ${var.chat_rps_ratio_warning}"
+
+  monitor_thresholds {
+    warning = var.chat_rps_ratio_warning
+  }
+
+  # EWMA 표본이 30개(~5분) 쌓이기 전에는 rps_ratio 자체가 없다(README 실측
+  # 표) — no-data 를 굳이 경보하지 않는다. 방송 시작 직후엔 정상적인 공백이다.
+  notify_no_data      = false
+  require_full_window = true
+  renotify_interval   = 0
+
+  tags = concat(local.monitor_tags, ["scenario:2", "service:chat-gateway", "role:leading-indicator"])
+}
+
+###############################################################################
+# 시나리오 2 (실제 트리거) + 시나리오 5 (재사용) — 주문 응답 p95 지연
+#
+# 트랜스크립트에서 "여기서 알림이 옴"이라 표시된 지점이다. dashboard.tf 그룹1
+# 이 이미 이 지표를 "알림 근거가 될 수 있는 넷" 중 하나로 지정해 뒀으므로,
+# 같은 var(latency_p95_warning/critical)를 그대로 재사용한다 — 대시보드
+# 색깔과 alert 임계가 갈리지 않게 하기 위해서다(variables.tf 원래 주석).
+###############################################################################
+
+resource "datadog_monitor" "order_latency_p95" {
+  name    = "[O2][시나리오 2·5] 주문 응답 p95 지연"
+  type    = "metric alert"
+  message = <<-EOT
+    주문 응답 p95(`${var.metric_prefix}latency_p95{service:api}`)가
+    위험 임계를 넘었습니다.
+
+    **이 alert가 커버하는 두 시나리오**
+    - *특가 오픈 캐스케이드*: 원인이 채팅 발화율 급증일 수 있습니다 —
+      `chat_ingest_surge` 가 1분 이내로 먼저 울렸는지 확인하세요(이 Monitor가
+      아직 Phase 2 상태로 꺼져 있다면, 대신 대시보드의 채팅 지표를 직접
+      확인합니다). 울렸다면 원인은 상류(채팅)이고, 조치는 채팅 표시 상한
+      하향입니다.
+    - *1차 조치가 틀렸을 가능성*: Valkey 커넥션 풀 고갈이 정석적인 1순위
+      가설이지만, 조치(풀 상한 상향) 후 60초 뒤 개선율이 30% 미만이면 실패로
+      판정하고 원복한 뒤 ReplicaLag 등 다른 원인을 재조사해야 합니다. 이
+      기준값 기록·재확인·원복 로직은 이 Monitor가 아니라 에이전트
+      오케스트레이션(D-028, `06-agent`) 쪽에 있습니다.
+
+  EOT
+
+  query = "min(last_5m):avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical}"
+
+  monitor_thresholds {
+    warning  = var.latency_p95_warning
+    critical = var.latency_p95_critical
+  }
+
+  notify_no_data      = true
+  no_data_timeframe   = 10
+  require_full_window = true
+  renotify_interval   = 0
+
+  tags = concat(local.monitor_tags, ["scenario:2", "scenario:5", "service:api", "role:page"])
+}
+
+###############################################################################
+# 시나리오 4 — 캐시 흡수 실패
+#
+# (a) 무효화 폭주 vs (b) 콜드 미스는 이 Monitor가 못 가른다 — 트랜스크립트
+# 원문대로 "같은 그래프"를 그린다. 여기서는 "캐시가 원본을 못 흡수하고
+# 있다"까지만 잡고, 두 원인의 분기는 메시지 본문의 안내(안전한 실험: 로컬
+# TTL 1→3초 10초간)로 넘긴다.
+#
+# hit_rate 단독 임계를 쓰지 않는 이유 — 표본이 적은 구간에서 hit_rate는
+# confidence 가 낮아도 출렁인다(README "위젯이 비어 있을 때" 절). latency_p95
+# 동반 상승을 AND 로 요구해 "캐시는 흔들리지만 사용자는 못 느끼는" 노이즈를
+# 거른다.
+###############################################################################
+
+resource "datadog_monitor" "cache_hit_rate_low" {
+  name    = "[O2][시나리오 4] 캐시 히트율 낮음 (서브 모니터)"
+  type    = "metric alert"
+  query   = "min(last_5m):avg:${var.metric_prefix}cache_hit_rate{service:${var.default_service},env:${local.monitor_env}} < ${var.cache_hit_rate_critical}"
+  message = "캐시 히트율이 임계치 미만입니다. 복합 모니터의 하위 조건으로 작동합니다."
+
+  monitor_thresholds {
+    critical = var.cache_hit_rate_critical
+  }
+
+  notify_no_data      = false
+  require_full_window = true
+  renotify_interval   = 0
+
+  tags = concat(local.monitor_tags, ["scenario:4", "service:api", "role:sub"])
+}
+
+resource "datadog_monitor" "latency_p95_high" {
+  name    = "[O2][시나리오 4] 응답 p95 지연 높음 (서브 모니터)"
+  type    = "metric alert"
+  query   = "min(last_5m):avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical}"
+  message = "응답 p95 지연 시간이 임계치를 초과했습니다. 복합 모니터의 하위 조건으로 작동합니다."
+
+  monitor_thresholds {
+    critical = var.latency_p95_critical
+  }
+
+  notify_no_data      = false
+  require_full_window = true
+  renotify_interval   = 0
+
+  tags = concat(local.monitor_tags, ["scenario:4", "service:api", "role:sub"])
+}
+
+resource "datadog_monitor" "cache_absorption_failure" {
+  name    = "[O2][시나리오 4] 캐시 흡수 실패"
+  type    = "composite"
+  query   = "${datadog_monitor.cache_hit_rate_low.id} && ${datadog_monitor.latency_p95_high.id}"
+  message = <<-EOT
+    캐시 히트율이 ${var.cache_hit_rate_critical}(${var.cache_hit_rate_critical * 100}%) 아래로 떨어졌고,
+    동시에 응답 p95가 위험 임계를 넘었습니다 — 캐시가 원본(MySQL)을
+    흡수하지 못하고 있습니다.
+
+    **원인은 둘 중 하나이고, 이 alert만으로는 못 가릅니다.**
+    - (a) 무효화 폭주 — 상품 정보가 계속 바뀌어 캐시가 계속 지워짐
+    - (b) 신규 유입 콜드 미스 — 새로 들어온 사용자가 많아 처음부터 캐시에 없음
+
+    **오진하면**: (b)인데 (a)로 판단해 TTL 상향·무효화 억제 → 낡은 가격이
+    오래 남습니다. (a)인데 (b)로 판단해 워밍·파드 증설 → 새 파드도 같이
+    미스를 내 효과가 없습니다.
+
+    **안전한 판별 실험**: 로컬 캐시 TTL 을 10초간 1초 → 3초로 올려봅니다.
+    (a)면 즉시 회복(무효화보다 TTL이 오래 버팀), (b)면 거의 안 변합니다
+    (없는 것은 TTL을 늘려도 없음). 어느 쪽이어도 최대 손해는 가격 반영이
+    2초 늦는 것뿐입니다.
+
+  EOT
+
+  notify_no_data      = false
+  require_full_window = true
+  renotify_interval   = 0
+
+  tags = concat(local.monitor_tags, ["scenario:4", "service:api", "role:page"])
+}
+
+###############################################################################
+# 시나리오 1 (Phase 2 — 기본 비활성) — 파드 단위 캐시 스큐
+#
+# 트랜스크립트가 "알림으로 절대 안 잡힌다"고 말하는 이유는 정확했다 —
+# `o2.warm.cache_hit_rate` 가 `service`·`env` 두 태그만 갖고 파드 단위
+# 분해가 없어서다. 파드 3개가 정상, 1개만 고장이면 평균은 75%로 멀쩡해
+# 보인다. 하지만 이건 "알림 불가능"이 아니라 "지금 이 지표로는 불가능"이다
+# — pod 식별자를 태그에 추가하면 잡을 수 있다.
+#
+# 활성화에 필요한 계측(이 Terraform 스택 범위 밖):
+#   1. `o2-sdk-for-event`(외부 저장소) 봉투에 `pod_name` 필드 추가.
+#      K8s가 `HOSTNAME` 환경변수를 파드 이름으로 채워 주므로 앱 코드 변경은
+#      거의 없다 — SDK `_envelope()` 한 곳만 고치면 된다
+#   2. `06-datastream/warm/src/o2warm`(이 저장소): `cache_hit_rate` 계산에만
+#      `pod_name` 태그를 추가한다. 20개 스칼라 전체에 붙이지 않는다 —
+#      서비스 3개 × pod 수만큼 시계열이 곱해져 커스텀 메트릭 요금이 튄다
+#      (README "비용" 절). 파드 수가 작으므로(t3.small 노드그룹, api 파드
+#      한 자릿수) 이 지표 하나에 한정하면 증가분은 무시할 만하다
+#
+# 쿼리는 임계 비교가 아니라 Datadog outlier 탐지(`outliers()`)를 쓴다 —
+# "평균이 나쁘다"가 아니라 "나머지와 다른 파드가 하나 있다"가 이 시나리오의
+# 정확한 증상이라서다. DBSCAN 파라미터(허용 오차 2.5)는 실측 pod별 분산을
+# 본 적이 없어 잠정치다 — 켜기 전에 파드 수·정상 변동폭을 보고 조정한다.
+###############################################################################
+
+variable "enable_pod_cache_outlier_monitor" {
+  description = <<-EOT
+    시나리오 1(파드 단위 캐시 스큐) Monitor 활성화 여부. 기본 `false`.
+
+    `o2.warm.cache_hit_rate` 에 `pod_name` 태그가 실려야 동작한다 — 지금은
+    SDK 봉투에 그 필드가 없다(모니터 정의 위 주석 참고). 계측이 들어가고
+    Metrics Explorer 에서 `by {pod_name}` 분해가 실제로 나오는 것을 확인한
+    뒤 `true` 로 켠다.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "pod_cache_outlier_tolerance" {
+  description = <<-EOT
+    outlier 탐지(DBSCAN) 허용 오차. 값이 작을수록 민감하게(더 쉽게 outlier로)
+    잡는다. 파드별 정상 변동폭을 모르는 상태의 잠정치 — 켜기 전에 실측
+    분산을 보고 조정한다.
+  EOT
+  type        = number
+  default     = 2.5
+}
+
+resource "datadog_monitor" "cache_hit_rate_pod_outlier" {
+  count = var.enable_pod_cache_outlier_monitor ? 1 : 0
+
+  name    = "[O2][시나리오 1] 파드 단위 캐시 히트율 이상치"
+  type    = "query alert"
+  message = <<-EOT
+    캐시 히트율이 유독 낮은 파드가 있습니다 — 전체 평균은 정상으로 보일 수
+    있습니다.
+
+    **왜 이런 일이 생기나** — Valkey Pub/Sub 은 at-most-once 입니다. 구독자가
+    순간 끊겨 있으면 무효화 메시지가 유실되고 재전송이 없습니다. 특히
+    스케일아웃으로 새로 뜬 파드는 그 이전의 무효화를 못 받아 옛 값을 계속
+    반환합니다 — 응답은 200 OK 라 에러율에도 안 잡힙니다.
+
+    **확인할 것**
+    - 이상치로 잡힌 파드의 생성 시각이 최근 무효화 발행 시각보다 뒤인지
+    - `product.update` 발행 수 대비 그 파드의 수신 수가 적은지
+
+    **조치**: 해당 파드 재시작 또는 전체 로컬 캐시 플러시. 근본 대응은
+    재연결 시 전체 플러시(설계에 있음)와 TTL 안전망입니다.
+
+  EOT
+
+  query = "avg(last_10m):outliers(avg:${var.metric_prefix}cache_hit_rate{service:${var.default_service},env:${local.monitor_env}} by {pod_name}, 'DBSCAN', ${var.pod_cache_outlier_tolerance}) > 0"
+
+  notify_no_data      = false
+  require_full_window = true
+  renotify_interval   = 0
+
+  tags = concat(local.monitor_tags, ["scenario:1", "service:api", "role:page", "phase:2"])
+}
+
+###############################################################################
+# 시나리오 6 — 주문 확정 큐 적체 (기본 비활성)
+#
+# 큐 이름은 03-data/sqs.tf 의 aws_sqs_queue.order 를 실측 확인한 값이다
+# (`o2-dev-order`). 이 계정엔 Datadog AWS 통합이 이미 연결돼 있지만
+# (CloudFormation DatadogIntegration-*), SQS 네임스페이스가 실제로 수집
+# 중인지는 DD_APP_KEY 없이 이 세션에서 확인하지 못했다. 확인 전까지는
+# `enable_queue_backlog_monitor = false` 로 이 리소스 자체가 안 만들어진다
+# — 없는 지표에 조용히 죽는 Monitor를 걸지 않는다는 원칙을 여기서 지킨다.
+#
+# 확인 방법(Datadog 콘솔 또는 API): Metrics Explorer에서
+# `aws.sqs.approximate_age_of_oldest_message` 검색 → queuename:o2-dev-order
+# 태그로 시계열이 잡히는지 확인.
+###############################################################################
+
+resource "datadog_monitor" "order_confirm_backlog_age" {
+  count = var.enable_queue_backlog_monitor ? 1 : 0
+
+  name    = "[O2][시나리오 6] 주문 확정 큐 적체"
+  type    = "metric alert"
+  message = <<-EOT
+    주문 확정 큐(`${var.order_confirm_queue_name}`)의 가장 오래된 미처리
+    메시지가 ${var.queue_backlog_age_critical_seconds}초 이상 대기 중입니다.
+
+    **이 alert의 의미** — 접수(`order.create`)는 성공했지만 확정 처리가
+    밀리고 있다는 뜻입니다. 응답 시간·에러율은 정상으로 보일 수 있습니다
+    (접수 자체는 실제로 성공했기 때문) — 이 큐 지표가 유일한 조기 신호입니다.
+
+    **원인이 셋으로 갈리고 조치가 반대인 것이 있습니다.**
+    - 처리 워커가 부족하다 → 늘린다
+    - 워커가 DB에서 막혀 있다 → **늘리면 더 막힌다**
+    - 메시지 자체가 처리 불가라 계속 되돌아온다 → 따로 빼낸다(DLQ)
+
+    안전한 1차 진단: 워커를 하나만 늘려 20초 관찰합니다. 부족한 거면 즉시
+    빠지고, DB에 막힌 거면 안 빠집니다.
+
+    **주의**: 큐를 뚫은 뒤에도 "재고는 차감됐는데 주문 기록이 없는" 건이
+    남을 수 있습니다. 그 건들을 전부 확정할지, 일부만 확정할지는 기술
+    판단이 아니라 비즈니스 판단이므로 에이전트가 자동으로 결정하지 않고
+    승인을 요청합니다.
+  EOT
+
+  query = "min(last_5m):avg:aws.sqs.approximate_age_of_oldest_message{queuename:${var.order_confirm_queue_name}} >= ${var.queue_backlog_age_critical_seconds}"
+
+  monitor_thresholds {
+    warning  = var.queue_backlog_age_warning_seconds
+    critical = var.queue_backlog_age_critical_seconds
+  }
+
+  # AWS 통합 지표는 ~10분 주기라(README 관례상 언급된 값과 별개로 이
+  # 조직 실측은 Confluence "Datadog 수집 데이터 현황" 참고) no-data 윈도우를
+  # 그에 맞춰 넉넉히 잡는다. 너무 짧으면 매 수집 주기마다 no-data 오탐이 난다.
+  notify_no_data      = true
+  no_data_timeframe   = 20
+  require_full_window = true
+  renotify_interval   = 0
+
+  tags = concat(local.monitor_tags, ["scenario:6", "service:order-worker", "role:page"])
+}
+
+###############################################################################
+# 시나리오 6 (Phase 2 — 기본 비활성) — 접수 대비 확정 정지 감지
+#
+# order_confirm_backlog_age(위)는 "큐가 밀리기 시작했다"를 SQS 쪽에서
+# 잡는 우회 신호다. 이 Monitor 는 비즈니스 이벤트 쪽에서 같은 증상을 직접
+# 잡는다 — 그러려면 신규 이벤트가 필요하다.
+#
+# 지금 계약(contracts.md 5.1)에는 `order.create`(접수)와 `order.cancel`
+# (워커 실패)만 있고 확정 성공 이벤트가 없다. 대칭을 맞추면 된다 — 워커가
+# 실패 시 이미 `order.cancel` 을 내고 있으므로(같은 코드 경로), 성공 시
+# `order.confirm` 을 내는 것은 특별히 새로운 계측이 아니라 이미 있는 훅의
+# 반대쪽을 채우는 것이다.
+#
+# 활성화에 필요한 작업(이 Terraform 스택 범위 밖):
+#   1. `o2-sdk-for-event`(외부 저장소, 백데이터 파트 소관): `EVENT_NAMES` 에
+#      `order.confirm` 추가 — contracts.md 5.4가 이미 이런 추가용으로
+#      "이름만 추가하는 PR을 열어 둔다"는 절차를 예정해 뒀다(chat.send 사례와
+#      동일 패턴)
+#   2. `06-datastream/warm/src/o2warm/contract.py`(이 저장소): 새 이름을
+#      `EVENT_NAMES`/`EVENT_ORDER_CONFIRM` 상수로 반영 — 여기 값은 SDK 값의
+#      드리프트 감지용 사본이라, SDK가 안 바뀌면 여기도 못 바꾼다(파일 상단
+#      주석)
+#   3. `apps/order-worker`: 확정 커밋 성공 지점에 `order.confirm` 발행 추가
+#
+# **`rps` 는 이벤트 종류로 못 가른다.** `datadog.py` 의 `build_series()`
+# 를 실제로 읽어보면 `rps`·`event_count` 같은 스칼라는 `service`·`env` 만
+# 태그로 갖고, `event` 태그가 붙는 건 `failure_rate` 하나뿐이다(라인 62-91).
+# 즉 `order.confirm` 이 생겨도 `rps{service:order-worker}` 만으로는 그게
+# `order.cancel` 인지 `order.confirm` 인지 못 가른다.
+#
+#   4. (위 3개에 더해) `06-datastream/warm/src/o2warm/datadog.py`:
+#      `failure_rate` 와 같은 패턴으로 `event_rate`(또는 이벤트별 카운트)를
+#      `event` 태그로 쪼개 내보내는 series 를 추가한다. 카디널리티는
+#      failure_rate 와 동일한 근거로 안전하다 — event 종류가 6→7개로
+#      고정이라서다
+#
+# 정밀한 비율(confirm/create) 기반 alert 대신 단순 "정지" 조건(create는
+# 계속되는데 confirm이 완전히 멈춤)을 쓴다 — 비율 기반 포뮬러는 이 세션에서
+# 실제 계정으로 문법을 검증하지 못해 확신이 낮다. 이 신규 이벤트의 더 큰
+# 가치는 이 Monitor보다도, 3막(재고는 차감됐는데 주문 기록이 없는 정확한
+# 건수)에서 에이전트가 Cold Path 로 셀 수 있게 되는 것이다(제안서 참고) —
+# 이 Monitor 는 부차적인 실시간 신호다.
+###############################################################################
+
+variable "enable_order_confirm_stall_monitor" {
+  description = <<-EOT
+    시나리오 6 보조 Monitor(`order_confirm_stall`) 활성화 여부. 기본 `false`.
+    `order.confirm` 이벤트가 실제로 발행·집계되기 시작한 뒤에 켠다(모니터
+    정의 위 주석 참고) — 이 이벤트는 아직 계약에 없다.
+  EOT
+  type        = bool
+  default     = false
+}
+
+resource "datadog_monitor" "order_create_active" {
+  name    = "[O2][시나리오 6] 주문 생성 진행 중 (서브 모니터)"
+  type    = "metric alert"
+  query   = "min(last_10m):avg:${var.metric_prefix}event_rate{service:${var.default_service},env:${local.monitor_env},event:order.create} > 0"
+  message = "주문 생성이 발생하고 있습니다. 복합 모니터의 하위 조건으로 작동합니다."
+
+  monitor_thresholds {
+    critical = 0
+  }
+
+  notify_no_data      = false
+  require_full_window = true
+  renotify_interval   = 0
+
+  tags = concat(local.monitor_tags, ["scenario:6", "service:order-worker", "role:sub"])
+}
+
+resource "datadog_monitor" "order_confirm_inactive" {
+  name    = "[O2][시나리오 6] 주문 확정 정지됨 (서브 모니터)"
+  type    = "metric alert"
+  query   = "max(last_10m):avg:${var.metric_prefix}event_rate{service:order-worker,env:${local.monitor_env},event:order.confirm} <= 0"
+  message = "주문 확정이 발생하지 않고 있습니다. 복합 모니터의 하위 조건으로 작동합니다."
+
+  monitor_thresholds {
+    critical = 0
+  }
+
+  notify_no_data      = false
+  require_full_window = true
+  renotify_interval   = 0
+
+  tags = concat(local.monitor_tags, ["scenario:6", "service:order-worker", "role:sub"])
+}
+
+resource "datadog_monitor" "order_confirm_stall" {
+  count = var.enable_order_confirm_stall_monitor ? 1 : 0
+
+  name    = "[O2][시나리오 6] 주문 확정 정지"
+  type    = "composite"
+  query   = "${datadog_monitor.order_create_active.id} && ${datadog_monitor.order_confirm_inactive.id}"
+  message = <<-EOT
+    주문 접수(`order.create`)는 계속되는데 확정(`order.confirm`)이 완전히
+    멈췄습니다.
+
+    이 신호는 `order_confirm_backlog_age`(SQS 큐 나이) 보다 늦게 잡힐 수
+    있습니다 — 그 Monitor가 먼저 울렸는지 같이 확인하세요. 두 Monitor가
+    함께 울리면 확정 처리가 완전히 정지된 것이 비즈니스 이벤트 쪽에서도
+    교차 확인된 것입니다.
+
+  EOT
+
+  notify_no_data      = false
+  require_full_window = true
+  renotify_interval   = 0
+
+  tags = concat(local.monitor_tags, ["scenario:6", "service:order-worker", "role:page", "phase:2"])
+}

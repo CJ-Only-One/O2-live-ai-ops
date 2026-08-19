@@ -240,17 +240,58 @@ aws logs tail /aws/lambda/o2-agg --since 10m --profile o2-data `
 `datadog_series` 가 전송에 성공한 시계열 수다. 0이면 같은 로그의 `[o2warm]`
 줄에 사유가 있다. 자세한 절차는 `../06-datastream/warm/DEPLOY.md`.
 
-## Monitor 를 아직 만들지 않은 이유
+## Monitor 구성 (`monitor.tf`)
 
-임계치에 근거가 없다. 교재의 5%·10분은 그 교재의 서비스 조건에서 나온 값이고
-우리 평시 분포는 아직 모른다. 며칠 대시보드를 보고 정한다.
+원래 방침은 "임계치 근거가 없으니 평시 분포를 며칠 보고 정한다"였다 — 순서를
+뒤집으면 오탐으로 시작하고, 오탐으로 시작한 알림은 곧 전부 무시된다는 이유다.
+`failure-scenarios-transcript.md` 의 5개 장애 시나리오에 대한 alert 작업
+지시가 그 순서를 뒤집어, 시나리오 문서의 구체적 수치를 근거로 먼저 만들었다.
+그 트레이드오프와 시나리오별 상세 설계는 Confluence
+["Datadog 장애 대응 Alert 시스템 제안서"](https://kimdohun3554.atlassian.net/wiki/spaces/~7120203f2d5f61e05b42e98bdc88a15ec9dd62/pages/3768322)
+(2026-08-19)에 있다 — `monitor.tf` 는 그 문서의 구현 계획을 코드로 옮긴 것뿐이고,
+새 판단은 거기서 먼저 정한다.
 
-순서를 뒤집으면 오탐으로 시작하고, 오탐으로 시작한 알림은 곧 전부 무시된다.
+알림 라우팅(Slack 등)은 이 스택이 다루지 않는다 — 인프라팀이 별도 webhook
+push 경로로 Datadog Monitor를 에이전트에 연결하는 작업을 진행 중이다. 여기서는
+그 webhook이 받게 될 Monitor(임계치·쿼리·진단 안내가 담긴 message 본문)만
+만든다. 라우팅이 정해지면 각 Monitor의 `message`에 수신자 설정만 얹으면 된다.
+
+세 단계로 나뉜다 — 지표가 없다고 포기하지 않고, 지금 되는 것과 계측이 먼저
+필요한 것을 코드로 구분해 둔다.
+
+| Monitor | 시나리오 | 단계 | 상태 |
+|---|---|---|---|
+| `order_latency_p95` | 2 (실제 트리거) · 5 (재사용) | Phase 0 | 활성 — 기존 `o2.warm.*` 지표만 사용 |
+| `cache_absorption_failure` | 4 | Phase 0 | 활성 — 기존 `o2.warm.*` 지표만 사용 |
+| `order_confirm_backlog_age` | 6 | Phase 1 | **기본 비활성** — `enable_queue_backlog_monitor`. 코드 변경은 필요 없고, SQS 지표가 이 조직에 실제로 수집되는지 Metrics Explorer 확인만 하면 켤 수 있다 |
+| `chat_ingest_surge` | 2 (조기 경보) | Phase 2 | **기본 비활성** — `enable_chat_ingest_monitor`. `chat.send` 발행이 지금 stdout 싱크뿐이라 Datadog까지 안 온다(아래 참고) |
+| `cache_hit_rate_pod_outlier` | 1 | Phase 2 | **기본 비활성** — `enable_pod_cache_outlier_monitor`. `cache_hit_rate`에 `pod_name` 태그가 없어 SDK·집계 Lambda 변경이 먼저 필요하다 |
+| `order_confirm_stall` | 6 (보조) | Phase 2 | **기본 비활성** — `enable_order_confirm_stall_monitor`. `order.confirm` 이벤트 자체가 계약에 없다 |
+
+시나리오 1(파드별 캐시 스큐)과 시나리오 6("접수 대비 확정" 직접 비교)은
+트랜스크립트 원문이 "알림으로 안 잡힌다"고 스스로 밝힌 시나리오다 — 지금
+이 조직에 그 신호를 낼 지표 자체가 없어서였다. 없는 지표에 Monitor를 걸면
+영구 `No Data`로 조용히 죽으므로, 필요한 계측(pod별 `cache_hit_rate` 태그,
+`order.confirm` 이벤트 신설)이 들어가기 전까지는 위 Phase 2 Monitor를 기본
+비활성으로 둔다. 각 Monitor 정의 위 주석(`monitor.tf`)에 활성화 전 필요한
+코드 변경이 구체적으로 적혀 있다 — 대부분 이 저장소(`06-datastream`,
+`apps/chat-gateway`) 안이고, 이벤트 이름 자체는 `o2-sdk-for-event`(외부
+저장소, 백데이터 파트 소관) 쪽 PR이 먼저 필요하다.
+
+`chat_ingest_surge`는 애초에 "Phase 0으로 바로 켜진다"고 여겼다가 실측하며
+정정한 사례다 — `contracts.md`는 `chat.send`가 이미 발행된다고 적어 뒀지만,
+`apps/chat-gateway/src/events.ts`의 `emitChatSend()`를 읽어보면 기본값이
+꺼져 있고(`EMIT_CHAT_EVENTS=false`), 켜져도 목적지가 Kinesis가 아니라
+`process.stdout.write` 뿐이다 — Datadog 로그 수집도 꺼져 있어(`logs.enabled
+= false`) 이 이벤트는 지금 어디에도 도착하지 않는다. "계약에 있다"와
+"실제로 흐른다"는 다른 문장이라는 교훈을 여기서도 반복한다(`docs/decisions.md`
+D-031의 결론과 같은 종류).
 
 Monitor 를 만들 때 주의할 것 하나 — **`for` 는 그대로 옮겨지지 않는다.**
 "10분 내내 초과"를 원하면 `min(last_10m)` 을 써야 한다. `avg(last_10m)` 은
 10분 평균이라 1분간 30% + 9분간 0% 를 놓친다. `require_full_window = true` 와
 `notify_no_data` 도 함께 켠다 — 푸시 기반이라 no-data 가 실제 신호다.
+`monitor.tf` 의 Monitor는 전부 이 관례를 따른다.
 
 ## 이름과 번호
 
