@@ -83,8 +83,20 @@ function LivePlayer({ src, poster, muted, live, onCircuitOpen }: Props) {
     generationRef.current += 1
     const generation = generationRef.current
 
+    // 실패를 삼키면 안 된다. 청크가 404 나면 (배포로 해시가 바뀐 뒤 낡은
+    // index.html 을 쓰는 브라우저에서 그렇다) 컨트롤러는 붙은 줄 알고 있고,
+    // 재부착도 안내 문구도 없이 화면이 그대로 멈춘다. 요청이 0건이라
+    // 폭주보다 알아채기 어렵다.
+    const fail = () => controllerRef.current?.onFatal()
+
     import('hls.js').then(({ default: Hls }) => {
-      if (generation !== generationRef.current || !Hls.isSupported()) return
+      if (generation !== generationRef.current) return
+      // 재생할 방법이 아예 없는 브라우저다. 여기서도 알려야 회로가 열려
+      // 다시 시도 버튼이라도 뜬다.
+      if (!Hls.isSupported()) {
+        fail()
+        return
+      }
 
       const hls = new Hls({
         // 기본값(3)을 쓴다. 2로 낮추면 지연이 줄지만 버퍼가 세그먼트 2개뿐이라
@@ -101,9 +113,9 @@ function LivePlayer({ src, poster, muted, live, onCircuitOpen }: Props) {
       hls.attachMedia(video)
 
       hls.on(Hls.Events.ERROR, (_e, data) => {
-        if (data.fatal) controllerRef.current?.onFatal()
+        if (data.fatal) fail()
       })
-    })
+    }).catch(fail)
   }, [destroyPlayer])
 
   // 컨트롤러는 한 번만 만든다. 주소·방송 상태는 update 로 알린다.
