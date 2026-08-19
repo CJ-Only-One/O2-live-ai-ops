@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import ChatPanel from '../components/ChatPanel'
+import LivePlayer from '../components/LivePlayer'
 import LiveProductCard from '../components/LiveProductCard'
 import PreBroadcast from '../components/PreBroadcast'
 import ProductSheet from '../components/ProductSheet'
@@ -173,10 +174,10 @@ function LiveRoom() {
     <div className="phone-frame room">
       <div className="room__video">
         {/*
-          영상 자리. 07-media(MediaMTX·CloudFront)가 생기면 hls_url 로
-          플레이어를 붙인다 — 오버레이 구조는 그대로라 교체가 이 한 줄이다.
+          오버레이 구조는 그대로다. 재생이 안 되면 LivePlayer 가 알아서
+          썸네일로 떨어진다 — 송출이 없는 상태가 흔하다.
         */}
-        <img src={view.thumbnail} alt="" className="room__video-img" />
+        <LivePlayer src={broadcast.hls_url} poster={view.thumbnail} muted={muted} />
         <div className="room__video-scrim" />
 
         <div className="room__topbar">

@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     # AWS_REGION 을 그대로 쓴다. 로컬에서 큐를 붙일 때만 값이 필요하다.
     AWS_REGION: str = "ap-northeast-2"
 
+    # HLS 플레이리스트 주소의 앞부분. 시드가 broadcasts.hls_url 을 만들 때 쓴다.
+    #
+    # 기본값이 상대 경로인 이유는 프론트와 MediaMTX 가 같은 ALB 뒤에 있기
+    # 때문이다. 호스트를 박으면 ALB 주소가 바뀔 때마다 DB 를 고쳐야 하고,
+    # 다른 출처가 되어 CORS 도 걸린다.
+    #
+    # CloudFront 를 앞에 붙이면 그때 절대 주소로 바꾼다 (D-038).
+    HLS_BASE_URL: str = "/hls"
+
     @property
     def allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
