@@ -234,6 +234,18 @@ variable "events_salt_secret_name" {
   default     = "o2/dev/events-salt"
 }
 
+variable "hls_base_url" {
+  description = <<-EOT
+    HLS 플레이리스트 주소의 앞부분. `apps/api` 의 `Settings.HLS_BASE_URL` 과
+    같은 이름이어야 한다 — 다르면 주입이 무시되고 코드 기본값이 쓰인다.
+
+    상대 경로인 것은 프론트와 MediaMTX 가 같은 ALB 뒤에 있기 때문이다.
+    CloudFront 를 앞에 붙이면 절대 주소로 바꾼다.
+  EOT
+  type        = string
+  default     = "/hls"
+}
+
 variable "enable_media" {
   description = <<-EOT
     영상 스택 배선을 켠다 — MediaMTX 의 송출 비밀번호를 Secret 으로 넣는다.

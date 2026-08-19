@@ -16,6 +16,15 @@ export default defineConfig({
         target: process.env.API_TARGET ?? 'http://localhost:8000',
         changeOrigin: true,
       },
+      // HLS. 클러스터에서는 같은 ALB 가 /hls 를 MediaMTX 로 보낸다.
+      //
+      // 로컬에는 MediaMTX 가 없어 기본값을 클러스터 ALB 로 둔다. **이 주소는
+      // ALB 를 다시 만들면 낡는다.** 개발 편의용이고, 틀리면 로컬에서 영상만
+      // 안 나온다(다른 것은 멀쩡하다). 그때는 HLS_TARGET 으로 덮는다.
+      '/hls': {
+        target: process.env.HLS_TARGET ?? 'http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com',
+        changeOrigin: true,
+      },
       '/ws': {
         target: process.env.WS_TARGET ?? 'http://localhost:8090',
         ws: true,

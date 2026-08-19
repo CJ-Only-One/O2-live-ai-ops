@@ -52,6 +52,7 @@
 | D-035 | 승인 대기 중에는 상태를 바꾸지 않는다 | `SNAPSHOT#DETECT`, 감시 3등급, 만료시각 |
 | D-036 | 클라이언트 이벤트 수집을 api 가 맡는다 | `stream-client` 첫 발행자, `click_ratio` 가 0 이던 이유, 대역/계약 시험 |
 | D-037 | 스케일링 부품은 필요해질 때 넣는다 | metrics-server 는 Phase 4, KEDA·Prometheus·EBS CSI 재검토 |
+| D-038 | 영상은 ALB 로 먼저 내보낸다 | MediaMTX, `paths` 누락, `?session=` 이 CDN 캐싱을 깬다 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -2074,3 +2075,81 @@ Datadog 을 읽지 못하므로 HPA 를 만들어도 `unknown` 만 뜬다.
 
 `order-worker-deployment.yaml` 에 "KEDA 를 붙일 때는 replicas 필드를 제거해야
 한다" 는 주석이 남아 있다. 그 전제는 아직 살아 있다.
+
+---
+
+## D-038. 영상은 ALB 로 먼저 내보내고 CloudFront 는 나중에 붙인다
+
+`07-media`(D-033)의 첫 구현이다. MediaMTX 파드 하나가 RTMP 를 받아 HLS 로
+내보내고, 기존 ALB 가 `/hls` 경로로 그것을 배포한다.
+
+```
+OBS → RTMP:1935 → NLB → MediaMTX → 2초 세그먼트 → ALB /hls → 브라우저
+```
+
+**Terraform 스택을 만들지 않았다.** CloudFront 를 미루면 들어갈 리소스가 없다.
+NLB 는 Service 매니페스트의 애노테이션으로 AWS Load Balancer Controller 가
+만든다. `04-platform` 이 만드는 것은 송출 비밀번호 Secret 하나뿐이다.
+
+**ALB 도 새로 만들지 않았다.** `frontend-ingress.yaml` 에 `/hls` 규칙 한 줄을
+더했다. 프론트와 같은 출처라 CORS 가 걸리지 않는다.
+
+### 경로 접두사가 스트림 이름의 일부다
+
+ALB 는 경로를 벗겨 넘기지 않는다(rewrite 가 없다). `/hls/bc_1042/index.m3u8`
+가 그대로 MediaMTX 에 도착하므로 스트림 이름도 `hls/bc_1042` 여야 한다.
+
+`live` 를 쓰면 프론트의 `/live/:broadcastId` 라우트와 겹쳐 SPA 가 뜨지 않는다.
+
+### 붙이면서 밟은 것 셋
+
+**`paths` 절이 없으면 어떤 경로도 허용되지 않는다.** `authInternalUsers` 로
+권한만 열면 되는 줄 알았는데 MediaMTX 는 권한과 경로를 따로 본다. 송출이
+NLB 를 지나 파드까지 닿고 인증도 통과한 뒤 `path 'hls/bc_1042' is not
+configured` 로 끊겼다. 어디서 막혔는지는 로그를 `debug` 로 올려야 보였다.
+
+**OBS 는 서버 주소 뒤에 스트림 키를 그대로 이어붙인다.** 서버에 쿼리스트링을
+넣으면 키가 그 뒤로 붙어 비밀번호가 오염된다.
+
+```
+서버 rtmp://.../hls?user=publisher&pass=XXXX  +  키 bc_1042
+  → rtmp://.../hls?user=publisher&pass=XXXX/bc_1042    ← 인증 실패
+```
+
+서버 주소에 경로까지 넣고 키를 비우거나, 키 쪽에 쿼리를 붙여야 한다.
+
+**ALB 헬스체크가 영영 실패한다.** MediaMTX 는 `/` 에 404 를 준다. 송출이 없으면
+200 을 주는 경로가 아예 없으므로 `success-codes: 200-404` 로 "살아 있으면
+무엇이든 답한다" 를 기준으로 삼았다. 이 애노테이션은 **Ingress 가 아니라
+Service 에** 둔다 — Ingress 에 두면 ALB 의 모든 대상 그룹에 적용되어
+api·frontend 의 404 까지 정상으로 친다.
+
+### ★ CloudFront 를 붙일 때 먼저 고칠 것
+
+**MediaMTX 가 플레이리스트와 세그먼트 주소에 세션 ID 를 붙인다.**
+
+```
+main_stream.m3u8?session=bf3a69a2-74f9-4a6e-8264-1867f0d3b5db
+5c56efa752c6_main_seg0.ts?session=ccc2814d-bce3-49fc-ba6f-de33d5b52f43
+```
+
+시청자마다 값이 다르다. CloudFront 는 기본적으로 쿼리스트링이 다르면 다른
+객체로 보므로 **캐시가 전혀 먹지 않는다.** 시청자 수만큼 오리진을 치게 되고,
+"세그먼트는 파일이라 오리진은 세그먼트당 1회만 맞는다"(`architecture.md` 2.2)는
+전제가 통째로 무너진다. 파드 하나로 40,000 명을 감당한다는 계산이 여기 걸려 있다.
+
+**apply 는 성공하고 재생도 된다.** 조용히 비싸지고 조용히 느려질 뿐이라 늦게
+드러난다.
+
+대응은 둘 중 하나다.
+
+| 방법 | 내용 |
+|---|---|
+| `hlsAlwaysRemux: true` | 먹서를 상시 유지해 세션 없이 서빙한다. MediaMTX 쪽에서 끝난다 |
+| CloudFront 캐시 정책 | `session` 을 캐시 키에서 제외한다. 오리진에는 그대로 전달된다 |
+
+**앞쪽을 먼저 시도한다.** 캐시 키 설정은 CDN 쪽에 숨은 규칙을 하나 더 만드는
+일이고, 나중에 "왜 캐시가 이상하지" 를 조사할 때 보이지 않는다.
+
+지금은 시청자가 우리뿐이라 문제가 드러나지 않는다. **CloudFront 를 붙이는
+작업의 첫 항목으로 둔다.**

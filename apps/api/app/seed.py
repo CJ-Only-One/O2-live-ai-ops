@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.dialects.mysql import insert
 
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.db.valkey import valkey
 from app.models.broadcast import Broadcast
@@ -26,8 +27,12 @@ from app.models.product import Product
 
 
 def _hls(broadcast_id: str) -> str:
-    # 07-media(MediaMTX·CloudFront)가 생기면 실제 값으로 바뀐다.
-    return f"https://example.invalid/hls/{broadcast_id}/index.m3u8"
+    """MediaMTX 가 내보내는 플레이리스트 주소.
+
+    경로가 `hls/<broadcast_id>` 인 것은 ALB 가 경로를 벗기지 않기 때문이다.
+    접두사가 스트림 이름의 일부여야 한다 (매니페스트 mediamtx-config.yaml).
+    """
+    return f"{settings.HLS_BASE_URL}/{broadcast_id}/index.m3u8"
 
 
 # broadcast_id, 상태, 시작 시각 오프셋(분)
