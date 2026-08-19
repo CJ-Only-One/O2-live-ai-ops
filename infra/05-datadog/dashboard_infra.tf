@@ -152,7 +152,7 @@ resource "datadog_dashboard" "infra" {
           title          = "메모리 사용률 — Limit 대비 (%)"
           title_size     = "16"
           show_legend    = true
-          legend_layout  = "table"
+          legend_layout  = "auto"
           legend_columns = ["avg", "min", "max", "value", "sum"]
 
           request {
@@ -322,7 +322,7 @@ resource "datadog_dashboard" "infra" {
           title          = "Pod Restart Count"
           title_size     = "16"
           show_legend    = true
-          legend_layout  = "table"
+          legend_layout  = "auto"
           legend_columns = ["avg", "min", "max", "value"]
 
           request {
@@ -558,7 +558,7 @@ resource "datadog_dashboard" "infra" {
           title          = "Http Requests Rates"
           title_size     = "16"
           show_legend    = true
-          legend_layout  = "table"
+          legend_layout  = "auto"
           legend_columns = ["avg", "min", "max", "sum", "value"]
 
           request {
@@ -629,7 +629,7 @@ resource "datadog_dashboard" "infra" {
           title          = "Http Requests Errors"
           title_size     = "16"
           show_legend    = true
-          legend_layout  = "table"
+          legend_layout  = "auto"
           legend_columns = ["avg", "min", "max", "sum", "value"]
 
           request {
