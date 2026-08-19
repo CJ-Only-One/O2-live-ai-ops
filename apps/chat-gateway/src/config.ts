@@ -44,11 +44,26 @@ export const config = {
   /**
    * chat.send 발행 스위치.
    *
-   * 기본값이 꺼짐인 이유는, 모르는 event_name 이 들어갔을 때 수집단이 어떻게
-   * 처리하는지 아직 확인되지 않았기 때문이다 (contracts.md 5.5). 우리가 남의
-   * 파이프라인을 깨뜨릴 수 있으므로 답이 온 뒤에 켠다.
+   * 기본값이 꺼짐인 이유였던 "모르는 event_name이 들어갔을 때 수집단이 어떻게
+   * 처리하는지"(contracts.md 5.5)는 확인됐다 — Warm(sketch.py `add()`)과
+   * Cold(Glue ETL `get_json_object`) 양쪽 다 event_name을 고정 목록과 대조하지
+   * 않고 그대로 받아들인다. 기본값은 여전히 꺼짐으로 둔다 — 배포 매니페스트에서
+   * EMIT_CHAT_EVENTS=true로 명시적으로 켜는 것이 안전하다.
    */
   emitChatEvents: (process.env.EMIT_CHAT_EVENTS ?? 'false') === 'true',
+
+  /**
+   * chat.send 전송 목적지. Python SDK 의 O2_EVENTS_SINK 와 같은 이름·같은 값
+   * (stdout|kinesis) 을 쓴다 — 두 서비스가 같은 스위치로 배선을 맞춘다.
+   */
+  eventsSink: process.env.O2_EVENTS_SINK ?? 'stdout',
+
+  // SDK 기본값과 같다 (O2_STREAM_BUSINESS, AWS_REGION). 04-platform 이 이미
+  // 이 기본값 그대로 IAM 권한을 주고 있어(app_events.tf) 따로 안 바꾼다.
+  // chat.send 는 client.*/live.* 접두어가 아니라 항상 business 로 간다
+  // (SDK sinks.py 의 `_stream_for()` 와 동일 규칙).
+  streamBusiness: process.env.O2_STREAM_BUSINESS ?? 'stream-business',
+  awsRegion: process.env.AWS_REGION ?? 'ap-northeast-2',
 
   service: process.env.O2_SERVICE ?? 'chat-gateway',
   serviceVersion: process.env.O2_SERVICE_VERSION ?? 'unknown',

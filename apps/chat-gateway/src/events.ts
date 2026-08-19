@@ -13,6 +13,8 @@
 
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 
+import { KinesisClient, PutRecordCommand } from '@aws-sdk/client-kinesis';
+
 import { config } from './config.js';
 
 export type ChatSendPayload = {
@@ -62,8 +64,56 @@ function envelope(eventName: string, payload: ChatSendPayload, ctx: EmitContext)
     user_key: ctx.userKey,
     session_id: null,
     client_ip_key: null,
+    // SDK config.py 와 같은 규칙 — O2_POD_NAME 이 없으면 HOSTNAME 으로 대체한다.
+    // K8s 가 파드 이름을 HOSTNAME 에 기본으로 채워준다.
+    pod_name: process.env.O2_POD_NAME || process.env.HOSTNAME || null,
     payload,
   };
+}
+
+type Envelope = ReturnType<typeof envelope>;
+
+/**
+ * 스트림별 파티션 키 규칙. SDK sinks.py 의 `_partition_key()` 와 동일하다.
+ *
+ * stream-business 는 order_id 로 같은 주문의 이벤트 순서를 보장하는데,
+ * chat.send 는 order_id 도 session_id 도 없어 항상 event_id 로 떨어진다 —
+ * 메시지마다 파티션이 갈리지만, 채팅은 순서를 보장할 필요가 없어 상관없다.
+ */
+function partitionKey(env: Envelope): string {
+  const orderId = (env.payload as { order_id?: string }).order_id;
+  return orderId || env.session_id || env.event_id;
+}
+
+let kinesis: KinesisClient | null = null;
+
+function kinesisClient(): KinesisClient {
+  if (!kinesis) kinesis = new KinesisClient({ region: config.awsRegion });
+  return kinesis;
+}
+
+/**
+ * 전송은 절대 예외를 밖으로 던지지 않는다 — SDK sinks.py 의 `_send()` 와
+ * 같은 원칙이다. 이벤트 발행 실패가 채팅 자체를 막으면 안 된다.
+ */
+function send(env: Envelope): void {
+  if (config.eventsSink === 'kinesis') {
+    kinesisClient()
+      .send(
+        new PutRecordCommand({
+          StreamName: config.streamBusiness,
+          PartitionKey: partitionKey(env),
+          Data: new TextEncoder().encode(JSON.stringify(env) + '\n'),
+        }),
+      )
+      .catch((err: unknown) => {
+        console.error(`[events] chat.send Kinesis 전송 실패: ${String(err)}`);
+      });
+    return;
+  }
+
+  // 기본값 — 로컬 개발·확인용.
+  process.stdout.write(JSON.stringify(env) + '\n');
 }
 
 export type EmitContext = {
@@ -85,9 +135,7 @@ export function digest(message: string): string {
 export function emitChatSend(payload: ChatSendPayload, ctx: EmitContext): void {
   if (!config.emitChatEvents) return;
 
-  // 지금은 stdout 싱크다. Kinesis 전환은 이 함수 안쪽만 바꾸면 된다.
-  //
   // **인입 지점에서만 부른다.** 팬아웃 루프 안에서 부르면 초당 80만 건이 되어
   // 파드가 죽는다 — 인입 20/s 와 전달 800,000/s 는 40,000 배 차이다.
-  process.stdout.write(JSON.stringify(envelope('chat.send', payload, ctx)) + '\n');
+  send(envelope('chat.send', payload, ctx));
 }
