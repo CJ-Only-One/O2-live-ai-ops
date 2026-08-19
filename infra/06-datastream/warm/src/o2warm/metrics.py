@@ -246,6 +246,15 @@ def derive(
         "business_count": sk.n_business,
         "client_count": sk.n_client,
         "event_breakdown": dict(sorted(sk.by_event.items(), key=lambda kv: -kv[1])),
+        # rps 는 service 단위 합산이라 이벤트 종류로 못 가른다(예: order.create
+        # 대 order.confirm 정지 감지). failure_rate 와 같은 이유로 known
+        # EVENT_NAMES 로만 제한한다 — 알 수 없는 event_name 까지 태그로 펼치면
+        # 카디널리티가 입력값에 좌우된다.
+        "event_rate": {
+            name: round(count / span, 4)
+            for name, count in sk.by_event.items()
+            if name in C.EVENT_NAMES
+        },
 
         # --- 감별표 열 ---
         "rps": rps,
@@ -272,6 +281,16 @@ def derive(
 
         "cache_hit_rate": _ratio(sk.cache_hit, cache_total),
         "cache_samples": cache_total,
+        # 파드 하나만 무효화를 놓쳐도 service 평균엔 안 잡힌다(README 시나리오 1).
+        # pod_name 이 있는 파드만 대상 — 이 값을 만들 pod_name 태그가 아직 없는
+        # 봉투(SDK 구버전 등)에서 온 이벤트는 자연히 빠진다.
+        "cache_hit_rate_by_pod": {
+            pod: _ratio(
+                sk.cache_hit_by_pod.get(pod, 0),
+                sk.cache_hit_by_pod.get(pod, 0) + sk.cache_miss_by_pod.get(pod, 0),
+            )
+            for pod in set(sk.cache_hit_by_pod) | set(sk.cache_miss_by_pod)
+        },
 
         "failure_rate": fail_rates,
         "failure_codes": fail_codes,
