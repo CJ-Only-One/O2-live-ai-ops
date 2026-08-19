@@ -59,12 +59,22 @@ def lambda_handler(event, context):
         print("skipped: recovered")
         return {"statusCode": 200, "body": "skipped"}
 
-    # 수동 이벤트(api/v1/events)로 테스트하면 host 와 alert_transition 이
-    # 비어서 온다. Dify 시작 노드에서 이 둘을 필수로 두면 안 되는 이유다.
+    # Datadog 은 15필드를 보내지만 Dify 에는 LLM 이 읽는 것만 넘긴다.
+    # event_id·cycle_key·monitor_id·occurred_at·env·service 는 여기서 소비하고
+    # 끝낸다 (계약: infra/06-agent/dify/README.md 1절).
+    #
+    # ★ Dify 는 모르는 입력 키를 조용히 무시한다. 400 을 내지 않는다.
+    #   즉 아래 이름이 Dify 시작 노드 변수와 어긋나면 그 값이 그냥 사라지고
+    #   워크플로는 succeeded 로 끝난다. 이름을 바꿀 때는 양쪽을 같이 고친다.
+    #
+    # 수동 이벤트(api/v1/events)로 테스트하면 host·priority·alert_query 가
+    # 비어서 온다. Dify 시작 노드에서 이것들을 필수로 두면 안 되는 이유다.
     payload = {
         "inputs": {
             "alert_title": body.get("alert_title", ""),
             "alert_body": body.get("alert_body", ""),
+            "alert_query": body.get("alert_query", ""),
+            "priority": body.get("priority", ""),
             "host": body.get("host", ""),
             "tags": body.get("tags", ""),
             "link": body.get("link", ""),
@@ -88,15 +98,27 @@ def lambda_handler(event, context):
     # 비동기(자기 자신을 InvocationType='Event' 로 재호출)로 바꾼다.
     try:
         with urllib.request.urlopen(req, timeout=55) as res:
-            print("dify ok:", res.status)
+            result = json.loads(res.read())
     except urllib.error.HTTPError as e:
         # 본문을 통째로 찍지 않는다. Dify 오류 응답에 입력이 되비쳐 나온다.
         print("dify error:", e.code, e.read().decode()[:500])
-        return {"statusCode": 502, "body": "dify error"}
+        raise
     except urllib.error.URLError as e:
         # 대부분 보안그룹이나 DIFY_URL 의 IP 문제다. 포트는 80 이어야 한다
         # (17080 은 SSM 터널이 만드는 각자 로컬 포트이지 서버 포트가 아니다).
         print("dify unreachable:", e.reason)
-        return {"statusCode": 504, "body": "dify unreachable"}
+        raise
+
+    # ★ Dify 는 워크플로가 실패해도 HTTP 200 을 준다. 상태는 본문 안에 있다.
+    #   상태 코드만 보면 실패가 성공으로 보고되고, 그러면 Datadog 재시도도
+    #   (비동기로 바꾼 뒤에는 대기열 재시도와 DLQ 도) 동작하지 않는다.
+    #   알림이 조용히 사라지는 경로다 — docs/troubleshooting.md T-011.
+    data = result.get("data", {})
+    if data.get("status") != "succeeded":
+        raise RuntimeError(
+            f"dify workflow {data.get('status')}: {data.get('error')}"
+        )
+
+    print("dify ok:", data.get("elapsed_time"), "s")
 
     return {"statusCode": 200, "body": "ok"}
