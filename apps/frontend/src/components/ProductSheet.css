@@ -60,6 +60,44 @@
   cursor: default;
 }
 
+/* 품절. 이미지까지 흐리게 해서 목록에서 훑을 때 바로 걸러진다.
+   "품절" 글자는 남겨야 하므로 행 전체의 투명도를 낮추지 않는다. */
+.sheet__item.is-soldout {
+  cursor: default;
+}
+
+/* 특가 오픈 전. 품절과 달리 곧 살 수 있게 되므로 흑백으로 만들지 않는다.
+   누를 수 없다는 것만 드러내면 된다. */
+.sheet__item.is-upcoming {
+  cursor: default;
+}
+
+.sheet__item.is-upcoming .sheet__thumb,
+.sheet__item.is-upcoming .sheet__info {
+  opacity: 0.62;
+}
+
+.sheet__item.is-soldout .sheet__thumb {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+
+.sheet__item.is-soldout .sheet__brand,
+.sheet__item.is-soldout .sheet__name,
+.sheet__item.is-soldout .sheet__price {
+  color: var(--faint);
+  opacity: 0.55;
+}
+
+.sheet__item.is-soldout .sheet__price strong {
+  color: inherit;
+  text-decoration: line-through;
+}
+
+.sheet__item.is-soldout .sheet__discount {
+  display: none;
+}
+
 .sheet__thumb {
   width: 68px;
   height: 68px;

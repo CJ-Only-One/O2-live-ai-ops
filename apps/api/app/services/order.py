@@ -144,11 +144,26 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
     started = time.perf_counter()
     order_id = f"od_{ulid()}"
 
-    # 가격은 접수 시점에 확정한다. 화면이 보는 것과 같은 캐시에서 꺼내므로
-    # 사용자가 본 금액과 청구 금액이 어긋나지 않는다.
-    unit_price = broadcast_service.get_sale_price(req.broadcast_id, req.sku_id)
-    if unit_price is None:
+    # 가격과 상태를 접수 시점에 확정한다. 화면이 보는 것과 같은 캐시에서
+    # 꺼내므로 사용자가 본 것과 서버가 판정한 것이 어긋나지 않는다.
+    product = broadcast_service.get_product(req.broadcast_id, req.sku_id)
+    if product is None:
         raise ApiError("INVALID_REQUEST", "편성에 없는 상품입니다")
+
+    # 특가가 열리기 전에는 팔지 않는다 (contracts.md 2.1).
+    #
+    # 재고 차감보다 먼저 본다. 뒤에 두면 멱등키가 먼저 등록되어, 특가가 열린
+    # 뒤 같은 키로 다시 시도해도 "이미 처리된 주문" 으로 막힌다.
+    #
+    # 이 검사가 없던 동안 PENDING 상품이 특가로 팔리고 재고까지 줄었다.
+    # 화면은 "특가 오픈 예정" 이라고 말하고 있었다.
+    if product["state"] == "PENDING":
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        # SDK 열거에 NOT_STARTED 가 없어 가장 가까운 값을 쓴다 (contracts.md 5.2).
+        _emit_issue(req, "FAILED", "NOT_ELIGIBLE", latency_ms)
+        raise ApiError("NOT_STARTED", "아직 특가가 시작되지 않았습니다")
+
+    unit_price = product["sale_price"]
     amount = unit_price * req.qty
 
     code, value = _reserve(

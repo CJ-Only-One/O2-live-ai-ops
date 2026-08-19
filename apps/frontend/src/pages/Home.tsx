@@ -117,6 +117,14 @@ function Home() {
                       {product.state === 'SOLD_OUT' && (
                         <span className="pgrid__soldout">품절</span>
                       )}
+                      {/*
+                        특가가 아직 안 열린 상품. 가격은 그대로 보여준다 —
+                        곧 이 값이 된다는 예고이고, 숨기면 왜 목록에 있는지
+                        알 수 없다. 다만 지금 살 수 있는 것과는 구분한다.
+                      */}
+                      {product.state === 'PENDING' && (
+                        <span className="pgrid__upcoming">특가 오픈 예정</span>
+                      )}
                     </div>
                     <p className="pgrid__brand">{view.brand}</p>
                     <p className="pgrid__name">{product.name}</p>
