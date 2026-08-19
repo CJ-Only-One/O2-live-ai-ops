@@ -46,7 +46,7 @@
 | D-029 | 백데이터 파이프라인을 흡수한다 (`06-datastream`) | D-015 뒤집기, 코드만 이동, `No changes` |
 | D-030 | 비밀값은 원본 하나, 읽기는 실행 시점에 | 사본 회전 사고, `` vs `None`, `DD_SITE` |
 | D-031 | Function URL 을 에이전트 인그레스로 쓰지 않는다 | 403 `AccessDeniedException`, SCP/RCP 가설 |
-| D-032 | 클라이언트 이벤트 수집을 api 가 맡는다 | `stream-client` 첫 발행자, `click_ratio` 가 0 이던 이유, 대역/계약 시험 |
+| D-036 | 클라이언트 이벤트 수집을 api 가 맡는다 | `stream-client` 첫 발행자, `click_ratio` 가 0 이던 이유, 대역/계약 시험 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -1680,7 +1680,7 @@ D-030 의 인증 수정은 그래도 유효하다. URL 이 열리는 순간 필�
 
 ---
 
-## D-032. 클라이언트 이벤트 수집을 api 가 맡는다
+## D-036. 클라이언트 이벤트 수집을 api 가 맡는다
 
 `stream-client` 는 만들어진 뒤로 **한 건도 받은 적이 없었다.** ESM·Firehose·IAM
 까지 전부 서 있는데 발행자가 없었다. `contracts.md` 5.1 은 `client.action` 의
