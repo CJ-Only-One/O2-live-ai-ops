@@ -8,12 +8,18 @@
   overflow: hidden;
 }
 
+/* 라이브 카드와 같은 사진을 쓴다. 다만 여기서는 배경이다 — 위에 제목·티저·
+   카운트다운이 올라간다. 판촉 사진에는 문구와 배지가 박혀 있어 그대로 깔면
+   화면 글자와 겹쳐 읽힌다. 흐리게 만들어 색만 남긴다.
+   scale 은 blur 가 가장자리를 비게 만드는 것을 덮으려고 준다. */
 .prelive__img {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  filter: blur(22px) brightness(0.7);
+  transform: scale(1.15);
 }
 
 /* 아래쪽만 어둡게. 멘트와 카운트다운이 사진 위에서 읽혀야 한다. */
