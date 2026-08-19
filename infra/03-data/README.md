@@ -14,9 +14,13 @@
 
 ## backend key 가 `datastore/` 인 이유
 
-`data/terraform.tfstate` 는 **AI 에이전트 백데이터 파트**가 쓰고 있다.
-같은 키를 쓰면 Terraform 이 그쪽 리소스 30개를 자기 것으로 인식하고,
-다음 destroy 에 전부 지운다. 근거는 [D-015](../../docs/decisions.md).
+`data/terraform.tfstate` 는 **다른 스택의 것**이다. 같은 키를 쓰면 Terraform 이
+그쪽 리소스 30개를 자기 것으로 인식하고, 다음 destroy 에 전부 지운다.
+근거는 [D-015](../../docs/decisions.md).
+
+원래 백데이터 파트 소관이었으나 지금은 `06-datastream` 이 그 코드를 흡수해
+같은 저장소에서 관리한다 (D-029). **키 규칙은 그대로다** — `03-data` 는
+`datastore/`, `06-datastream` 은 `data/`.
 
 ## 지금 정한 것과 나중에 정할 것
 

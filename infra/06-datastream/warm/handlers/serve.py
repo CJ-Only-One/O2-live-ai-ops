@@ -14,7 +14,9 @@ Python Agent 라면 `WarmClient` 를 직접 쓰는 편이 홉이 하나 줄어 �
          → 지표 윈도우만
 
     POST /v1/warm/incidents/<id>/snapshot   {"phase":"PRE","service":"coupon-api"}
-         → 조치 전/후 스냅샷 기록
+         → 감지 시점(DETECT) / 조치 전(PRE) / 조치 후(POST) 스냅샷 기록
+           DETECT 는 번들 전체를, PRE·POST 는 지표만 남깁니다.
+           복구 판정에 쓰이는 것은 PRE·POST 뿐입니다.
            비즈니스 지표는 이 API 가 자동으로 채웁니다.
            **인프라 지표(p95·에러율·CPU)는 Agent 가 Datadog 에서 조회해
            `extra` 로 첨부해야 합니다.** 담당 경계가 그렇게 나뉘어 있고,
@@ -48,6 +50,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from o2warm import secrets  # noqa: E402
 from o2warm.client import WarmClient  # noqa: E402
 from o2warm.settings import settings  # noqa: E402
+from o2warm.store import SNAPSHOT_PHASES  # noqa: E402
 
 _client: WarmClient | None = None
 
@@ -144,10 +147,14 @@ def _dispatch(method: str, path: str, params: dict, body: dict):
             phase = (body.get("phase") or "PRE").upper()
             if not service:
                 raise ValueError("service 가 필요합니다")
-            if phase not in ("PRE", "POST"):
-                raise ValueError("phase 는 PRE 또는 POST 여야 합니다")
+            if phase not in SNAPSHOT_PHASES:
+                raise ValueError("phase 는 DETECT, PRE, POST 중 하나여야 합니다")
             return _resp(201, client().record_snapshot(
-                incident_id, phase, service, extra=body.get("extra")
+                incident_id,
+                phase,
+                service,
+                extra=body.get("extra"),
+                broadcast_id=body.get("broadcast_id") or params.get("broadcast_id"),
             ))
 
         if tail == "compare" and method == "GET":
@@ -155,6 +162,8 @@ def _dispatch(method: str, path: str, params: dict, body: dict):
             if result is None:
                 # 비교 대상이 없다는 것은 조치 전 스냅샷을 남기지 않았다는
                 # 뜻입니다. 조용히 빈 값을 주면 복구로 오판합니다.
+                # DETECT 는 여기 끼지 않습니다 — 감지 시점과 비교하면
+                # 대기 중 자기악화분까지 조치 성과로 잡힙니다.
                 return _resp(409, {
                     "error": "snapshot_incomplete",
                     "detail": "PRE 또는 POST 스냅샷이 없어 복구를 판정할 수 없습니다",

@@ -1,6 +1,8 @@
 # 라이브커머스 서비스 아키텍처 설계 결정 문서
 
 > **이 파일은 통째로 읽지 않는다.** 1,300줄, 약 20,000토큰이다.
+> 여기의 `D-01`~`D-15` 는 **두 자리**다. `decisions.md` 의 세 자리 `D-0NN` 과
+> 다른 체계이므로 섞어 찾지 않는다.
 > 아래에서 필요한 절을 고른 뒤 `grep -n '^## 9\.' docs/architecture.md` 로
 > 위치를 찾아 그 절만 읽는다.
 >
@@ -12,7 +14,7 @@
 > | 캐싱 계층·TTL·무효화·실패 모드 | 3 |
 > | MySQL 스키마·리플리카·커넥션·암호화 | 4 |
 > | Valkey를 고른 이유 | 5 |
-> | Kafka/Kinesis를 안 쓰는 이유 | 6 |
+> | Kafka/Kinesis를 안 쓰는 이유 (**커머스 경로 한정** — 에이전트 이벤트는 `decisions.md` D-027 에서 Kinesis 로 간다) | 6 |
 > | 백데이터·에이전트 트레이스 | 7 (별도 파트 소관) |
 > | Datadog, MCP 레이트 리밋 | 8 |
 > | 스케일링, **나중에 못 얹는 앱 규약(9.4)** | 9 |
@@ -1039,10 +1041,16 @@ setInterval(() => {
 
 ### 10.1 Phase
 
+> **진행 상황 정정 (저장소 기준).** Phase 0~3 은 끝났다. `03-data` 는 apply 되어
+> 있고 backend key 는 `datastore/` 다. `data/` 고아 state 는 정리 대상이 아니라
+> `06-datastream` 으로 흡수됐다 (D-029). 앱 네 개도 배포되어 돌고 있다.
+> **지금 위치는 Phase 4 앞이다** — 영상 스택(`07-media`, D-033)과 베이스라인
+> 측정이 남았다. 아래 표의 일정은 원안 그대로 둔다.
+
 ```
-Phase 0  전제 갱신 + 고아 state 정리                 (1일)    ← 진행 중
+Phase 0  전제 갱신 + 고아 state 정리                 (1일)    ← 완료
 Phase 1  인터페이스 계약 확정                        (2-3일)
-Phase 2  03-data + 05-media 프로비저닝               (2-3일)
+Phase 2  03-data + 07-media 프로비저닝               (2-3일)
 Phase 3  애플리케이션 개발 (9.4 규약 준수)           (3-4주)
 Phase 4  단일 Pod 배포 + 베이스라인 측정             (2-3일)  ← 분기점
 Phase 5  KEDA + 오버프로비저닝 + ALB 튜닝            (1주)
@@ -1053,7 +1061,7 @@ Phase 7  장애 시나리오 주입 + AIOps 파이프라인       (1-2주)
 v1.0에서 달라진 것 셋.
 
 - **Phase 0의 내용이 바뀌었다.** 부하 프로파일은 확정됐으므로, 대신 `data/terraform.tfstate` 고아 state 정리가 들어간다. **이걸 치우기 전에는 Phase 2를 시작할 수 없다** — 새 `03-data`가 같은 키를 쓰면 남의 스택 30개를 자기 것으로 인식한다. `03-data`의 backend key는 `datastore/`로 간다.
-- **Phase 2에 `05-media`가 추가됐다.** D-01 교체로 영상 스택이 생겼다.
+- **Phase 2에 영상 스택이 추가됐다.** D-01 교체로 생겼다. 번호는 `05-media` 로 예약했으나 05·06 을 관측·에이전트·백데이터 스택이 먼저 가져가 `07-media` 가 되었다 (D-033).
 - **Phase 5에서 Karpenter를 뺐다.** 관리형 노드그룹이 이미 돌고 있고, 오버프로비저닝 pause Pod가 노드 대기를 이미 0으로 만든다. 그 위에 Karpenter를 얹으면 Phase 6에서 무엇이 스케일링을 만들었는지 분리가 안 된다. 노드 확보가 실제 병목으로 측정되면 그때 넣는다.
 
 **Phase 4가 결정적이다.** Pod 1개당 WebSocket 커넥션 수와 RPS를 측정하기 전에는 HPA 임계값도 Karpenter 인스턴스 타입도 추측이다. 이 숫자 없이 Phase 5를 시작하면 전부 재작업이다.
@@ -1085,12 +1093,15 @@ v1.0에서 달라진 것 셋.
 > ├── 00-cicd/         # GitHub OIDC, IAM Role, ECR
 > ├── 01-network/      # VPC, Subnet, NAT           (거의 안 건드림)
 > ├── 02-eks/          # 클러스터, 노드그룹, 애드온
-> ├── 03-data/         # RDS, Valkey, SQS  (미작성, backend key = datastore/)
+> ├── 03-data/         # RDS, Valkey, SQS           (backend key = datastore/)
 > ├── 04-platform/     # Argo CD, LBC, ESO          (CI에서 plan 안 함)
-> └── 05-media/        # MediaMTX용 CloudFront, NLB, S3  (미작성)
+> ├── 05-datadog/      # Datadog 대시보드
+> ├── 06-agent/        # Dify 호스트                 (D-028)
+> ├── 06-datastream/   # 백데이터 파이프라인          (D-029, backend key = data/)
+> └── 07-media/        # MediaMTX용 CloudFront, NLB  (미작성, D-033)
 > ```
 >
-> 번호는 **의존 순서**다. apply는 `01` → `02` → `03` → `05` → `04` 이고 로컬에서 한다.
+> 번호는 **의존 순서**다. apply는 `01` → `02` → (`03` ∥ `05` ∥ `06` ∥ `07`) → `04` 이고 로컬에서 한다.
 
 원문(v1.0)의 제안은 다음과 같았다. 원칙 — "`20-data`만 독립적으로 destroy/apply 가능해야 실험 비용을 통제할 수 있다" — 는 그대로 유효하며 `03-data`가 그 역할을 한다.
 
@@ -1127,7 +1138,7 @@ v1.1에서 최상단 3건이 바뀌었다. R-19~R-21은 P0에서 실제로 드�
 
 | ID | 리스크 | 영향 | 완화 |
 |---|---|---|---|
-| **R-19** | **state 키 충돌** | 백데이터 파트가 `data/` 키를 쓰고 있다. `03-data`가 같은 키를 쓰면 서로의 리소스를 지운다 | backend key를 `datastore/`로. 해당 state 무접촉 |
+| ~~**R-19**~~ | ~~**state 키 충돌**~~ | 해소됨. `03-data` 는 `datastore/`, `06-datastream` 은 `data/` 로 갈렸다 (D-029) | 키 규칙은 `AGENTS.md` 최상단 표에 남겼다 |
 | **R-20** | **파트 경계 침범** | 백데이터·데이터 스트림 구성을 커머스 쪽에서 바꾸면 담당 파트의 apply와 충돌 | 연동은 이벤트 스키마 계약까지만. 그 뒤 경로는 담당 파트 소관 |
 | **R-21** | **전송량 과금** | Peak 영상 36 TB/시간, 채팅 576 GB/시간 | 부하 테스트 1/10 축소 고정, 영상은 부하 경로에서 제외 |
 | **R-22** | 발화율 스파이크 | 팬아웃이 인입 × 동접의 곱이라 제곱으로 반응 | 200ms 배치 + 창당 표시 상한 (9.4-8) |
@@ -1319,5 +1330,5 @@ CDN             CloudFront — 영상·정적 자산 전용. API 캐싱 계층�
 AI 에이전트      Bedrock + AgentCore Gateway + Datadog MCP
 백데이터         별도 파트 소관 — 연동은 이벤트 스키마 계약까지 (7장 범위 주석)
 오케스트레이션    EKS + KEDA + Argo CD (Karpenter는 Phase 6 판단)
-IaC             Terraform (00-cicd / 01-network / 02-eks / 03-data / 04-platform / 05-media)
+IaC             Terraform (00-cicd / 01-network / 02-eks / 03-data / 04-platform / 05-datadog / 06-agent / 06-datastream / 07-media)
 ```

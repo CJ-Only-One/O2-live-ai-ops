@@ -140,3 +140,34 @@ def test_incident_snapshot_roundtrip(store):
 
     with pytest.raises(ValueError):
         store.put_snapshot("INC-1", "MIDDLE", {})
+
+
+def test_detect_snapshot_is_separate_from_pre(store):
+    """감지 시점과 조치 직전은 다른 아이템이어야 합니다.
+
+    같은 키에 쓰면 나중에 찍은 PRE 가 감지 시점 기록을 덮어써서
+    "그때 Agent 가 본 것"이 사라집니다.
+    """
+    store.put_snapshot("INC-1", "DETECT", {"snapshot": {"latest": {"rps": 3.0}}})
+    store.put_snapshot("INC-1", "PRE", {"snapshot": {"latest": {"rps": 9.0}}})
+
+    assert store.get_snapshot("INC-1", "DETECT")["snapshot"]["latest"]["rps"] == 3
+    assert store.get_snapshot("INC-1", "PRE")["snapshot"]["latest"]["rps"] == 9
+
+
+def test_detect_alone_does_not_satisfy_compare(store):
+    """DETECT 만 있는 것은 복구 판정에 아무 도움이 되지 않습니다.
+
+    감지 시점과 조치 후를 비교하면 승인 대기 동안의 자기악화분까지
+    조치 성과로 잡힙니다. 그래서 PRE 가 없으면 None(핸들러 409) 입니다.
+    """
+    from o2warm.client import WarmClient
+
+    client = WarmClient(store=store)
+    client._store.put_snapshot("INC-2", "DETECT", {"snapshot": {"latest": {"rps_ratio": 1.0}}})
+    client._store.put_snapshot("INC-2", "POST", {"snapshot": {"latest": {"rps_ratio": 1.1}}})
+    assert client.compare_snapshots("INC-2") is None
+
+    client._store.put_snapshot("INC-2", "PRE", {"snapshot": {"latest": {"rps_ratio": 3.4}}})
+    result = client.compare_snapshots("INC-2")
+    assert result["delta"]["rps_ratio"]["before"] == 3.4   # DETECT 의 1.0 이 아님

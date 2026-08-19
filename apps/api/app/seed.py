@@ -26,7 +26,7 @@ from app.models.product import Product
 
 
 def _hls(broadcast_id: str) -> str:
-    # 05-media(MediaMTX·CloudFront)가 생기면 실제 값으로 바뀐다.
+    # 07-media(MediaMTX·CloudFront)가 생기면 실제 값으로 바뀐다.
     return f"https://example.invalid/hls/{broadcast_id}/index.m3u8"
 
 

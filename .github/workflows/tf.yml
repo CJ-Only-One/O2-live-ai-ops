@@ -57,10 +57,11 @@ jobs:
           # 04-platform 도 포함한다. plan을 안 돌리므로 클러스터 접근이
           # 필요 없어졌고, 그래서 이 스택만 검사에서 빠질 이유가 사라졌다.
           # (plan을 돌리던 시절에는 D-011의 이유로 제외했다)
-          # `05-media`가 아니라 `05-datadog`이다. media 예약(D-025)은 쓰이지
-          # 않았고 05는 관측 스택이 되었다. 이름이 틀리면 아래 `ls` 검사에
-          # 걸려 조용히 건너뛴다 — 그 스택만 fmt·validate를 영영 안 탄다.
-          for s in 00-cicd 01-network 02-eks 03-data 04-platform 05-datadog 06-agent 06-datastream; do
+          # `05`는 media가 아니라 datadog이다. media 예약(architecture.md 10.3)은
+          # 쓰이지 않았고 05는 관측 스택이 되었다. 영상 스택은 `07-media`다(D-033).
+          # 이름이 틀리면 아래 `ls` 검사에 걸려 조용히 건너뛴다 — 그 스택만
+          # fmt·validate를 영영 안 탄다.
+          for s in 00-cicd 01-network 02-eks 03-data 04-platform 05-datadog 06-agent 06-datastream 07-media; do
             # 아직 코드가 없는 스택은 건너뛴다.
             if ! ls "infra/$s"/*.tf >/dev/null 2>&1; then
               continue

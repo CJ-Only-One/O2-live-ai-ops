@@ -5,6 +5,9 @@
 # 04-platform 의 datadog_secrets_manager_secret_name 과 같은 값이다 —
 # Agent(ESO 경유)와 집계 Lambda 가 같은 시크릿을 읽으므로 사본이 없고,
 # 키를 회전하면 양쪽이 함께 바뀐다. 이 스택은 시크릿을 소유하지 않는다.
+# 지표의 env 태그. 04-platform 의 environment 와 같아야 APM 과 이어진다.
+environment = "dev"
+
 datadog_secret_name     = "o2/dev/datadog"
 datadog_secret_property = "api-key"
 

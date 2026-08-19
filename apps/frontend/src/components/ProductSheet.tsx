@@ -17,8 +17,14 @@ interface Props {
  * 카드를 누르면 바로 주문이 나가지 않는다. 수량을 고르고 "구매하기" 를
  * 눌러야 나간다 — 라이브 화면에서 실수로 눌러 주문이 되는 것을 막는다.
  *
- * 버튼을 재고로 막지 않는다. 화면의 재고는 최대 30초 지난 값일 수 있고,
- * 판정은 서버의 차감 결과가 한다. 눌러보고 품절이면 그때 안내한다.
+ * 수량(stock_display)으로는 막지 않는다. 화면의 재고는 최대 30초 지난 값이라
+ * "3개 남음" 을 믿고 막으면 살 수 있는 것을 못 사게 된다. 판정은 서버의 차감
+ * 결과가 하고, 눌러보고 품절이면 그때 안내한다.
+ *
+ * 다만 state 가 SOLD_OUT·PENDING 인 것은 막는다. 그것은 숫자가 아니라 서버가
+ * 직접 내린 상태이고, 서버도 같은 상태를 보고 SOLD_OUT / NOT_STARTED 로
+ * 거부한다 (contracts.md 2.1). 못 살 것을 누르게 두면 실패 응답을 받아야만
+ * 알 수 있다.
  */
 function ProductSheet({ products, onClose, onBuy, pending }: Props) {
   const [selected, setSelected] = useState<Product | null>(null)
@@ -41,9 +47,17 @@ function ProductSheet({ products, onClose, onBuy, pending }: Props) {
               {products.map((p) => {
                 const view = productView(p.sku_id)
                 const discount = Math.round((1 - p.sale_price / p.price) * 100)
+                const buyable = p.state === 'ON_SALE'
+                const soldOut = p.state === 'SOLD_OUT'
                 return (
                   <li key={p.sku_id}>
-                    <button className="sheet__item" onClick={() => pick(p)}>
+                    <button
+                      className={`sheet__item${soldOut ? ' is-soldout' : ''}${
+                        p.state === 'PENDING' ? ' is-upcoming' : ''
+                      }`}
+                      onClick={() => pick(p)}
+                      disabled={!buyable}
+                    >
                       <img src={view.image} alt="" className="sheet__thumb" />
                       <div className="sheet__info">
                         <p className="sheet__brand">{view.brand}</p>
@@ -103,10 +117,14 @@ function ProductSheet({ products, onClose, onBuy, pending }: Props) {
 
             <button
               className="sheet__cta"
-              disabled={pending}
+              disabled={pending || selected.state === 'SOLD_OUT'}
               onClick={() => onBuy(selected, qty)}
             >
-              {pending ? '주문 처리 중...' : '구매하기'}
+              {selected.state === 'SOLD_OUT'
+                ? '품절되었습니다'
+                : pending
+                  ? '주문 처리 중...'
+                  : '구매하기'}
             </button>
           </>
         )}
