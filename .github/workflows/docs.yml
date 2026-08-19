@@ -32,3 +32,7 @@ jobs:
       # docs/decisions.md 는 통째로 읽지 않는 것을 전제로 만들어져 있다.
       # 결정을 추가하면서 인덱스를 빠뜨리면 그 전제가 조용히 깨진다.
       - run: ./scripts/check-docs-index.sh
+
+      # troubleshooting.md 도 같은 전제다. 이쪽은 사람이든 에이전트든
+      # 문제를 겪을 때마다 덧붙이므로 인덱스가 더 잘 낡는다.
+      - run: ./scripts/check-docs-index.sh docs/troubleshooting.md T

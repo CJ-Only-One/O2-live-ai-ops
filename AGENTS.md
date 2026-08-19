@@ -24,6 +24,7 @@ sed -n '553,607p' docs/decisions.md     # 그 절만 읽는다
 | 알고 싶은 것 | 문서 |
 |---|---|
 | 왜 이렇게 만들었나 / 함정 | `docs/decisions.md` (인덱스 → 해당 절만) |
+| **막혔다 / 이 에러 본 적 있나** | `docs/troubleshooting.md` (인덱스에서 증상으로 고른다) |
 | 부하 수치, 캐싱, 스케일링 | `docs/architecture.md` (인덱스 → 해당 절만) |
 | API·WebSocket·캐시 키·이벤트 규격 | `docs/contracts.md` |
 | 테이블·컬럼·인덱스, MySQL/Valkey 경계 | `docs/schema.md` |
@@ -79,8 +80,21 @@ graceful shutdown + 지터 재연결 / resource requests / readiness·liveness �
 - 이 파일은 **매 세션 자동으로 읽힌다.** 늘리기 전에 링크로 대신할 수 있는지 본다
 
 ```bash
-./scripts/check-docs-index.sh    # 커밋 전에 한 번
+./scripts/check-docs-index.sh                          # 커밋 전에 한 번
+./scripts/check-docs-index.sh docs/troubleshooting.md T
 ```
+
+## 막혔던 것은 기록한다
+
+작업 중 문제를 겪고 원인을 찾았으면 **`docs/troubleshooting.md` 에 항목을 추가한다.**
+사람이 시키지 않아도 한다. 기록 기준과 항목 형식은 그 문서 상단에 있다.
+
+짧게: **증상에서 원인이 바로 안 보였거나, 조용히 실패했거나, 자료가 실제와 달랐으면 남긴다.**
+오타나 검색 한 번으로 나온 것은 남기지 않는다.
+
+`## T-0NN.` 으로 번호를 이어 붙이고 **상단 인덱스에도 한 줄 넣는다.** 빠뜨리면 CI가 막는다.
+
+항목의 마지막 줄인 **"왜 늦게 찾았나"** 를 빼지 마라. 다음 사람이 아끼는 시간이 거기서 나온다.
 
 ## 자주 밟는 함정
 

@@ -184,8 +184,17 @@ Dify 콘솔은 **LLM API 키를 보관하고 sandbox 컨테이너로 임의 코�
 | 파드에서 Dify 호출이 타임아웃 | 노드 SG 가 아닌 곳에서 부른 것이다. 인그레스는 노드 SG 로만 열려 있다 |
 | plugin_daemon 이 계속 재시작 | 메모리 부족. `free -m` 확인 후 인스턴스 등급을 올린다 |
 
+## 워크플로 소스
+
+Dify 안에서 만든 워크플로는 Terraform 이 만들지 않는다. DSL 로 내보내
+[`dify/`](dify/) 에 커밋한다 — 입력 계약과 내보내기 절차는 [`dify/README.md`](dify/README.md).
+
+알림을 여기까지 실어 나르는 Lambda 는 [`lambda.tf`](lambda.tf) 와
+[`lambda/datadog_to_dify.py`](lambda/datadog_to_dify.py) 에 있다.
+
 ## 아직 안 한 것
 
-- **백업.** 개발 단계라 스냅샷을 걸지 않았다. 워크플로가 자산이 되는 시점에 DLM 으로 EBS 스냅샷을 건다
+- **EBS 스냅샷.** 개발 단계라 걸지 않았다. 워크플로 자체는 [`dify/`](dify/) 의 DSL 로 백업되지만
+  **지식베이스와 실행 이력은 루트 볼륨에만 있다.** 그것들이 자산이 되는 시점에 DLM 으로 건다
 - **Datadog 계측.** EKS 밖이라 클러스터 에이전트가 안 잡는다. 필요해지면 호스트 에이전트를 따로 넣는다
 - **HA.** 단일 인스턴스다. 에이전트 운영 평면이므로 서비스 SLA 대상이 아니다
