@@ -36,3 +36,7 @@ jobs:
       # troubleshooting.md 도 같은 전제다. 이쪽은 사람이든 에이전트든
       # 문제를 겪을 때마다 덧붙이므로 인덱스가 더 잘 낡는다.
       - run: ./scripts/check-docs-index.sh docs/troubleshooting.md T
+
+      # measurements.md 도 append 로 자란다. 재측정할 때마다 행이 붙으므로
+      # 인덱스가 낡기 쉽다.
+      - run: ./scripts/check-docs-index.sh docs/measurements.md M

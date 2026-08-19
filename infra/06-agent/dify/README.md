@@ -2,7 +2,7 @@
 
 > 이 폴더는 **Dify 안에서 만든 워크플로의 소스**다. Terraform 이 만들지 않는다.
 > 알림이 여기까지 오는 경로는 [`../lambda.tf`](../lambda.tf) 와
-> [`../lambda/datadog_to_dify.py`](../lambda/datadog_to_dify.py), 호스트는 [`../README.md`](../README.md).
+> [`../lambda/worker.py`](../lambda/worker.py), 호스트는 [`../README.md`](../README.md).
 
 ## 왜 이 폴더가 있나
 
@@ -33,7 +33,7 @@ Dify 콘솔에 들어가지 않고도 워크플로가 무엇을 하는지 읽을
 | 순서 | 어디 | 무엇을 맞추나 |
 |---|---|---|
 | 1 | Datadog → Integrations → Webhooks → `dify` → Payload | 필드 이름과 Datadog 변수 |
-| 2 | [`../lambda/datadog_to_dify.py`](../lambda/datadog_to_dify.py) 의 `payload["inputs"]` | Dify 에 넘길 6~7개 선별 |
+| 2 | [`../lambda/worker.py`](../lambda/worker.py) 의 `payload["inputs"]` | Dify 에 넘길 6~7개 선별 |
 | 3 | `alert-triage.yml` 의 start 노드 `variables` | 이름·타입·필수 여부 |
 | 4 | `alert-triage.yml` 의 LLM 프롬프트 | 변수 참조 |
 
@@ -165,7 +165,7 @@ grep -inE "dd-api-key|dd-application-key|Bearer |app-[a-z0-9]{16}" infra/06-agen
 ## 4. 이 문서를 고쳐야 하는 시점
 
 - Datadog webhook Payload 의 필드를 늘리거나 줄일 때 → 1.1 과 1.3 을 같이 고치고 `schema_version` 을 올린다
-- Dify start 노드 변수를 바꿀 때 → 1.3, 그리고 [`../lambda/datadog_to_dify.py`](../lambda/datadog_to_dify.py) 의 `inputs`
+- Dify start 노드 변수를 바꿀 때 → 1.3, 그리고 [`../lambda/worker.py`](../lambda/worker.py) 의 `inputs`
 - 워크플로를 쪼갤 때 → "파일" 표에 항목을 늘린다
 - 모델을 바꿀 때 → 2절
 

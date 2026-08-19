@@ -1,25 +1,44 @@
-# Datadog 알림을 Dify 워크플로로 중계하는 Lambda.
+# Datadog 알림을 Dify 워크플로로 중계한다. 함수 둘로 나눠 있다.
 #
-# ALB 를 세우지 않은 이유는 lambda/datadog_to_dify.py 의 모듈 docstring 에 있다.
-# 요약하면 VPC 인바운드를 열지 않기 위해서다 — 이 함수가 안쪽에서 Dify 를
-# 호출하므로 인터넷 → VPC 방향 경로가 아예 생기지 않는다.
+#   Ingress (VPC 밖)  받아서 Worker 를 비동기로 깨우고 즉시 200
+#   Worker  (VPC 안)  Dify 를 부른다. 실패하면 예외를 던져 재시도·DLQ 로 보낸다
+#
+# 왜 나눴나. 동기 한 덩어리였을 때는 Worker 동시성이 차면 Datadog 이 429 를
+# 받았고, **Datadog 은 429 를 재시도하지 않는다** — 그 알림은 영구 소실이었다.
+# 비동기 호출로 바꾸면 동시성 초과가 소실이 아니라 지연이 된다.
+#
+# SQS 를 세우지 않은 이유는 Lambda 비동기 호출이 대기열·재시도·DLQ 를 이미
+# 제공하기 때문이다. 큐 깊이를 정밀히 보거나 배치·순서 보장이 필요해지면
+# 그때 중간에 SQS 를 끼운다. 분리가 되어 있어 갈아타기 쉽다.
 
 locals {
   # ★ 이름이 ${project}-${environment}-* 규칙을 따르지 않는다. 의도한 것이다.
-  #   이 함수는 콘솔에서 먼저 만들어졌고 그 Function URL 이 이미 Datadog
-  #   webhook 에 등록되어 있다. 이름을 바꾸면 함수가 교체되면서 Function URL
-  #   도 바뀌고, Datadog 쪽을 손으로 다시 맞춰야 한다. 얻는 것이 이름 통일
-  #   하나뿐이라 그대로 둔다.
-  alert_relay_name = "datadog-to-dify"
+  #   이 함수의 Function URL 이 Datadog webhook 에 이미 등록되어 있다.
+  #   이름을 바꾸면 함수가 교체되면서 URL 도 바뀌고 Datadog 쪽을 손으로
+  #   다시 맞춰야 한다. 얻는 것이 이름 통일 하나뿐이라 그대로 둔다.
+  alert_ingress_name = "datadog-to-dify"
+  alert_worker_name  = "datadog-to-dify-worker"
 }
 
-# ── 실행 역할 ────────────────────────────────────────────────────
+# ── 공통: 시크릿 ─────────────────────────────────────────────────
 #
-# 콘솔이 만들어 둔 역할(datadog-to-dify-role-<랜덤>)은 import 하지 않는다.
-# 랜덤 접미사가 코드에 박히기 때문이다. 여기서 새로 만들고 함수가 이 역할을
-# 보게 한 뒤, 옛 역할은 손으로 지운다 (README 의 import 절차 참조).
+# SecretString 을 읽지 않는다 — ARN 만 필요하다. data source 로 값을 읽으면
+# 결과가 state 에 평문으로 남는다 (06-datastream/warm-path.tf 와 같은 이유).
 
-data "aws_iam_policy_document" "alert_relay_assume" {
+data "aws_secretsmanager_secret" "alert_relay" {
+  name = var.alert_secret_name
+}
+
+data "aws_iam_policy_document" "alert_secret_read" {
+  statement {
+    sid       = "ReadAlertRelaySecret"
+    effect    = "Allow"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [data.aws_secretsmanager_secret.alert_relay.arn]
+  }
+}
+
+data "aws_iam_policy_document" "lambda_assume" {
   statement {
     effect  = "Allow"
     actions = ["sts:AssumeRole"]
@@ -31,9 +50,11 @@ data "aws_iam_policy_document" "alert_relay_assume" {
   }
 }
 
+# ── Ingress ──────────────────────────────────────────────────────
+
 resource "aws_iam_role" "alert_relay" {
   name               = "${local.name}-alert-relay-role"
-  assume_role_policy = data.aws_iam_policy_document.alert_relay_assume.json
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
 resource "aws_iam_role_policy_attachment" "alert_relay_basic" {
@@ -41,27 +62,14 @@ resource "aws_iam_role_policy_attachment" "alert_relay_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# ★ 이게 없으면 VPC 설정 저장 자체가 실패한다.
-#     The provided execution role does not have permissions to
-#     call CreateNetworkInterface on EC2
-#   VPC 안의 Lambda 는 서브넷에 ENI 를 만들어야 하고 그 권한이 여기서 온다.
-resource "aws_iam_role_policy_attachment" "alert_relay_vpc" {
-  role       = aws_iam_role.alert_relay.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
-}
-
-# SecretString 을 읽지 않는다 — ARN 만 필요하다. data source 로 값을 읽으면
-# 결과가 state 에 평문으로 남는다 (06-datastream/warm-path.tf 와 같은 이유).
-data "aws_secretsmanager_secret" "alert_relay" {
-  name = var.alert_secret_name
-}
-
 data "aws_iam_policy_document" "alert_relay" {
+  source_policy_documents = [data.aws_iam_policy_document.alert_secret_read.json]
+
   statement {
-    sid       = "ReadAlertRelaySecret"
+    sid       = "InvokeWorker"
     effect    = "Allow"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [data.aws_secretsmanager_secret.alert_relay.arn]
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.alert_worker.arn]
   }
 }
 
@@ -71,8 +79,107 @@ resource "aws_iam_role_policy" "alert_relay" {
   policy = data.aws_iam_policy_document.alert_relay.json
 }
 
-# ── 네트워크 ─────────────────────────────────────────────────────
+resource "aws_cloudwatch_log_group" "alert_relay" {
+  name              = "/aws/lambda/${local.alert_ingress_name}"
+  retention_in_days = 7
+}
 
+data "archive_file" "alert_relay" {
+  type        = "zip"
+  output_path = "${path.module}/lambda/ingress.zip"
+
+  source {
+    content  = file("${path.module}/lambda/ingress.py")
+    filename = "lambda_function.py"
+  }
+}
+
+resource "aws_lambda_function" "alert_relay" {
+  function_name = local.alert_ingress_name
+  role          = aws_iam_role.alert_relay.arn
+  handler       = "lambda_function.lambda_handler"
+  runtime       = "python3.12"
+  architectures = ["x86_64"]
+
+  # Dify 를 기다리지 않는다. Secrets Manager 한 번과 invoke 한 번이 전부다.
+  timeout     = 10
+  memory_size = 128
+
+  filename         = data.archive_file.alert_relay.output_path
+  source_code_hash = data.archive_file.alert_relay.output_base64sha256
+
+  # ★ 예약 동시성을 두지 않는다. 여기서 막으면 문 앞에서 알림을 버리는 것이라
+  #   "알림을 잃지 않는다" 는 목표와 정반대다. 상한은 Worker 에만 건다.
+  #
+  # ★ VPC 에 넣지 않는다. ENI 를 만들지 않아 콜드스타트가 1초대에서
+  #   100밀리초대로 떨어진다. Dify 를 부르는 것은 Worker 뿐이다.
+
+  environment {
+    variables = {
+      ALERT_SECRET_NAME = var.alert_secret_name
+      WORKER_FUNCTION   = aws_lambda_function.alert_worker.function_name
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy.alert_relay,
+    aws_cloudwatch_log_group.alert_relay,
+  ]
+}
+
+resource "aws_lambda_function_url" "alert_relay" {
+  function_name = aws_lambda_function.alert_relay.function_name
+
+  # ★ NONE 은 "URL 을 아는 누구나 POST 할 수 있다" 는 뜻이다.
+  #   인증은 함수 코드의 x-dd-secret 헤더 비교가 전부다.
+  #   AWS_IAM 으로 바꿀 수 없다 — Datadog 은 SigV4 서명을 못 한다.
+  authorization_type = "NONE"
+}
+
+# ── Worker ───────────────────────────────────────────────────────
+
+resource "aws_iam_role" "alert_worker" {
+  name               = "${local.name}-alert-worker-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "alert_worker_basic" {
+  role       = aws_iam_role.alert_worker.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# ★ 이게 없으면 VPC 설정 저장 자체가 실패한다 — T-004.
+#     The provided execution role does not have permissions to
+#     call CreateNetworkInterface on EC2
+resource "aws_iam_role_policy_attachment" "alert_worker_vpc" {
+  role       = aws_iam_role.alert_worker.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+data "aws_iam_policy_document" "alert_worker" {
+  source_policy_documents = [data.aws_iam_policy_document.alert_secret_read.json]
+
+  # 재시도를 다 쓴 이벤트를 DLQ 로 보내는 것은 Lambda 서비스가 아니라
+  # 함수의 실행 역할 권한으로 이뤄진다. 빠뜨리면 DLQ 가 조용히 빈 채로 남는다.
+  statement {
+    sid       = "SendToDlq"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.alert_dlq.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "alert_worker" {
+  name   = "${local.name}-alert-worker"
+  role   = aws_iam_role.alert_worker.id
+  policy = data.aws_iam_policy_document.alert_worker.json
+}
+
+# Ingress 는 VPC 밖이므로 이 보안그룹은 Worker 만 쓴다.
+# Dify 인바운드 규칙(security_groups.tf)이 이걸 참조한다.
+#
+# ★ name 과 description 은 ForceNew 다. 문구를 다듬으려 건드리면 SG 가 교체되고,
+#   Dify 인바운드 규칙이 이걸 참조하고 있어 교체가 꼬인다. 그대로 둔다.
 resource "aws_security_group" "alert_relay" {
   name        = "${local.name}-alert-relay"
   description = "datadog-to-dify Lambda. Egress to Dify only"
@@ -83,8 +190,6 @@ resource "aws_security_group" "alert_relay" {
   }
 }
 
-# 인바운드 규칙은 두지 않는다. Function URL 로 들어오는 요청은 Lambda 서비스가
-# 받아서 전달하는 것이라 이 SG 를 통과하지 않는다.
 resource "aws_vpc_security_group_egress_rule" "alert_relay_all" {
   security_group_id = aws_security_group.alert_relay.id
   description       = "Dify call, Secrets Manager"
@@ -93,50 +198,44 @@ resource "aws_vpc_security_group_egress_rule" "alert_relay_all" {
   ip_protocol = "-1"
 }
 
-# ── 함수 ─────────────────────────────────────────────────────────
-
-resource "aws_cloudwatch_log_group" "alert_relay" {
-  name              = "/aws/lambda/${local.alert_relay_name}"
+resource "aws_cloudwatch_log_group" "alert_worker" {
+  name              = "/aws/lambda/${local.alert_worker_name}"
   retention_in_days = 7
 }
 
-data "archive_file" "alert_relay" {
+data "archive_file" "alert_worker" {
   type        = "zip"
-  output_path = "${path.module}/lambda/datadog-to-dify.zip"
+  output_path = "${path.module}/lambda/worker.zip"
 
   source {
-    content  = file("${path.module}/lambda/datadog_to_dify.py")
+    content  = file("${path.module}/lambda/worker.py")
     filename = "lambda_function.py"
   }
 }
 
-resource "aws_lambda_function" "alert_relay" {
-  function_name = local.alert_relay_name
-  role          = aws_iam_role.alert_relay.arn
+resource "aws_lambda_function" "alert_worker" {
+  function_name = local.alert_worker_name
+  role          = aws_iam_role.alert_worker.arn
   handler       = "lambda_function.lambda_handler"
   runtime       = "python3.12"
-
-  # 콘솔이 만든 함수가 x86_64 다. arm64 가 더 싸지만 알림 경로라 월 몇 센트
-  # 차이이고, 바꾸면 import 직후 plan 에 교체가 뜬다. 그대로 둔다.
   architectures = ["x86_64"]
 
   # ★ 기본값 3초로는 무조건 실패한다. Dify 워크플로가 blocking 으로 끝날
-  #   때까지 기다리기 때문이다. 현재 실측 2~3초이고 55초 타임아웃으로
-  #   호출하므로 함수는 그보다 커야 한다.
+  #   때까지 기다리기 때문이다. 실측 2.5초이고 55초 타임아웃으로 호출한다.
   timeout     = 60
   memory_size = 128
 
-  filename         = data.archive_file.alert_relay.output_path
-  source_code_hash = data.archive_file.alert_relay.output_base64sha256
+  filename         = data.archive_file.alert_worker.output_path
+  source_code_hash = data.archive_file.alert_worker.output_base64sha256
 
-  # ★ 알림 폭주 상한. 방송이 시작되면 CPU·DB 커넥션·응답시간 모니터가
-  #   동시에 울린다. 이 값이 없으면 알림 수만큼 AI 워크플로가 돌고
-  #   그대로 토큰 요금이 된다.
+  # ★ 이 값이 파이프라인의 처리량 상한이다. Dify 가 감당하는 동시 실행 수에
+  #   맞춘다 — 서버가 아니라 Dify 워커 개수가 상한이므로 부하를 걸어 재서 정한다.
+  #   초과분은 버려지지 않고 Lambda 내부 대기열에서 기다린다.
   reserved_concurrent_executions = var.alert_relay_max_concurrency
 
   vpc_config {
-    # Dify 와 같은 서브넷에 둔다. 사설 IP 로 직접 호출하므로 라우팅이 필요
-    # 없고, Secrets Manager 는 이 서브넷의 NAT 로 나간다.
+    # Dify 와 같은 서브넷. 사설 IP 로 직접 호출하므로 라우팅이 필요 없고,
+    # Secrets Manager 는 이 서브넷의 NAT 로 나간다.
     subnet_ids         = [local.subnet_id]
     security_group_ids = [aws_security_group.alert_relay.id]
   }
@@ -144,32 +243,112 @@ resource "aws_lambda_function" "alert_relay" {
   environment {
     variables = {
       # ★ 사설 IP 를 하드코딩하지 않는다. 손으로 넣었다가 예시 IP 가 그대로
-      #   남아 연결 타임아웃을 디버깅한 적이 있다. 포트는 80 이다 —
-      #   17080 은 SSM 터널이 만드는 각자 로컬 포트다.
-      DIFY_URL = "http://${aws_instance.dify.private_ip}/v1/workflows/run"
-
-      # 값이 아니라 이름이다. 값은 Lambda 가 실행 시점에 읽는다.
+      #   남아 연결 타임아웃을 디버깅한 적이 있다 — T-005. 포트는 80 이다.
+      DIFY_URL          = "http://${aws_instance.dify.private_ip}/v1/workflows/run"
       ALERT_SECRET_NAME = var.alert_secret_name
     }
   }
 
   depends_on = [
-    aws_iam_role_policy.alert_relay,
-    aws_iam_role_policy_attachment.alert_relay_vpc,
-    aws_cloudwatch_log_group.alert_relay,
+    aws_iam_role_policy.alert_worker,
+    aws_iam_role_policy_attachment.alert_worker_vpc,
+    aws_cloudwatch_log_group.alert_worker,
   ]
 }
 
-# ── 퍼블릭 입구 ──────────────────────────────────────────────────
+# ── 재시도와 DLQ ─────────────────────────────────────────────────
 
-resource "aws_lambda_function_url" "alert_relay" {
-  function_name = aws_lambda_function.alert_relay.function_name
+resource "aws_sqs_queue" "alert_dlq" {
+  name = "${local.name}-alert-dlq"
 
-  # ★ NONE 은 "URL 을 아는 누구나 POST 할 수 있다" 는 뜻이다.
-  #   인증은 함수 코드의 x-dd-secret 헤더 비교가 전부다.
-  #
-  #   AWS_IAM 으로 바꿀 수 없다 — Datadog 은 SigV4 서명을 못 한다.
-  #   WAF 나 IP 제한이 필요해지면 API Gateway 를 앞에 두고 이 리소스를
-  #   지운다. 함수 코드는 그대로 쓴다.
-  authorization_type = "NONE"
+  # 회고 때 증거로 쓴다. 저장 비용은 사실상 0이라 짧게 할 이유가 없다.
+  message_retention_seconds = 1209600 # 14일
+  sqs_managed_sse_enabled   = true
+}
+
+resource "aws_lambda_function_event_invoke_config" "alert_worker" {
+  function_name = aws_lambda_function.alert_worker.function_name
+
+  # 최초 1회 + 재시도 2회 = 총 3회. 간격은 약 1분 → 약 2분이라
+  # DLQ 도달까지 약 3분이다. SQS 를 썼을 때(가시성 타임아웃 × 2 = 12분)보다
+  # 빠르므로 감지 관점에서 유리하다.
+  maximum_retry_attempts = 2
+
+  destination_config {
+    # ★ DLQ 가 없으면 재시도를 다 쓴 이벤트는 그냥 사라진다.
+    #   내구성을 넣었다고 믿는데 실제로는 안 넣은 상태가 가장 나쁘다.
+    on_failure {
+      destination = aws_sqs_queue.alert_dlq.arn
+    }
+  }
+}
+
+# ── 알람 ─────────────────────────────────────────────────────────
+#
+# DLQ 는 마지막 그물이지 1차 감지 수단이 아니다. 도달까지 3분이 걸리고,
+# 그 시점엔 이미 세 번 실패한 뒤다. 첫 실패에 우는 알람이 따로 필요하다.
+
+resource "aws_sns_topic" "alert_relay_alarm" {
+  name = "${local.name}-alert-relay-alarm"
+}
+
+# ★ 구독은 코드로 만들지 않는다. 이메일 구독은 수신자가 메일에서 확인을
+#   눌러야 활성화되므로 apply 만으로는 완성되지 않는다. 만들어두고 안 눌러
+#   놓으면 "알람이 있다" 고 믿는 상태가 된다 — 사람이 직접 붙인다:
+#
+#     aws sns subscribe --topic-arn <위 토픽> --protocol email \
+#       --notification-endpoint <주소> --region ap-northeast-2
+
+# 1차. 첫 실패에 운다. 이 시점엔 이벤트가 아직 대기열에 살아 있어서
+# 원인을 고치면 재시도가 알아서 처리한다 — DLQ 까지 갈 일이 없어진다.
+resource "aws_cloudwatch_metric_alarm" "alert_worker_errors" {
+  alarm_name          = "${local.name}-alert-worker-errors"
+  alarm_description   = "Worker 가 실패했다. 대기열에 이벤트가 살아 있는 동안 원인을 고치면 재시도로 처리된다."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.alert_worker.function_name }
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alert_relay_alarm.arn]
+  ok_actions    = [aws_sns_topic.alert_relay_alarm.arn]
+}
+
+# 2차. 대기열이 밀린다 = Dify 가 도착 속도를 못 따라간다.
+# 이 지표는 비동기 호출이 실제로 쌓이기 시작해야 나타난다.
+resource "aws_cloudwatch_metric_alarm" "alert_worker_backlog" {
+  alarm_name          = "${local.name}-alert-worker-backlog"
+  alarm_description   = "대기열의 가장 오래된 이벤트가 2분을 넘겼다. Worker 동시성을 올리거나 Dify 를 키운다."
+  namespace           = "AWS/Lambda"
+  metric_name         = "AsyncEventAge"
+  dimensions          = { FunctionName = aws_lambda_function.alert_worker.function_name }
+  extended_statistic  = "p99"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = 120000 # 밀리초
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alert_relay_alarm.arn]
+}
+
+# 3차. 확정 소실. 원인을 고친 뒤 재투입할지 판단한다.
+resource "aws_cloudwatch_metric_alarm" "alert_dlq_not_empty" {
+  alarm_name          = "${local.name}-alert-dlq-not-empty"
+  alarm_description   = "세 번 실패한 알림이 DLQ 에 있다. 내용을 읽고 원인을 고친다. 1시간 이내면 재투입, 하루가 지났으면 읽고 비운다."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.alert_dlq.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alert_relay_alarm.arn]
 }

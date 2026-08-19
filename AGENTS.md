@@ -25,6 +25,7 @@ sed -n '553,607p' docs/decisions.md     # 그 절만 읽는다
 |---|---|
 | 왜 이렇게 만들었나 / 함정 | `docs/decisions.md` (인덱스 → 해당 절만) |
 | **막혔다 / 이 에러 본 적 있나** | `docs/troubleshooting.md` (인덱스에서 증상으로 고른다) |
+| **이 숫자 어디서 나왔나 / 실측값** | `docs/measurements.md` (직접 잰 것만. 추정치는 없다) |
 | 부하 수치, 캐싱, 스케일링 | `docs/architecture.md` (인덱스 → 해당 절만) |
 | API·WebSocket·캐시 키·이벤트 규격 | `docs/contracts.md` |
 | 테이블·컬럼·인덱스, MySQL/Valkey 경계 | `docs/schema.md` |
@@ -82,7 +83,17 @@ graceful shutdown + 지터 재연결 / resource requests / readiness·liveness �
 ```bash
 ./scripts/check-docs-index.sh                          # 커밋 전에 한 번
 ./scripts/check-docs-index.sh docs/troubleshooting.md T
+./scripts/check-docs-index.sh docs/measurements.md M
 ```
+
+## 숫자를 지어내지 않는다
+
+성능·용량·소요 시간을 말할 때는 **`docs/measurements.md` 에 있는 실측값**을 쓴다.
+없으면 "안 쟀다" 고 하고, 필요하면 재서 그 문서에 남긴다.
+추정치를 실측처럼 적으면 다음 사람이 그 위에 설계를 얹는다.
+
+재측정은 절을 새로 만들지 말고 **그 절의 표에 행을 추가**한다. 조건이 다르면
+값도 다르므로 날짜와 조건을 같이 적는다.
 
 ## 막혔던 것은 기록한다
 
