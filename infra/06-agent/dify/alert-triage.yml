@@ -1,0 +1,225 @@
+app:
+  description: 'Datadog 모니터 알림을 받아 원인을 추정한다. 입력 계약은 infra/06-agent/dify/README.md 를 따른다.'
+  icon: 🚨
+  icon_background: '#FFEAD5'
+  icon_type: emoji
+  mode: workflow
+  name: alert-triage
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/bedrock:0.0.79@bce46aef52c324523abd113581cf07f6dbf05f041ea9a75114c6fa11ead1b5aa
+    version: null
+kind: app
+version: 0.7.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload: {}
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: llm
+      id: 1787107036942-source-1787107146235-target
+      source: '1787107036942'
+      sourceHandle: source
+      target: '1787107146235'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: end
+      id: 1787107146235-source-1787107572255-target
+      source: '1787107146235'
+      sourceHandle: source
+      target: '1787107572255'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        selected: false
+        title: 시작
+        type: start
+        variables:
+        - default: ''
+          hint: ''
+          label: alert_title
+          options: []
+          placeholder: ''
+          required: true
+          type: text-input
+          variable: alert_title
+        - default: ''
+          hint: ''
+          label: alert_body
+          options: []
+          placeholder: ''
+          required: true
+          type: paragraph
+          variable: alert_body
+        - default: ''
+          hint: ''
+          label: alert_query
+          options: []
+          placeholder: ''
+          required: false
+          type: paragraph
+          variable: alert_query
+        - default: ''
+          hint: ''
+          label: priority
+          options: []
+          placeholder: ''
+          required: false
+          type: text-input
+          variable: priority
+        - default: ''
+          hint: ''
+          label: host
+          options: []
+          placeholder: ''
+          required: false
+          type: text-input
+          variable: host
+        - default: ''
+          hint: ''
+          label: tags
+          options: []
+          placeholder: ''
+          required: false
+          type: paragraph
+          variable: tags
+        - default: ''
+          hint: ''
+          label: link
+          options: []
+          placeholder: ''
+          required: false
+          type: text-input
+          variable: link
+      height: 282
+      id: '1787107036942'
+      position:
+        x: 80
+        y: 282
+      positionAbsolute:
+        x: 80
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        model:
+          completion_params:
+            model_name: Nova Lite V1
+            temperature: 0.2
+          mode: chat
+          name: amazon nova
+          provider: langgenius/bedrock/bedrock
+        prompt_template:
+        - edition_type: basic
+          id: eeca8ad9-65a0-47e9-9875-6bfcb977567f
+          role: system
+          text: '너는 AWS 인프라 운영 담당자다. 아래 Datadog 알림을 보고 답해라.
+
+
+            출력 형식:
+
+            1) 한 줄 요약
+
+            2) 의심 원인 (최대 3개, 가능성 높은 순)
+
+            3) 지금 확인할 것 (구체적인 명령이나 대시보드)
+
+
+            임계 쿼리가 주어지면 어떤 값이 어떤 임계를 넘었는지 먼저 짚어라.
+
+
+            추측이면 "추측:"이라고 명시해라. 모르면 모른다고 해라.'
+        - id: 2a518a39-be5f-459e-b67d-8f398e0d9d79
+          role: user
+          text: '제목: {{#1787107036942.alert_title#}}
+
+            우선순위: {{#1787107036942.priority#}}
+
+            내용: {{#1787107036942.alert_body#}}
+
+            임계 쿼리: {{#1787107036942.alert_query#}}
+
+            호스트: {{#1787107036942.host#}}
+
+            태그: {{#1787107036942.tags#}}
+
+            링크: {{#1787107036942.link#}}'
+        selected: true
+        title: LLM
+        type: llm
+        vision:
+          enabled: false
+      height: 83
+      id: '1787107146235'
+      position:
+        x: 382
+        y: 282
+      positionAbsolute:
+        x: 382
+        y: 282
+      selected: true
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        outputs:
+        - value_selector:
+          - '1787107146235'
+          - text
+          value_type: string
+          variable: result
+        selected: false
+        title: 출력
+        type: end
+      height: 83
+      id: '1787107572255'
+      position:
+        x: 684
+        y: 282
+      positionAbsolute:
+        x: 684
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    viewport:
+      x: 81
+      y: 198
+      zoom: 1
+  rag_pipeline_variables: []

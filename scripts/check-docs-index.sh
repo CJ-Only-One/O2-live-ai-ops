@@ -15,18 +15,24 @@
 set -euo pipefail
 
 DOC="${1:-docs/decisions.md}"
+
+# 접두사. decisions.md 는 D-015, troubleshooting.md 는 T-005 를 쓴다.
+# 두 문서가 같은 규칙(인덱스 = 본문)을 따르므로 검사기도 하나로 둔다.
+PREFIX="${2:-D}"
+ID="${PREFIX}-[0-9]{3}"
+
 fail=0
 
 # 본문 제목: "## D-015. ..." 에서 D-015 만 뽑는다.
-headings=$(grep -oE '^## (D-[0-9]{3})\.' "$DOC" | grep -oE 'D-[0-9]{3}' | sort -u)
+headings=$(grep -oE "^## (${ID})\." "$DOC" | grep -oE "${ID}" | sort -u)
 
 # 인덱스 행: "| D-015 | ... |" 에서 D-015 만 뽑는다.
-indexed=$(grep -oE '^\| (D-[0-9]{3}) \|' "$DOC" | grep -oE 'D-[0-9]{3}' | sort -u)
+indexed=$(grep -oE "^\| (${ID}) \|" "$DOC" | grep -oE "${ID}" | sort -u)
 
 # 같은 번호를 두 절이 쓰면 부분 읽기가 엉뚱한 절로 간다. sort -u 로 비교하면
 # 중복이 지워져 보이지 않으므로 따로 센다 — 실제로 병합 사고가 이렇게 통과했다.
-dup_head=$(grep -oE '^## (D-[0-9]{3})\.' "$DOC" | grep -oE 'D-[0-9]{3}' | sort | uniq -d)
-dup_index=$(grep -oE '^\| (D-[0-9]{3}) \|' "$DOC" | grep -oE 'D-[0-9]{3}' | sort | uniq -d)
+dup_head=$(grep -oE "^## (${ID})\." "$DOC" | grep -oE "${ID}" | sort | uniq -d)
+dup_index=$(grep -oE "^\| (${ID}) \|" "$DOC" | grep -oE "${ID}" | sort | uniq -d)
 
 if [ -n "$dup_head" ]; then
   echo "✗ 같은 번호를 쓰는 절이 둘 이상이다:"
