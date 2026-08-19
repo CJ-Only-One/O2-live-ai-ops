@@ -1,7 +1,8 @@
 # Warm Path 배포
 
-**적용 완료 상태다.** 마지막 apply는 2026-08-17 (`0 added, 5 changed, 0 destroyed`)
-— 비밀값을 실행 시점에 읽도록 바꾸고 `DD_SITE`를 주입한 변경이다.
+**적용 완료 상태다.** 마지막 apply 내역은 이 파일에 날짜를 박아두지 않는다 —
+apply할 때마다 여기를 고쳐야 해서 매번 낡는다. 최신 상태는
+`terraform show`나 CI/터미널 로그로 확인한다.
 
 깨끗한 저장소에서 `terraform plan`을 돌리면 **`No changes`가 나와야 한다.**
 그렇지 않으면 배포된 것과 코드가 갈라진 것이니 먼저 그 차이를 확인한다.
@@ -150,8 +151,9 @@ python -m venv .venv                       # 없으면 만든다 (커밋 대상�
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-기준: **`66 passed, 1 skipped`**. 스킵 1건은 `o2events` 미설치로 계약 검증을
-건너뛴 것이다(`test_contract.py`). 개발 의존성을 다 깔면 그것도 돈다.
+기준: **전부 통과(`pytest -q`)**. 정확한 건수는 여기 박아두지 않는다 — 테스트를
+추가할 때마다 이 줄도 고쳐야 해서 금방 낡는다. `o2events`가 설치돼 있지 않으면
+계약 검증(`test_contract.py`)만 skip되고 나머지는 그대로 돈다.
 
 `terraform apply`가 소스 해시를 보고 재배포하므로 별도 빌드 단계는 없다.
 `warm_sources`가 `o2warm/**/*.py`를 통째로 담으므로 새 모듈을 추가해도
@@ -213,9 +215,13 @@ SCP/RCP가 Function URL 공개 접근을 막는 것으로 보이나,
 서비스 하나당 초당 약 0.5회 읽기 + 1회 쓰기다. 트래픽이 늘면 샤드를 늘리기
 전에 배치 창을 늘리는 쪽을 먼저 검토한다.
 
-**Datadog 커스텀 메트릭은 과금된다.** `DATADOG_SCALARS` 20개 × 서비스 수 +
-`failure_rate`(이벤트 6종) + `confidence`가 시계열이 된다. 태그를 늘리고 싶어지는
-순간이 비용이 새는 지점이다 — 맵과 고카디널리티 값은 DynamoDB에만 둔다.
+**Datadog 커스텀 메트릭은 과금된다.** `DATADOG_SCALARS`(고정 스칼라) × 서비스 수에
+더해, `failure_rate`·`event_rate`처럼 이벤트 종류별로 태그를 쪼개 보내는 지표와
+`cache_hit_rate`의 `pod_name` 분해분이 추가된다. 정확한 개수는
+`src/o2warm/metrics.py`의 `DATADOG_SCALARS`와 `src/o2warm/datadog.py`의
+`build_series()`를 직접 센다 — 여기 숫자를 박아두면 지표를 늘릴 때마다 낡는다.
+태그를 늘리고 싶어지는 순간이 비용이 새는 지점이다 — 맵과 고카디널리티 값은
+DynamoDB에만 둔다.
 
 **`METRIC#` TTL은 7일이다.** 그보다 오래된 분석은 Cold Path(S3 원본 →
 Athena)의 몫이다. Warm을 길게 잡아 Cold를 대신하려 들면 DynamoDB 비용만

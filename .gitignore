@@ -68,3 +68,11 @@ kubeconfig*
 
 # playwright MCP 가 남기는 스냅샷·스크린샷. 검증 중에만 쓰이고 저장소에 남을 이유가 없다.
 .playwright-mcp/
+
+# ── 세션 작업물 ──────────────────────────────────────────
+# AI 에이전트 세션 중 만드는 프롬프트·체크리스트·중간 보고서. Diátaxis 네
+# 종류(Explanation·Reference·How-to·Tutorial) 어디에도 안 속한다 — 결론은
+# Confluence·decisions.md·README.md 로 옮기고 원본은 커밋하지 않는다
+# (docs/documentation-guide.md 5절).
+works/
+scratch/

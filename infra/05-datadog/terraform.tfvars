@@ -51,7 +51,7 @@ queue_backlog_age_critical_seconds = 300
 
 # Phase 2 — 신규 계측이 먼저 필요해 전부 기본 비활성이다. 각 Monitor 정의
 # 위 주석(monitor.tf)에 활성화 전 필요한 코드 변경이 적혀 있다.
-enable_chat_ingest_monitor         = false
-enable_pod_cache_outlier_monitor   = false
+enable_chat_ingest_monitor         = true
+enable_pod_cache_outlier_monitor   = true
 pod_cache_outlier_tolerance        = 2.5
-enable_order_confirm_stall_monitor = false
+enable_order_confirm_stall_monitor = true
