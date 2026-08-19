@@ -119,8 +119,25 @@ def _handle(record: dict) -> None:
 
     if inserted:
         logger.info("주문 확정: %s amount=%s (%sms)", msg["order_id"], msg["amount"], latency_ms)
+        _emit_confirm(msg["order_id"], latency_ms)
     else:
         logger.info("이미 처리된 주문(중복 전달): %s", msg["order_id"])
+
+
+def _emit_confirm(order_id: str, elapsed_ms: int) -> None:
+    """확정 성공 시에만 발행한다.
+
+    중복 전달(이미 처리됨)에는 발행하지 않는다 — 재시도마다 발행하면
+    order.create 대비 짝이 안 맞는다. order.cancel과 대칭인 이벤트다.
+    """
+    try:
+        # confirmed_by 는 SDK 열거(CANCEL_BY: SYSTEM/CUSTOMER/ADMIN) 안에서만
+        # 골라야 한다. stage 는 CANCEL_STAGE(PAYMENT/FULFILLMENT/PRE_SHIP)를
+        # 재사용하는데, 이 워커의 "정상 확정 커밋"에 깔끔히 대응하는 값이 없어
+        # 억지로 고르지 않고 비워 둔다 — SDK가 None은 검증하지 않는다.
+        emit.order_confirm(order_id=order_id, confirmed_by="SYSTEM", elapsed_ms=elapsed_ms)
+    except Exception:
+        logger.exception("order.confirm 발행 실패")
 
 
 def _emit_cancel(record: dict, reason: str) -> None:
