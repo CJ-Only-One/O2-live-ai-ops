@@ -28,7 +28,20 @@ locals {
   # APM(트레이스) 지표는 datadog.tf 의 apm.portEnabled 가 만드는 trace.* 계열이다.
   # 이 축은 비즈니스 대시보드와 같은 service/env 를 재사용한다 — 같은 이름
   # 규칙을 쓰는 것이 D-0xx 류 실수(축이 갈려서 화면이 비는 것)를 막는다.
+  #
+  # **span 이름은 프레임워크가 정한다.** 앱이 FastAPI라서 ddtrace 가 span 을
+  # `fastapi.request` 로 붙이고, 그래서 메트릭도 `trace.fastapi.request.*` 다.
+  # `trace.http.request.*` 는 이 org 에 존재하지 않는다 — 다른 프레임워크
+  # (예: 순수 WSGI)를 가정한 이름이었다. 앱이 바뀌면 이 이름도 같이 바뀐다.
   apm_scope = "$service,$env"
+
+  # 이벤트 검색 문법은 메트릭의 `{tag:value,...}` 와 다르다 — 공백으로 구분한
+  # `tag:value` 토큰을 나열한다. `source:` 는 단수형이다(`sources:` 로 쓰면
+  # 0건). kube_cluster_name·kube_namespace 는 kubelet 이 이벤트에 실제로
+  # 붙이는 태그라 필터로 쓸 수 있지만, **`reason:unhealthy` 같은 태그는 없다**
+  # — 프로브 실패 사유는 이벤트 `text` 안의 문자열("**Unhealthy**: ...")로만
+  # 온다. 그래서 텍스트 검색 토큰을 같이 넣는다.
+  infra_event_scope = "kube_cluster_name:$kube_cluster_name kube_namespace:$kube_namespace"
 }
 
 resource "datadog_dashboard" "infra" {
@@ -188,6 +201,33 @@ resource "datadog_dashboard" "infra" {
             min          = "0"
             include_zero = true
           }
+        }
+      }
+
+      widget {
+        note_definition {
+          # 실측(2026-08-19): 이 org 에 `kubernetes.cpu.cfs.*` 가 메트릭
+          # 메타데이터 검색에조차 안 잡힌다 — "아직 안 쌓임"이 아니라 한 번도
+          # 전송된 적이 없다는 뜻이다. cAdvisor 는 컨테이너에 CPU **limit**
+          # (CFS 쿼터)이 걸려 있어야 이 값을 만든다. 지금 클러스터의 파드는
+          # 전부 `kube_qos:burstable`(request 만 있고 limit 없음)이라 쿼터
+          # 자체가 없다 — 그래서 스로틀링을 측정할 대상이 없다.
+          #
+          # Terraform(이 스택)에서 고칠 수 있는 문제가 아니다. 매니페스트
+          # 저장소(O2-live-deploy)에서 컨테이너에 `resources.limits.cpu` 를
+          # 넣는 순간부터 아래 위젯이 채워진다. 그 전까지 비어 있는 것이 정상.
+          background_color = "gray"
+          font_size        = "12"
+          text_align       = "left"
+          vertical_align   = "top"
+          show_tick        = false
+
+          content = <<-EOT
+            **아래 위젯은 지금 항상 비어 있다 — 쿼리 문제가 아니다.**
+            컨테이너에 CPU `limit` 이 하나도 없어서 cAdvisor 가 CFS 쿼터
+            지표를 만들 수 없다. `O2-live-deploy` 매니페스트에 `resources.
+            limits.cpu` 가 생기면 그때부터 값이 잡힌다.
+          EOT
         }
       }
 
@@ -453,13 +493,19 @@ resource "datadog_dashboard" "infra" {
       }
 
       widget {
-        # 프로브 실패는 게이지 메트릭이 아니라 Kubernetes 이벤트(reason:Unhealthy)로
-        # 온다. `04-platform/datadog.tf` 의 kubernetesEvents.filteringEnabled 가
+        # 프로브 실패는 게이지 메트릭이 아니라 Kubernetes 이벤트로 온다.
+        # `04-platform/datadog.tf` 의 kubernetesEvents.filteringEnabled 가
         # 실패·스케줄링·노드 이상만 거르므로 여기 뜨는 것은 전부 봐야 할 신호다.
+        #
+        # **`reason:unhealthy` 태그는 존재하지 않는다** — kubelet 이 보내는
+        # 이벤트에 그런 태그가 안 붙는다(실측 확인). "Unhealthy: Readiness
+        # probe failed ..." 처럼 이벤트 `text` 안에만 문자열로 남는다. 그래서
+        # 태그가 아니라 텍스트 검색 토큰(`"Unhealthy"`)으로 잡는다. `source:`
+        # 는 단수형이다 — `sources:` 로 쓰면 이 org 기준 0건이 나온다.
         event_stream_definition {
           title      = "Probe Failed Events"
           title_size = "16"
-          query      = "sources:kubernetes tags:reason:unhealthy ${local.infra_scope}"
+          query      = "source:kubernetes \"Unhealthy\" ${local.infra_event_scope}"
           event_size = "s"
         }
       }
@@ -485,8 +531,12 @@ resource "datadog_dashboard" "infra" {
 
           content = <<-EOT
             이 그룹만 `service`·`env` 축이다 — `apm.portEnabled` 로 받는
-            `trace.http.request.*` 계열. 1~3번(kube_cluster_name·kube_namespace)과
+            `trace.fastapi.request.*` 계열. 1~3번(kube_cluster_name·kube_namespace)과
             축이 다르므로 같은 화면이라도 상단 두 축을 같이 맞출 필요는 없다.
+
+            **span 이름은 프레임워크가 정한다.** 이 org 엔 `trace.http.request.*`
+            가 없다 — 앱이 FastAPI 라서 ddtrace 가 span 을 `fastapi.request`
+            로 붙인다. 다른 프레임워크로 바뀌면 이 이름도 같이 바뀐다.
           EOT
         }
       }
@@ -499,7 +549,7 @@ resource "datadog_dashboard" "infra" {
           custom_unit = "reqs"
 
           request {
-            q          = "sum:trace.http.request.hits{${local.apm_scope}}.as_rate()"
+            q          = "sum:trace.fastapi.request.hits{${local.apm_scope}}.as_rate()"
             aggregator = "avg"
           }
         }
@@ -507,6 +557,11 @@ resource "datadog_dashboard" "infra" {
 
       widget {
         query_value_definition {
+          # `trace.fastapi.request.errors` 서브메트릭 자체가 이 org 엔 없다
+          # (5xx 가 한 번도 안 나서 — ddtrace 는 실제로 값이 발생해야 그
+          # 서브메트릭을 만든다). 대신 상태코드별 히트 수(`hits.by_http_status`)
+          # 에서 5xx 만 걸러 분자로 쓴다. 5xx 가 없으면 분자가 0 이라 성공률
+          # 100% 로 나온다 — 이건 위젯 오류가 아니라 있는 그대로다.
           title      = "Http Response Success Rate (non-5xx)"
           title_size = "16"
           autoscale  = false
@@ -521,7 +576,7 @@ resource "datadog_dashboard" "infra" {
               metric_query {
                 data_source = "metrics"
                 name        = "query1"
-                query       = "sum:trace.http.request.hits{${local.apm_scope}}.as_count()"
+                query       = "sum:trace.fastapi.request.hits{${local.apm_scope}}.as_count()"
                 aggregator  = "sum"
               }
             }
@@ -529,7 +584,7 @@ resource "datadog_dashboard" "infra" {
               metric_query {
                 data_source = "metrics"
                 name        = "query2"
-                query       = "sum:trace.http.request.errors{${local.apm_scope}}.as_count()"
+                query       = "sum:trace.fastapi.request.hits.by_http_status{${local.apm_scope},http.status_code:5*}.as_count()"
                 aggregator  = "sum"
               }
             }
@@ -562,7 +617,7 @@ resource "datadog_dashboard" "infra" {
           legend_columns = ["avg", "min", "max", "sum", "value"]
 
           request {
-            q            = "sum:trace.http.request.hits{${local.apm_scope}} by {resource_name}.as_rate()"
+            q            = "sum:trace.fastapi.request.hits{${local.apm_scope}} by {resource_name}.as_rate()"
             display_type = "line"
           }
 
@@ -582,7 +637,7 @@ resource "datadog_dashboard" "infra" {
           show_legend = true
 
           request {
-            q            = "sum:trace.http.request.errors{${local.apm_scope},http.status_code:5*}.as_count()"
+            q            = "sum:trace.fastapi.request.hits.by_http_status{${local.apm_scope},http.status_code:5*}.as_count()"
             display_type = "bars"
             style {
               palette = "warm"
@@ -598,6 +653,10 @@ resource "datadog_dashboard" "infra" {
 
       widget {
         timeseries_definition {
+          # `trace.http.request.duration` 은 이 org 에 없다. ddtrace 가 만드는
+          # 실제 응답시간 지표는 `exec_time.by_service` 다 — 초 단위라 ms 로
+          # 보려면 1000 을 곱한다(나눈 게 아니다. 이전 버전은 duration 이
+          # 나노초라고 가정해 1e6 으로 나눴는데, 애초에 그 메트릭이 없었다).
           title       = "Http Requests Durations (ms)"
           title_size  = "16"
           show_legend = true
@@ -605,13 +664,13 @@ resource "datadog_dashboard" "infra" {
           request {
             display_type = "line"
             formula {
-              formula_expression = "query1 / 1000000"
+              formula_expression = "query1 * 1000"
             }
             query {
               metric_query {
                 data_source = "metrics"
                 name        = "query1"
-                query       = "avg:trace.http.request.duration{${local.apm_scope}} by {resource_name}"
+                query       = "avg:trace.fastapi.request.exec_time.by_service{${local.apm_scope}} by {resource_name}"
                 aggregator  = "avg"
               }
             }
@@ -626,6 +685,9 @@ resource "datadog_dashboard" "infra" {
 
       widget {
         timeseries_definition {
+          # `.errors` 서브메트릭이 없는 것과 같은 이유로, "5xx Count" 위젯과는
+          # 다르게 4xx 도 함께 잡는다 — 이쪽은 "5xx만"이 아니라 "에러로 잡히는
+          # 전체"를 보는 위젯이라, 상태코드별 히트를 4xx+5xx 로 더해서 만든다.
           title          = "Http Requests Errors"
           title_size     = "16"
           show_legend    = true
@@ -633,10 +695,25 @@ resource "datadog_dashboard" "infra" {
           legend_columns = ["avg", "min", "max", "sum", "value"]
 
           request {
-            q            = "sum:trace.http.request.errors{${local.apm_scope}}.as_count()"
             display_type = "bars"
-            style {
-              palette = "warm"
+            formula {
+              formula_expression = "query1 + query2"
+            }
+            query {
+              metric_query {
+                data_source = "metrics"
+                name        = "query1"
+                query       = "sum:trace.fastapi.request.hits.by_http_status{${local.apm_scope},http.status_code:4*}.as_count()"
+                aggregator  = "sum"
+              }
+            }
+            query {
+              metric_query {
+                data_source = "metrics"
+                name        = "query2"
+                query       = "sum:trace.fastapi.request.hits.by_http_status{${local.apm_scope},http.status_code:5*}.as_count()"
+                aggregator  = "sum"
+              }
             }
           }
 
