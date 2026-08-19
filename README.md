@@ -24,11 +24,12 @@ infra/
   07-media/      MediaMTX, NLB, CloudFront — 영상 (미작성 · D-033)
 apps/<service>/  Dockerfile + src
 loadtest/        부하 테스트 시나리오
-CLAUDE.md        작업 시작 전에 읽을 것 — 규약과 함정 요약
+AGENTS.md        작업 시작 전에 읽을 것 — 규약과 함정, 문서 지도 (D-022)
 docs/
   architecture.md  전체 설계 (부하 가정, 캐싱, 스케일링, 리스크)
   decisions.md   결정 기록
   contracts.md   인터페이스 계약 (REST, WebSocket, 캐시 키, 이벤트)
+  schema.md      MySQL 테이블·Valkey 키·마이그레이션
 ```
 
 **쿠버네티스 매니페스트는 이 저장소에 없다.**
