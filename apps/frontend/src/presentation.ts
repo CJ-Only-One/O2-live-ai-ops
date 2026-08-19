@@ -81,20 +81,23 @@ const BROADCASTS: Record<string, BroadcastPresentation> = {
 }
 
 const DEFAULT_PRODUCT: ProductPresentation = {
-  image: '/products/88213.svg',
+  image: '/products/88213.jpg',
   brand: '올리브영',
 }
 
+// 제품 사진이다. 원본은 1000×1000 에 합계 5.5MB 였는데 화면에서는 52px·68px
+// 썸네일로만 쓴다. 240px 로 줄여 넣었다 (합계 340KB) — 고해상도 화면에서도
+// 3배수라 충분하다. 알파가 있는 둘만 PNG 로 두고 나머지는 JPG 다.
 const PRODUCTS: Record<string, ProductPresentation> = {
-  '88213': { image: '/products/88213.svg', brand: '토리든' },
-  '88214': { image: '/products/88214.svg', brand: '제로이드' },
-  '88215': { image: '/products/88215.svg', brand: '미쟝센' },
-  '88216': { image: '/products/88216.svg', brand: '아누아' },
-  '88220': { image: '/products/88220.svg', brand: '이니스프리' },
-  '88221': { image: '/products/88221.svg', brand: '에스네이처' },
-  '88230': { image: '/products/88230.svg', brand: '딜라이트 프로젝트' },
-  '88240': { image: '/products/88240.svg', brand: '덴프스' },
-  '88250': { image: '/products/88250.svg', brand: '메디힐' },
+  '88213': { image: '/products/88213.jpg', brand: '토리든' },
+  '88214': { image: '/products/88214.jpg', brand: '제로이드' },
+  '88215': { image: '/products/88215.jpg', brand: '미쟝센' },
+  '88216': { image: '/products/88216.png', brand: '아누아' },
+  '88220': { image: '/products/88220.png', brand: '이니스프리' },
+  '88221': { image: '/products/88221.jpg', brand: '에스네이처' },
+  '88230': { image: '/products/88230.jpg', brand: '딜라이트 프로젝트' },
+  '88240': { image: '/products/88240.jpg', brand: '덴프스' },
+  '88250': { image: '/products/88250.jpg', brand: '메디힐' },
 }
 
 export function broadcastView(broadcastId: string): BroadcastPresentation {
