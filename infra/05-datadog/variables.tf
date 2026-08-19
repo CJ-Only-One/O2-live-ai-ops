@@ -30,13 +30,19 @@ variable "default_service" {
     하나를 정해 두고 필요할 때 바꾸는 편이 낫다.
   EOT
   type        = string
-  default     = "order-api"
+  default     = "api"
 }
 
 variable "environment" {
-  description = "메트릭에 붙는 env 태그. 집계 Lambda 의 DD_ENV 와 같아야 한다."
+  description = <<-EOT
+    메트릭에 붙는 env 태그. 집계 Lambda 의 `DD_ENV`(`06-datastream` 의
+    `environment`) 와 같아야 한다.
+
+    다르면 대시보드가 빈다. apply 는 성공하므로 파이프라인이 죽은 것과
+    구분되지 않는다 (D-034).
+  EOT
   type        = string
-  default     = "prod"
+  default     = "dev"
 }
 
 # ── 임계치 ──────────────────────────────────────────────────
