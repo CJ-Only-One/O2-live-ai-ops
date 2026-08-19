@@ -9,7 +9,7 @@
 
 그래서 `snapshot()` 하나가 판단 재료 전부를 한 번에 조립합니다.
 이 반환값은 그대로 LLM 프롬프트에 실을 수 있는 형태이고, 그대로
-`INCIDENT#<id>/SNAPSHOT#PRE` 에 기록할 수 있는 형태입니다 —
+`INCIDENT#<id>/SNAPSHOT#DETECT` 에 기록할 수 있는 형태입니다 —
 "그 시점 Agent가 본 것"의 정의가 하나뿐이어야 재현과 평가가 가능합니다.
 
 ## 신선도는 읽을 때 다시 계산합니다
@@ -109,9 +109,29 @@ class WarmClient:
         return bundle
 
     # ------------------------------------------------------------ 인시던트
-    def record_snapshot(self, incident_id: str, phase: str, service: str, extra: dict | None = None) -> dict:
-        """조치 직전/직후 지표를 인시던트에 못 박습니다."""
-        snap = self.snapshot(service, include=("metrics",))
+    def record_snapshot(
+        self,
+        incident_id: str,
+        phase: str,
+        service: str,
+        extra: dict | None = None,
+        broadcast_id: str | None = None,
+    ) -> dict:
+        """감지 시점 / 조치 직전 / 조치 직후를 인시던트에 못 박습니다.
+
+        `PRE`·`POST` 는 지표만 남깁니다 — 복구 판정에 쓰이는 것이 지표뿐이고,
+        나머지를 같이 넣으면 레코드만 무거워집니다.
+
+        `DETECT` 는 번들 전체를 남깁니다. 지표 시계열은 TTL 7일이라 사후에도
+        조회되지만 `confidence`·`gaps`·`rundown`·`policy` 는 **조회 시점 기준으로
+        다시 계산**되므로, 지금 남기지 않으면 "그때 Agent 가 본 것"이 복원되지
+        않습니다. 오판을 되짚을 때 필요한 것이 정확히 그 값들입니다.
+        """
+        phase = phase.upper()
+        if phase == "DETECT":
+            snap = self.snapshot(service, broadcast_id=broadcast_id)
+        else:
+            snap = self.snapshot(service, include=("metrics",))
         payload = {"service": service, "snapshot": snap}
         if extra:
             payload["extra"] = extra

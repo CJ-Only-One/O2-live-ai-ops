@@ -12,7 +12,7 @@ agent-data-requirements.md §7.2 를 그대로 따르되 두 가지를 더했습
 | `CONTEXT#RUNDOWN` | `<broadcast_id>` | 방송 큐시트 | 없음 |
 | `CONTEXT#DEPLOY#<service>` | `LATEST` | 배포 이력 | 30일 |
 | `POLICY#<service>` / `TOPOLOGY#<service>` | `CURRENT` | 정책·의존성 | 없음 |
-| `INCIDENT#<id>` | `SNAPSHOT#PRE` / `POST` | 조치 전후 | 30일 |
+| `INCIDENT#<id>` | `SNAPSHOT#DETECT` / `PRE` / `POST` | 감지 시점·조치 전후 | 30일 |
 
 **sk 를 0으로 패딩합니다.** DynamoDB 정렬 키는 문자열 비교라
 `TS#1786000100` 이 `TS#986000100` 보다 앞섭니다. 패딩하지 않으면
@@ -43,6 +43,7 @@ from .settings import settings
 from .sketch import WindowSketch
 
 SK_WIDTH = 12  # epoch 초를 0패딩할 자릿수
+SNAPSHOT_PHASES = ("DETECT", "PRE", "POST")
 
 
 def metric_pk(service: str) -> str:
@@ -258,14 +259,19 @@ class WarmStore:
 
     # ------------------------------------------------------------ 인시던트
     def put_snapshot(self, incident_id: str, phase: str, data: dict) -> dict:
-        """조치 전/후 스냅샷.
+        """감지 시점·조치 전후 스냅샷.
 
         §5 의 요구입니다. 조치 직전 값이 남아 있지 않으면 "무엇과 비교해
         복구인가"에 답할 수 없습니다.
+
+        `DETECT` 는 용도가 다릅니다. PRE 는 조치 효과의 기준선이라 실행
+        직전이어야 하고, 감지 시점에 찍으면 진단·승인 대기 동안의 자기
+        악화분이 조치 효과에 섞입니다. 그래서 "그때 Agent 가 본 것"은
+        별도 phase 로 남깁니다 — 복구 판정이 아니라 사후 재현·라벨링용.
         """
         phase = phase.upper()
-        if phase not in ("PRE", "POST"):
-            raise ValueError("phase 는 PRE 또는 POST 여야 합니다")
+        if phase not in SNAPSHOT_PHASES:
+            raise ValueError("phase 는 DETECT, PRE, POST 중 하나여야 합니다")
         item = to_dynamo({"recorded_at": time.time(), **data})
         item["pk"] = f"INCIDENT#{incident_id}"
         item["sk"] = f"SNAPSHOT#{phase}"
