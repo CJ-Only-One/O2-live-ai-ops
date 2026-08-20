@@ -76,3 +76,11 @@ kubeconfig*
 # (docs/documentation-guide.md 5절).
 works/
 scratch/
+
+# Claude Code 가 만드는 작업 공간. `.claude/worktrees/` 아래에는 **저장소
+# 사본이 통째로** 들어간다 — `git add -A` 한 번에 딸려 들어가면 저장소가
+# 저장소를 담는 꼴이 된다.
+#
+# 설정을 공유하고 싶으면 `.claude/settings.json` 처럼 파일 단위로 예외를
+# 열고, 디렉터리째 풀지 않는다.
+.claude/
