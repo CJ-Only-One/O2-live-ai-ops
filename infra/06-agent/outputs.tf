@@ -67,6 +67,32 @@ output "alert_relay_log_command" {
   ])
 }
 
+# ── O2 알림 중계 Lambda (병렬 파이프라인) ──────────────────────────
+
+output "alert_relay_o2_function_url" {
+  description = <<-EOT
+    O2 앱용 Datadog webhook 에 등록하는 주소. alert_relay_function_url(원본)과는
+    다른 값이다 — 헷갈려서 잘못된 웹훅에 등록하면 알림이 계속 alert-triage 로 간다.
+
+    ★ 인증이 x-dd-secret 헤더 하나뿐이라 URL 자체를 비밀로 취급한다.
+  EOT
+  value       = aws_lambda_function_url.alert_relay_o2.function_url
+  sensitive   = true
+}
+
+output "alert_dlq_o2_url" {
+  description = "세 번 실패한 O2 알림이 쌓이는 곳"
+  value       = aws_sqs_queue.alert_dlq_o2.url
+}
+
+output "alert_relay_o2_log_command" {
+  description = "O2 알림이 안 올 때 제일 먼저 볼 곳"
+  value = join("\n", [
+    "aws logs tail /aws/lambda/${local.alert_ingress_name_o2} --follow --region ${var.region}",
+    "aws logs tail /aws/lambda/${local.alert_worker_name_o2} --follow --region ${var.region}",
+  ])
+}
+
 output "ssm_session_command" {
   value = "aws ssm start-session --target ${aws_instance.dify.id} --region ${var.region}"
 }

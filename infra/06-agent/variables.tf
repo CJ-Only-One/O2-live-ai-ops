@@ -127,6 +127,24 @@ variable "alert_secret_name" {
   default     = "o2/dev/dify-alert"
 }
 
+variable "alert_secret_name_o2" {
+  description = <<-EOT
+    O2 Dify 앱 전용 알림 중계 파이프라인이 읽는 Secrets Manager 시크릿 이름.
+
+    alert_secret_name(alert-triage 앱용)과 시크릿을 공유하지 않는다 — 공유하면
+    한쪽 앱의 API 키를 바꿀 때마다 다른 쪽이 깨진다. lambda_o2.tf 가 이 이름으로
+    별도 Ingress/Worker 쌍을 만든다.
+
+    시크릿은 apply 전에 손으로 한 번 만든다. 키 형식은 alert_secret_name 과 같다:
+
+      aws secretsmanager create-secret --name o2/dev/dify-alert-o2 \
+        --secret-string '{"dify-api-key":"app-...","webhook-secret":"..."}' \
+        --region ap-northeast-2
+  EOT
+  type        = string
+  default     = "o2/dev/dify-alert-o2"
+}
+
 variable "alert_relay_max_concurrency" {
   description = <<-EOT
     알림 중계 Lambda 의 예약 동시성. **폭주 상한이다.**
