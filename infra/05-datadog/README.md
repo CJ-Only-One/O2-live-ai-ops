@@ -295,9 +295,15 @@ Monitor 를 만들 때 주의할 것 하나 — **`for` 는 그대로 옮겨지�
 
 ## 이름과 번호
 
-state key 는 `observability/terraform.tfstate` 다. 디렉터리 이름(`05-datadog`)이나
-번호를 쓰지 않았다. 번호는 의존 순서라 바뀔 수 있고(D-029 에서 `05` 는 media
-예약이었다), key 가 바뀌면 state 가 갈린다.
+state key 는 `observability/datadog-new-org/terraform.tfstate` 다. 디렉터리
+이름(`05-datadog`)이나 번호를 쓰지 않았다. 번호는 의존 순서라 바뀔 수 있고
+(D-029 에서 `05` 는 media 예약이었다), key 가 바뀌면 state 가 갈린다.
+
+`datadog-new-org/` 접미사는 체험판 조직(AP1) → 팀 조직(US5) 이주 때 붙었다.
+구 조직의 대시보드·Monitor ID 를 든 옛 state 가 `observability/terraform.tfstate`
+에 있어서 같은 키를 다시 쓸 수 없었다. 그 옛 state 는 2026-08-20 에 지웠지만
+(버킷 버전 관리로 복구 가능), **키를 되돌리면 state 가 또 갈리므로 그대로 둔다.**
+
 
 `03-data` 가 `datastore/`, `06-datastream` 이 `data/` 를 쓰는 것과 같은 종류의
 주의다 — 그쪽은 이미 한 번 밟은 함정이다(D-015).
