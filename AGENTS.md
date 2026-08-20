@@ -59,7 +59,7 @@ sed -n '553,607p' docs/decisions.md     # 그 절만 읽는다
 | `03-data`는 **`datastore/`**, `06-datastream`은 **`data/`** | 바꿔 쓰면 상대 스택 리소스를 자기 것으로 보고 다음 destroy에 지운다 |
 | ConfigMap 키 == `Settings` 필드 == `.env.example` | 새 이름을 만들면 주입값이 무시되고 `localhost` 기본값이 쓰인다 |
 | 매니페스트 `serviceAccountName` == `04-platform`의 `app_service_accounts` | AWS 호출에서만 실패한다 |
-| apply 순서 `01`→`02`→(`03`∥`05`∥`06`∥`07`)→`04`, **로컬에서 사람이** | CI는 `plan`만 돈다 |
+| apply 순서 `01`→`02`→(`03`∥`05`∥`06`∥`07`)→`04`, **로컬에서 사람이** | CI는 `fmt`·`validate`만 돈다. `plan`도 `apply`도 하지 않는다 (D-023) |
 
 ## 나중에 못 얹는 것
 
