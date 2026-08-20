@@ -174,7 +174,8 @@ Argo CD가 [`O2-live-deploy`](https://github.com/CJ-Only-One/O2-live-deploy)를
 
 ## 아직 안 들어간 것
 
-- `metrics-server` — **`02-eks/addons.tf` 에 들어갔다.** 그 스택을 apply 해야 반영된다
+- ~~`metrics-server`~~ — **들어갔다.** `02-eks/addons.tf` 소관이고 2026-08-20 에
+  apply 했다. 그때 처음 보인 값은 M-008 에 있다
 - `aws-ebs-csi-driver` — 넣지 않는다. PVC 를 쓰는 파드가 없다 (D-037)
 - KEDA — 보류. 방송 시각을 아는 데모에서는 cron scaler 와 `kubectl scale` 이
   하는 일이 같다. 스케일링 동작 자체를 시연 대상으로 삼을 때 넣는다 (D-037)
