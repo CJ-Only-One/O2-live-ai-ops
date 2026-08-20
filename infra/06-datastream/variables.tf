@@ -68,13 +68,13 @@ variable "datadog_secret_name" {
     않으므로 state 에 키가 남지 않습니다.
   EOT
   type        = string
-  default     = "o2/dev/datadog"
+  default     = "o2/dev/datadog-new"
 }
 
 variable "datadog_secret_property" {
   description = <<-EOT
     위 시크릿 JSON 에서 API 키를 담은 property 이름.
-    `o2/dev/datadog` 은 `{"api-key": ..., "app-key": ...}` 형태입니다.
+    `o2/dev/datadog-new` 은 `{"api-key": ..., "app-key": ...}` 형태입니다.
 
     Agent 는 app-key 도 쓰지만(컨트롤플레인 수집) 이 Lambda 는 메트릭 전송만
     하므로 api-key 하나로 충분합니다.
@@ -114,5 +114,5 @@ variable "datadog_site" {
     `datadoghq.com` 이라, 이 변수를 빼먹으면 조용히 그쪽으로 갑니다.
   EOT
   type        = string
-  default     = "ap1.datadoghq.com"
+  default     = "us5.datadoghq.com"
 }

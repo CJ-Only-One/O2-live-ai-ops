@@ -24,8 +24,8 @@ $ErrorActionPreference = "Stop"
 try {
     $env:AWS_PROFILE = "o2-data"
 
-    Write-Host "Reading Datadog keys from Secrets Manager (o2/dev/datadog)..."
-    $raw = aws secretsmanager get-secret-value --secret-id o2/dev/datadog --query SecretString --output text
+    Write-Host "Reading Datadog keys from Secrets Manager (o2/dev/datadog-new)..."
+    $raw = aws secretsmanager get-secret-value --secret-id o2/dev/datadog-new --query SecretString --output text
     if ($LASTEXITCODE -ne 0 -or -not $raw) {
         throw "Failed to retrieve secret from Secrets Manager. Check AWS_PROFILE=o2-data login status."
     }
@@ -36,7 +36,7 @@ try {
     $j = $null
 
     if (-not $env:DD_API_KEY -or -not $env:DD_APP_KEY) {
-        throw "api-key/app-key fields not found in the secret. Check o2/dev/datadog value."
+        throw "api-key/app-key fields not found in the secret. Check o2/dev/datadog-new value."
     }
 
     terraform init -input=false

@@ -81,7 +81,7 @@ Argo CD는 클러스터 전체에 대한 배포 권한을 가지므로 이 계�
 
 Datadog은 `enable_datadog` 으로 켠다 (현재 `terraform.tfvars` 에서 켜져 있다).
 API/App Key 원문은 Terraform state나 Kubernetes
-매니페스트에 넣지 않는다. AWS Secrets Manager의 JSON Secret(`o2/dev/datadog`)에만
+매니페스트에 넣지 않는다. AWS Secrets Manager의 JSON Secret(`o2/dev/datadog-new`)에만
 보관하고, External Secrets Operator(ESO)가 `datadog/datadog-secret`으로 동기화한다.
 따라서 EKS/platform stack을 destroy한 뒤 다시 apply해도 원본 키를 다시 입력할 필요가 없다.
 
@@ -92,7 +92,7 @@ API/App Key 원문은 Terraform state나 Kubernetes
 2. **Organization Settings > Application Keys**에서 App Key를 새로 만든다. 이 키는 EKS
    control plane monitoring에 필요하다.
 3. AWS Secrets Manager 콘솔에서 **Other type of secret**을 선택하고 다음 두 key/value를
-   입력한다. 이름은 `o2/dev/datadog`으로 한다. 기본 AWS managed key를 쓸 경우 별도 KMS
+   입력한다. 이름은 `o2/dev/datadog-new`으로 한다. 기본 AWS managed key를 쓸 경우 별도 KMS
    권한은 필요 없다.
 
 | Key | Value |

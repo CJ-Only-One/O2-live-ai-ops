@@ -48,7 +48,7 @@ GAUGE = 3  # Datadog series v2 의 gauge 타입 코드
 def api_key() -> str:
     """키가 있는 곳에서 실행 시점에 읽습니다. 조회·캐시는 `secrets` 가 합니다.
 
-    원본은 Secrets Manager `o2/dev/datadog` 이고, 04-platform 이 ESO 로
+    원본은 Secrets Manager `o2/dev/datadog-new` 이고, 04-platform 이 ESO 로
     Agent 에 넣는 것과 **같은 시크릿**입니다. 사본을 만들지 않으므로
     키를 회전할 때 Agent 와 이 Lambda 가 함께 바뀝니다. 한쪽만 바뀌면
     인프라 지표는 정상인데 비즈니스 지표만 조용히 멈춥니다.

@@ -21,7 +21,7 @@ resource "helm_release" "datadog" {
 
   values = [yamlencode({
     datadog = {
-      # ap1 조직의 intake endpoint. US site 기본값을 쓰면 데이터가 전송되지 않는다.
+      # us5 조직의 intake endpoint. 기본값(US1)을 쓰면 데이터가 전송되지 않는다.
       site                 = var.datadog_site
       clusterName          = local.cluster_name
       apiKeyExistingSecret = var.datadog_kubernetes_secret_name

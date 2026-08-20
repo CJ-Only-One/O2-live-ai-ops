@@ -1,7 +1,7 @@
 # 이 파일은 커밋된다 (루트 .gitignore 의 `!infra/*/terraform.tfvars`).
 # **비밀값을 적지 않는다.** API·APP 키는 DD_API_KEY / DD_APP_KEY 환경변수로 넘긴다.
 
-# 조직이 AP1 이다. 04-platform 의 datadog_site, 06-datastream 의 datadog_site 와
+# 조직이 US5 다. 04-platform 의 datadog_site, 06-datastream 의 datadog_site 와
 # 같은 조직을 가리켜야 한다. 갈리면 대시보드가 빈다.
 datadog_api_url = "https://api.us5.datadoghq.com/"
 

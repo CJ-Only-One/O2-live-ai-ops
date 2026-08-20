@@ -36,7 +36,7 @@ try {
     $j = $null
 
     if (-not $env:DD_API_KEY -or -not $env:DD_APP_KEY) {
-        throw "api-key/app-key fields not found in the secret. Check o2/dev/datadog value."
+        throw "api-key/app-key fields not found in the secret. Check o2/dev/datadog-new value."
     }
 
     terraform init -input=false

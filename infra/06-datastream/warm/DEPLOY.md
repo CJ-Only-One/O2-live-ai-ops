@@ -29,7 +29,7 @@ aws sts get-caller-identity        # Account 가 066107819912 여야 한다
 같은 시크릿을 집계 Lambda가 직접 읽는다.
 
 ```
-Secrets Manager  o2/dev/datadog
+Secrets Manager  o2/dev/datadog-new
   ├── api-key    ← o2-agg 가 실행 시점에 읽는다 (secretsmanager:GetSecretValue)
   └── app-key    ← Agent 전용 (컨트롤플레인 수집)
 ```
@@ -103,12 +103,12 @@ aws logs tail /aws/lambda/o2-agg --since 10m --profile o2-data `
   --filter-pattern "o2warm"      # 전송이 0 일 때 사유
 ```
 
-Datadog 쪽에서도 확인한다 (`api.ap1...` — 사이트가 US1이 아니다).
+Datadog 쪽에서도 확인한다 (`api.us5...` — 사이트가 US1이 아니다).
 
 ```powershell
 $now = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 curl.exe -s -H "DD-API-KEY: <api-key>" -H "DD-APPLICATION-KEY: <app-key>" `
-  "https://api.ap1.datadoghq.com/api/v1/query?from=$($now-900)&to=$now&query=avg:o2.warm.rps%7Bservice:coupon-api%7D"
+  "https://api.us5.datadoghq.com/api/v1/query?from=$($now-900)&to=$now&query=avg:o2.warm.rps%7Bservice:coupon-api%7D"
 ```
 
 **검증된 결과** (2026-08-17, 이벤트 60건 주입):

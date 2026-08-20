@@ -729,5 +729,5 @@ resource "datadog_dashboard" "infra" {
 
 output "dashboard_infra_url" {
   description = "인프라 대시보드 주소"
-  value       = "https://app.ap1.datadoghq.com/dashboard/${datadog_dashboard.infra.id}"
+  value       = "${local.dd_app_url}/dashboard/${datadog_dashboard.infra.id}"
 }
