@@ -261,14 +261,24 @@ D-037 이 metrics-server 를 "1칸" 으로 계산한 것은 맞았지만, 그것
 
 `t3` 는 버스트 인스턴스이고, 결과는 CloudWatch 에 그대로 남아 있다.
 
-| 날짜 | 인스턴스 | CPUCreditBalance | CPUSurplusCreditsCharged (시간당) |
-|---|---|---|---|
-| 2026-08-20 | i-064b4a174a734c223 | **0** (09시부터 종일) | 약 64 |
-| 2026-08-20 | i-0195fae4fbba9bdf2 | — | 약 42 |
+| 날짜 | 인스턴스 | 크레딧 모드 | CPUCreditBalance | CPUSurplusCreditsCharged (시간당) |
+|---|---|---|---|---|
+| 2026-08-20 | i-064b4a174a734c223 | `unlimited` | **0** (09시부터 종일) | 약 64 |
+| 2026-08-20 | i-0195fae4fbba9bdf2 | `unlimited` | — | 약 42 |
 
-크레딧이 0 인 채로 초과분을 계속 사고 있다(T3 기본 `unlimited` 모드).
-**두 노드 합쳐 시간당 약 106 크레딧 = 약 1.8 vCPU-시간**이 추가 과금된다.
-요금 단가는 확인하지 않았다 — `aws pricing` 으로 확인할 것.
+`unlimited` 는 T3 기본값이다. `describe-instance-credit-specifications` 로 확인했다.
+
+단가는 `aws pricing` 으로 확인했다 — 서울 리전 Linux T3 초과 크레딧이
+**vCPU-시간당 $0.05** (`APN2-CPUCredits:t3`, SKU `HFY9FYMUY3NRAMS5`).
+두 노드 합계 시간당 약 106 크레딧이면 약 1.8 vCPU-시간이므로 **시간당 약 $0.09**,
+한 달 환산 약 $64 가 된다. `t3.small` 세 대 온디맨드보다 큰 금액이다.
+
+**단, 실제 청구는 확인되지 않았다.** 2026-08-20 기준 Cost Explorer 의 EC2
+usage type 목록에 `APN2-CPUCredits:t3` 줄이 **없다**(8/14~8/21 일별 조회,
+`Estimated: true`). 잔고가 0 이 된 것이 같은 날 09시라 반영 지연일 가능성이
+가장 크지만, 지표 해석이 틀렸을 가능성도 남아 있다.
+
+**위 금액은 계산값이지 청구 실측이 아니다.** 하루 뒤 같은 조회로 확정할 것.
 
 원인은 아직 모른다. `order-worker` 의 SQS 롱폴링은 정상이다
 (`SQS_WAIT_SECONDS` 기본 20). 두 서비스가 모두 Python 이고 이벤트 SDK 와
