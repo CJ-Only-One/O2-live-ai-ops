@@ -199,3 +199,20 @@ resource "aws_glue_catalog_table" "raw_client" {
     }
   }
 }
+
+# 4. Athena Primary Workgroup Result Location Setting
+resource "aws_athena_workgroup" "primary" {
+  name = "primary"
+
+  configuration {
+    enforce_workgroup_configuration    = false
+    publish_cloudwatch_metrics_enabled = true
+
+    result_configuration {
+      output_location = "s3://${aws_s3_bucket.data_lake.bucket}/athena-results/"
+    }
+  }
+
+  force_destroy = false
+}
+
