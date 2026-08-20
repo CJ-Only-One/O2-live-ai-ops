@@ -308,6 +308,33 @@ resource "aws_lambda_function_url" "warm_api" {
   }
 }
 
+# Function URL 을 anonymous(NONE)로 열어도 이 두 permission 이 둘 다 있어야
+# 실제로 함수까지 도달한다. 하나만 있으면 AWS 가 함수 코드 앞에서
+# AccessDeniedException 으로 막는다 — Dify Agent 쪽에서 처음 붙였을 때
+# 이걸로 403을 겪었다(둘 다 이 policy 없이는 재현된다).
+#
+#   InvokeFunctionUrl — Function URL 경로 자체를 호출할 권한.
+resource "aws_lambda_permission" "warm_api_url" {
+  statement_id           = "FunctionURLAllowPublicAccess"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.warm_api.function_name
+  principal              = "*"
+  function_url_auth_type = "NONE"
+}
+
+#   InvokeFunction — Function URL 이 내부적으로 함수를 실제 실행할 권한.
+#   `lambda:InvokedViaFunctionUrl` Bool 조건으로 Function URL 경유 호출에만
+#   한정하는 게 정석이지만, aws_lambda_permission 리소스에 그 조건을 걸
+#   인자가 없다(AWS CLI add-permission 도 동일한 제약). 이 action 자체가
+#   AWS 자격증명 없는 익명 호출자한테는 Function URL 을 통하지 않고는
+#   실행할 방법이 없어서, 조건이 없어도 실질적인 노출 범위는 같다.
+resource "aws_lambda_permission" "warm_api_invoke" {
+  statement_id  = "FunctionURLAllowInvokeAction"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.warm_api.function_name
+  principal     = "*"
+}
+
 ###############################################################################
 # 출력값
 ###############################################################################
