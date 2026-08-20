@@ -26,8 +26,7 @@ terraform {
     # `datadog/` 이 아니라 `observability/` 다. 스택 번호도 쓰지 않는다.
     # 번호는 의존 순서라 바뀔 수 있고(D-025 에서 05는 media 예약이었다),
     # 키가 바뀌면 state 가 갈린다. 역할로 이름을 둔다.
-    key = "observability/terraform.tfstate"
-
+    key          = "observability/datadog-new-org/terraform.tfstate"
     region       = "ap-northeast-2"
     encrypt      = true
     use_lockfile = true
