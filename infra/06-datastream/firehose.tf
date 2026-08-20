@@ -74,8 +74,8 @@ resource "aws_kinesis_firehose_delivery_stream" "business" {
   extended_s3_configuration {
     role_arn            = aws_iam_role.firehose.arn
     bucket_arn          = aws_s3_bucket.data_lake.arn
-    buffering_size      = 5
-    buffering_interval  = 300
+    buffering_size      = 1
+    buffering_interval  = 60
     compression_format  = "GZIP"
     prefix              = "raw/business/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"
     error_output_prefix = "raw/errors/business/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"
@@ -96,8 +96,8 @@ resource "aws_kinesis_firehose_delivery_stream" "client" {
   extended_s3_configuration {
     role_arn            = aws_iam_role.firehose.arn
     bucket_arn          = aws_s3_bucket.data_lake.arn
-    buffering_size      = 5
-    buffering_interval  = 300
+    buffering_size      = 1
+    buffering_interval  = 60
     compression_format  = "GZIP"
     prefix              = "raw/client/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"
     error_output_prefix = "raw/errors/client/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"
