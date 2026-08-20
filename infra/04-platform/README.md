@@ -174,8 +174,9 @@ Argo CD가 [`O2-live-deploy`](https://github.com/CJ-Only-One/O2-live-deploy)를
 
 ## 아직 안 들어간 것
 
-- `metrics-server` — 없으면 HPA 불가. `02-eks` 의 애드온 목록에 추가하는 편이 맞다
-- `aws-ebs-csi-driver` — 없으면 PVC 불가. 마찬가지
-- KEDA — Phase 5. 파드 슬롯이 10칸 넘게 필요하다
+- `metrics-server` — **`02-eks/addons.tf` 에 들어갔다.** 그 스택을 apply 해야 반영된다
+- `aws-ebs-csi-driver` — 넣지 않는다. PVC 를 쓰는 파드가 없다 (D-037)
+- KEDA — 보류. 방송 시각을 아는 데모에서는 cron scaler 와 `kubectl scale` 이
+  하는 일이 같다. 스케일링 동작 자체를 시연 대상으로 삼을 때 넣는다 (D-037)
 - Argo CD 외부 노출(Ingress) — 지금은 `port-forward` 로만 접근
 - SSO(dex), Slack 알림 — `enable_dex` 를 켜고 `configs.cm` 에 설정 추가

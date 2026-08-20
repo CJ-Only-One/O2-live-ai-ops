@@ -6,6 +6,6 @@ enable_datadog = true
 enable_chat_events = true
 # 영상 재생 주소. 07-media 의 `terraform output hls_base_url` 값이다.
 # CloudFront 를 통해야 캐시가 팬아웃을 흡수한다 (D-039).
-hls_base_url = "https://dq8dzhb390eet.cloudfront.net/hls"
+hls_base_url                        = "https://dq8dzhb390eet.cloudfront.net/hls"
 datadog_secrets_manager_secret_name = "o2/dev/datadog-new"
-datadog_site = "us5.datadoghq.com"
+datadog_site                        = "us5.datadoghq.com"

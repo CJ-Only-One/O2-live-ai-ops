@@ -3,12 +3,20 @@ locals {
   addons_pre_node = ["vpc-cni", "kube-proxy"]
 
   # 노드에 스케줄되어야 하므로 노드 그룹 이후에 설치
-  addons_post_node = ["coredns", "eks-pod-identity-agent"]
+  #
+  # metrics-server 는 `metrics.k8s.io` 를 제공한다. Datadog 이 같은 값을
+  # 수집하지만 읽는 쪽이 다르다 — Datadog 은 사람이 웹에서 보고, 이 API 는
+  # 쿠버네티스 자신이 읽는다. `kubectl top` 과 리소스 기준 HPA 의 전제다
+  # (D-037). 부하 테스트에서 "파드 하나가 몇 RPS 를 견디나" 를 재려면 CPU
+  # 포화를 봐야 하는데, 지금은 `describe nodes` 의 **요청량**(예약한 양)만
+  # 보이고 실사용량을 볼 수단이 없다.
+  addons_post_node = ["coredns", "eks-pod-identity-agent", "metrics-server"]
 
-  # Phase 2에서 추가:
-  #   aws-ebs-csi-driver  (Prometheus/Loki PVC)
-  #   metrics-server      (HPA)
-  #   amazon-cloudwatch-observability (선택)
+  # 넣지 않기로 한 것 (D-037):
+  #   aws-ebs-csi-driver  — PVC 를 쓰는 파드가 없다. 필요했던 유일한 이유가
+  #                         Prometheus 였는데 그것을 빼면서 같이 빠졌다
+  #   Prometheus          — Datadog 과 중복. KEDA 가 필요해지면 Datadog
+  #                         스케일러 쪽이 맞다
 }
 
 data "aws_eks_addon_version" "this" {
