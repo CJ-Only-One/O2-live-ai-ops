@@ -132,6 +132,62 @@ def _dispatch(method: str, path: str, params: dict, body: dict):
     if path.endswith("/health"):
         return _resp(200, {"ok": True, "ts": time.time(), "table": settings.table})
 
+    # /v1/warm/athena (Athena SQL 쿼리 실행)
+    if path.endswith("/athena"):
+        if method != "POST":
+            raise ValueError("athena 엔드포인트는 POST 메서드만 지원합니다")
+        query_sql = body.get("query")
+        if not query_sql:
+            raise ValueError("query 파라미터(SQL 문)가 필요합니다")
+        
+        import boto3
+        bucket = os.getenv("O2_DATA_LAKE_BUCKET", "o2-data-lake-066107819912")
+        athena_client = boto3.client("athena", region_name=os.getenv("AWS_REGION", "ap-northeast-2"))
+        
+        try:
+            start_resp = athena_client.start_query_execution(
+                QueryString=query_sql,
+                QueryExecutionContext={"Database": "o2_data_lake"},
+                ResultConfiguration={"OutputLocation": f"s3://{bucket}/athena-results/"}
+            )
+            execution_id = start_resp["QueryExecutionId"]
+            
+            start_t = time.time()
+            state = "RUNNING"
+            while time.time() - start_t < 25:
+                status_res = athena_client.get_query_execution(QueryExecutionId=execution_id)
+                state = status_res["QueryExecution"]["Status"]["State"]
+                if state in ["SUCCEEDED", "FAILED", "CANCELLED"]:
+                    break
+                time.sleep(0.5)
+            
+            if state != "SUCCEEDED":
+                reason = status_res["QueryExecution"]["Status"].get("StateChangeReason", "Unknown error")
+                return _resp(500, {"error": "athena_query_failed", "state": state, "reason": reason})
+            
+            results = athena_client.get_query_results(QueryExecutionId=execution_id)
+            rows = results["ResultSet"]["Rows"]
+            if not rows:
+                return _resp(200, {"query_id": execution_id, "columns": [], "rows": []})
+            
+            col_names = [c.get("VarCharValue", "") for c in rows[0].get("Data", [])]
+            data_rows = []
+            for r in rows[1:]:
+                row_dict = {}
+                for idx, val in enumerate(r.get("Data", [])):
+                    col_name = col_names[idx] if idx < len(col_names) else f"col_{idx}"
+                    row_dict[col_name] = val.get("VarCharValue")
+                data_rows.append(row_dict)
+            
+            return _resp(200, {
+                "query_id": execution_id,
+                "count": len(data_rows),
+                "columns": col_names,
+                "rows": data_rows
+            })
+        except Exception as ex:
+            return _resp(500, {"error": "athena_execution_error", "detail": str(ex)})
+
     parts = [p for p in path.split("/") if p]
 
     # /v1/warm/incidents/<id>/...

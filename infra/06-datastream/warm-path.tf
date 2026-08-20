@@ -231,6 +231,25 @@ data "aws_iam_policy_document" "warm_api" {
     resources = ["${aws_cloudwatch_log_group.warm_api.arn}:*"]
   }
 
+  statement {
+    sid = "QueryAthenaDataLake"
+
+    actions = [
+      "athena:StartQueryExecution",
+      "athena:GetQueryExecution",
+      "athena:GetQueryResults",
+      "glue:GetDatabase",
+      "glue:GetTable",
+      "glue:GetPartitions",
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:ListBucket",
+      "s3:GetBucketLocation",
+    ]
+
+    resources = ["*"]
+  }
+
   # X-O2-Key 를 실행 시점에 읽습니다. 이 권한이 없으면 인증이 **열리지 않고
   # 막힙니다** (401) — secrets.py 가 조회 실패와 미설정을 구분하기 때문입니다.
   dynamic "statement" {
@@ -238,8 +257,8 @@ data "aws_iam_policy_document" "warm_api" {
 
     content {
       sid       = "ReadApiKey"
-      actions   = ["ssm:GetParameter"]
-      resources = ["arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${var.warm_api_key_param}"]
+      actions   = ["ssm:GetParameter", "kms:Decrypt"]
+      resources = ["*"]
     }
   }
 }
@@ -256,7 +275,7 @@ resource "aws_lambda_function" "warm_api" {
   handler       = "handler.handler"
   runtime       = "python3.11"
   architectures = ["arm64"]
-  timeout       = 10
+  timeout       = 30
   memory_size   = 256
 
   filename         = data.archive_file.warm_api.output_path
@@ -264,7 +283,10 @@ resource "aws_lambda_function" "warm_api" {
 
   environment {
     variables = merge(
-      { O2_WARM_TABLE = aws_dynamodb_table.agent_context.name },
+      {
+        O2_WARM_TABLE       = aws_dynamodb_table.agent_context.name
+        O2_DATA_LAKE_BUCKET = aws_s3_bucket.data_lake.bucket
+      },
       # 권장: 파라미터 이름만 넣고 값은 실행 시점에 읽습니다.
       var.warm_api_key_param == "" ? {} : { O2_WARM_API_KEY_PARAM = var.warm_api_key_param },
       # 로컬 실험용. 이 경로는 값이 state 에 남습니다.
