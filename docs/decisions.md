@@ -55,6 +55,7 @@
 | D-038 | 영상은 ALB 로 먼저 내보낸다 | MediaMTX, `paths` 누락, `?session=` 이 CDN 캐싱을 깬다 |
 | D-039 | CloudFront 는 `/hls` 만 통과시킨다 | `07-media` 신설, 캐시 정책 둘, `hlsCDNSecret` 공유 |
 | D-040 | 재생 복구는 회로 차단기로 묶는다 | 초당 50건 폭주, 조용한 영구 정지, 숨김 탭 정책 |
+| D-041 | 큐시트로 미리 늘리되 AI가 스케일러가 되지는 않는다 | 큐시트, CapacityPlan, 결정론적 실행, HPA·KEDA 보정, Karpenter 안전망, Dify 제외 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -2345,3 +2346,94 @@ RTMP 연결 하나가 유지됐다 (같은 날 8분·60분·34분 연결). 6초 
 ```bash
 cd apps/frontend && npm test
 ```
+
+## D-041. 큐시트로 미리 늘리되 AI가 스케일러가 되지는 않는다
+
+라이브커머스의 쿠폰 오픈·상품 공개·방송 시작 스파이크는 발생 시각을 큐시트로
+미리 안다. 반면 HPA 는 메트릭을 본 뒤 움직이고, 빈 노드가 없으면 노드 준비까지
+기다려야 한다. `architecture.md` 9.1 의 계산처럼 스파이크가 끝난 뒤 용량이
+도착할 수 있으므로 **큐시트 기반 사전 확장을 주력 경로로 쓴다.**
+
+그렇다고 AI Agent 를 autoscaler 로 만들지는 않는다. LLM 이 replica 수를 자유롭게
+생성하고 Kubernetes 나 AWS API 를 직접 호출하면 같은 입력에도 결과가 달라지고,
+비용 상한·축소 안전 조건·재실행 멱등성을 보장하기 어렵다. 역할은 다음처럼 나눈다.
+
+| 역할 | 하는 일 | 하지 않는 일 |
+|---|---|---|
+| AI Agent | 큐시트·과거 실측·현재 여유를 읽고 용량 계획을 제안하고 설명한다 | 임의의 replica/node 수를 직접 적용하지 않는다 |
+| Capacity Planner | 실측한 파드당 안전 처리량과 정책으로 `CapacityPlan` 을 계산한다 | 측정하지 않은 처리량을 추정값으로 확정하지 않는다 |
+| Validator | 시간·최소/최대·비용 상한·큐시트 신선도·권한 범위를 검사한다 | 범위를 벗어난 계획을 묵시적으로 통과시키지 않는다 |
+| Executor | 검증된 계획을 멱등하게 실행하고 Ready/Healthy 를 확인한다 | API 호출 성공만 보고 확장이 끝났다고 판단하지 않는다 |
+
+계산의 입력은 `docs/measurements.md` 의 실측값이어야 한다. 기본 모양은 아래와
+같지만 `safe_capacity_per_pod` 와 여유율은 Phase 4 부하 테스트 전에는 값이 없다.
+
+```
+desired_pods = ceil(expected_peak / safe_capacity_per_pod * safety_factor)
+```
+
+큐시트의 자연어를 AI가 해석할 수는 있어도 Executor가 받는 것은 구조화된
+`CapacityPlan` 뿐이다. 최소 필드는 `broadcast_id`, `event_id`, `starts_at`,
+`expires_at`, 서비스별 목표 replica, 목표 node capacity, 근거가 된 측정 버전,
+계획 버전이다. `event_id + plan_version` 을 멱등 키로 삼아 같은 일정이 다시
+들어와도 중복 확장하지 않는다. 큐시트가 수정되면 옛 예약을 취소하고 새 버전으로
+교체한다. 없거나 오래된 큐시트는 정상으로 간주하지 않고 baseline 용량을 유지하며
+알린다(`06-datastream` 의 `gaps` 원칙과 같다).
+
+### 실행 순서는 노드가 먼저다
+
+```
+1. 관리형 노드그룹 desired capacity 또는 예약 여유 노드를 먼저 확보
+2. Node Ready 와 allocatable 여유 확인
+3. 서비스 replica 사전 확장
+4. Deployment Available 과 ALB healthy target 확인
+5. 모두 만족한 뒤에만 사전 확장 완료로 기록
+```
+
+사전 실행 시각은 고정된 "10분 전"이 아니다. 노드·파드 준비 시간의 실측 p99와
+안전 여유를 방송 이벤트 시각에서 빼서 정한다. 현재 문서의 시간은 설계 추정치라
+운영 타이머의 근거로 쓰지 않는다. 노드 자동 확장이 아직 필요하지 않으면 D-037
+대로 관리형 노드그룹과 수동/예약 실행으로 시작한다.
+
+### HPA·KEDA·Karpenter 는 사전 확장의 대체재가 아니라 안전망이다
+
+사용자 트래픽 경로의 HPA/KEDA 를 없애고 Dify 에만 붙이는 안은 택하지 않는다.
+사전 계획이 정확해도 큐시트 누락, 실제 참여자 편차, 장애성 재시도, 방송 지연은
+남는다. 역할은 다음과 같다.
+
+| 계층 | 역할 |
+|---|---|
+| 큐시트 기반 사전 확장 | 알려진 이벤트의 첫 스파이크를 받을 주력 용량 |
+| HPA/KEDA | 예상보다 크거나 오래 지속되는 부하를 보정. 첫 스파이크 해결책은 아님 |
+| 예약 여유 노드 | Pod 가 즉시 스케줄되도록 노드 대기를 제거 |
+| Karpenter | 예상 밖 Pending Pod·노드 장애에 대응하는 최후 안전망. 실측 필요 전에는 생략 가능 |
+
+같은 Deployment 의 replica 소유자는 하나여야 한다. HPA/KEDA 또는 별도 Executor가
+`scale` 을 소유하면 배포 매니페스트의 `replicas` 를 제거한다. 그렇지 않으면 Argo CD
+`selfHeal` 이 사전 확장을 원래 값으로 되돌린다(D-004, `O2-live-deploy/AGENTS.md`).
+
+### 축소는 큐시트 종료만으로 실행하지 않는다
+
+확장은 비용 위험이고 축소는 가용성 위험이다. 자동 확장은 정책 범위 안에서
+허용할 수 있지만, 축소는 다음 조건을 모두 확인하는 결정론적 단계로만 수행한다.
+
+- 큐시트 이벤트가 종료됐고 새 버전에서 연장되지 않았다
+- cooldown 동안 RPS·오류율·지연이 정상 범위에 있다
+- SQS backlog 와 진행 중 주문/워크플로가 없다
+- WebSocket 활성 연결이 축소 후 용량 이하고 graceful drain 이 가능하다
+
+순서는 `신규 연결 차단 → Pod graceful drain → Pod 점진 축소 → 재검증 → Node 축소`다.
+chat-gateway 는 9.4와 `contracts.md` 3.6의 종료·지터 재연결 계약을 지킨다. AI는
+축소를 제안할 수 있지만 이 조건을 우회할 수 없다.
+
+### Dify 는 이 스케일링 경로의 예외다
+
+Dify 는 D-028 대로 EKS 밖 EC2에 두므로 HPA 대상이 아니다. 현재는 Lambda 비동기
+대기열과 Worker 예약 동시성으로 유입을 제한하고, 먼저 Dify 동시 처리량을 측정한다.
+HPA를 붙이기 위해 Dify를 대상 EKS로 옮기면 장애 대응기가 장애 대상과 같은 실패
+도메인에 들어가는 비용이 더 크다.
+
+나중에 다른 장애 도메인의 Kubernetes 로 옮길 이유가 생기더라도 전부를 한 HPA로
+늘리지 않는다. 무상태 API는 요청량 기반 HPA 후보이고, workflow/Celery worker는
+CPU보다 queue backlog 기반 KEDA 후보이다. PostgreSQL·Redis·vector store는 먼저
+외부화해야 하며 HPA 대상이 아니다.

@@ -96,7 +96,7 @@ v1.0은 부하 10,000 CCU와 "VPC·EKS만 존재"를 전제로 썼다. 둘 다 �
 | D-09 | 스트리밍 브로커 | **Kafka/Kinesis 도입하지 않음** | 확정 (6.1 주석 참조) |
 | D-10 | RDS 암호화 | 생성 시점부터 활성화 (개발환경 포함) | 확정 |
 | D-11 | 무효화 채널 | Valkey Pub/Sub + TTL 안전망 병행 | 확정 |
-| D-12 | 스케일링 | 스케줄 기반 사전 확장 주력, HPA는 보정 | 확정 |
+| D-12 | 스케일링 | 큐시트 기반 사전 확장 주력, HPA/KEDA는 보정. AI는 계획하고 결정론적 Executor가 실행(D-041) | 확정 |
 | D-13 | AI 에이전트 백데이터 | S3 (JSONL/Parquet) + Athena | 확정 |
 | D-14 | 상품 정보 전달 | **WebSocket 푸시 단일화, 폴링 엔드포인트 미구현** | **v1.1 확정** |
 | D-15 | 채팅 이벤트 다중 소비 | **불필요 — Valkey Pub/Sub만** | **v1.1 확정** |
@@ -902,10 +902,19 @@ kubelet Ready                 15 - 25s
 
 | 계층 | 방식 | 도구 |
 |---|---|---|
-| 1차 (주력) | 방송 스케줄 기반 사전 확장 | KEDA cron scaler |
-| 2차 (보정) | 커스텀 메트릭 반응형 | KEDA + Prometheus |
+| 1차 (주력) | 큐시트 기반 사전 확장 | Capacity Planner + 결정론적 Executor (D-041) |
+| 2차 (보정) | 커스텀 메트릭 반응형 | HPA/KEDA. 첫 스파이크 해결책은 아님 |
 | 3차 (버퍼) | 오버프로비저닝 pause Pod | 음수 PriorityClass |
 | 4차 (최후) | 노드 자동 확장 | Karpenter |
+
+AI Agent 는 큐시트와 실측값으로 용량 계획을 제안하고 설명하지만 `scale` 을 직접
+소유하지 않는다. 검증된 구조화 계획만 Executor가 멱등하게 실행한다. 큐시트가
+없거나 오래됐을 때의 baseline, 노드→Pod 사전 확장 순서, 축소 게이트, Argo CD와
+replica 소유권, Dify 예외는 D-041에 기록한다.
+
+아래 KEDA cron 은 **매일 같은 시각에 반복되는 고정 방송**의 단순 예시다. 큐시트가
+방송마다 달라지는 경로에서는 이 YAML 을 Agent가 계속 고치지 않고 D-041의
+`CapacityPlan` 과 Executor를 쓴다.
 
 ```yaml
 apiVersion: keda.sh/v1alpha1

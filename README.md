@@ -8,8 +8,9 @@
 ```
 .github/workflows/
   app.yml        빌드 + 배포
-  tf.yml         plan(PR 전용) — apply는 로컬
+  tf.yml         fmt · validate (PR 전용) — plan도 apply도 하지 않는다
   scan.yml       gitleaks
+  docs.yml       결정 기록 인덱스 검사
 infra/
   00-cicd/       GitHub OIDC, IAM 역할, ECR
   01-network/    VPC, 서브넷, 라우팅, NAT
@@ -40,7 +41,7 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 `infra/`의 번호는 **의존 순서**다. `02`와 `03`은 `01`의 출력을 remote state로
 참조하고, `06`은 `02`가 만든 클러스터의 OIDC 프로바이더를 조회하므로 apply는
 반드시 이 순서를 지켜야 한다. apply는 로컬에서 하므로
-순서를 지키는 것은 사람의 몫이다 — `tf.yml` 은 plan만 돌린다.
+순서를 지키는 것은 사람의 몫이다 — `tf.yml` 은 문법과 포맷만 검사한다 (D-023).
 
 `03-data`와 `06-datastream`은 이름이 비슷하지만 다른 것이다. 앞은 서비스가
 읽고 쓰는 저장소, 뒤는 그 서비스를 관찰한 결과다. **state 키를 서로 바꿔 쓰면
@@ -52,13 +53,14 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 
 | | 트리거 | 하는 일 |
 |---|---|---|
-| `app.yml` | `apps/**` 변경 | 이미지 빌드 → 취약점 스캔 → ECR → 매니페스트 저장소에 태그 갱신 |
-| `tf.yml` | `infra/**` PR | plan만 — 무엇이 바뀔지 보여준다. apply는 로컬 |
+| `app.yml` | `apps/**` 변경 | PR은 `verify`(lint·test·build)까지. main 푸시에서 이미지 빌드 → Trivy 스캔 → ECR → 매니페스트 저장소에 태그 갱신 |
+| `tf.yml` | `infra/**` PR | `fmt`·`init -backend=false`·`validate` 만. **plan도 apply도 하지 않는다** — AWS 접근이 필요 없다 (D-023) |
 | `scan.yml` | 모든 PR·푸시, 주 1회 | 시크릿 유출 검사 |
+| `docs.yml` | `docs/**`·`AGENTS.md` 변경 | 결정 기록 인덱스가 낡았는지 검사 |
 
-세 개로 나눈 기준은 **실패했을 때 되돌리는 비용**이다.
+넷으로 나눈 기준은 **실패했을 때 되돌리는 비용**이다.
 앱 배포는 다시 하면 되지만 인프라는 그렇지 않고, 유출된 시크릿은 되돌릴 수 없다.
-그래서 인프라만 CI가 적용하지 않는다 — plan을 사람이 읽고 로컬에서 apply한다.
+그래서 인프라만 CI가 적용하지 않는다 — 사람이 로컬에서 plan을 읽고 apply한다.
 
 ## 최초 셋업
 
@@ -92,13 +94,14 @@ aws s3api put-bucket-encryption --bucket $B --server-side-encryption-configurati
 
 | 이름 | 값 |
 |---|---|
-| `AWS_TF_ROLE_ARN` | `tf.yml` plan용 IAM Role — `ReadOnlyAccess` |
+| `AWS_TF_ROLE_ARN` | Terraform용 IAM Role — `ReadOnlyAccess`. **지금 CI는 쓰지 않는다** — plan을 뺀 뒤(D-023) `tf.yml` 에 AWS 접근이 없다 |
 | `AWS_APP_ROLE_ARN` | 애플리케이션 배포용 IAM Role — ECR push 등 좁은 권한 |
 | `DEPLOY_REPO_TOKEN` | 매니페스트 저장소에 태그 갱신을 커밋할 fine-grained PAT.<br>`O2-live-deploy` 한 곳, `Contents: Read and write` 만. **만료 주의** |
 
 **두 역할을 반드시 분리한다.** 그리고 둘 다 쓰기 범위를 좁게 유지한다 —
-`plan` 은 임의 코드를 실행할 수 있으므로 CI 자격증명에 쓰기 권한을 주면
-PR 하나가 곧 인프라 변경 수단이 된다. (D-011)
+CI 자격증명에 쓰기 권한을 주면 PR 하나가 곧 인프라 변경 수단이 되기 때문이다 (D-011).
+plan을 뺀 지금은 `tf.yml` 이 AWS에 아예 붙지 않아, public 저장소에서 PR로 CI 코드를
+실행하는 경로가 하나 더 줄었다 (D-023).
 
 ### 3. Argo CD 등록
 
@@ -197,7 +200,7 @@ ConfigMap/Secret 키  ==  apps/api 의 Settings 필드  ==  .env.example 항목
 
 - [x] 저장소 골격
 - [x] `scan.yml` — gitleaks
-- [x] `tf.yml` — PR plan 전용 (apply는 로컬, 역할은 읽기 전용 · D-011)
+- [x] `tf.yml` — PR `fmt`·`validate` 전용 (plan 없음 · D-023, apply는 로컬)
 - [x] `app.yml` — 빌드 → ECR → 태그 갱신 커밋 (Argo가 배포)
 - [x] `apps/api` — FastAPI (Python). 초기에는 Spring Boot(Kotlin)였다
 - [x] 매니페스트를 `O2-live-deploy` 로 분리 (D-006)
