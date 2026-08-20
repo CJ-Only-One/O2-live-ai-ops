@@ -18,7 +18,13 @@ ML_READY_OUTPUT_PATH = "s3://o2-data-lake-066107819912/ml-ready/"
 
 
 def main() -> None:
-    """Glue 작업을 초기화하고 Raw JSON을 파티션된 Parquet으로 변환한다."""
+    """Glue 작업을 초기화하고 Raw JSON을 방송 단위(broadcast_id) 및 날짜별 파티션된 Parquet으로 변환한다."""
+    # 방송 종료 시점 옵션 트리거 인자 (--broadcast_id) 체크
+    target_broadcast_id = None
+    for arg in sys.argv:
+        if arg.startswith("--broadcast_id="):
+            target_broadcast_id = arg.split("=", 1)[1]
+
     args = getResolvedOptions(sys.argv, ["JOB_NAME"])
     glue_context = GlueContext(SparkContext.getOrCreate())
     spark = glue_context.spark_session
@@ -45,9 +51,17 @@ def main() -> None:
     event_ts = F.get_json_object(json_value, "$.event_ts")
     event_timestamp = F.to_timestamp(event_ts)
 
+    # broadcast_id 추출 (루트 또는 envelope 레벨)
+    broadcast_id_col = F.coalesce(
+        F.get_json_object(json_value, "$.broadcast_id"),
+        F.get_json_object(json_value, "$.envelope.broadcast_id"),
+        F.lit("GLOBAL")
+    )
+
     ml_ready_df = raw_df.select(
         F.get_json_object(json_value, "$.event_id").alias("event_id"),
         F.get_json_object(json_value, "$.event_name").alias("event_name"),
+        broadcast_id_col.alias("broadcast_id"),
         event_ts.alias("event_ts"),
         F.get_json_object(json_value, "$.service").alias("service"),
         F.get_json_object(json_value, "$.service_version").alias("service_version"),
@@ -59,10 +73,16 @@ def main() -> None:
         F.dayofmonth(event_timestamp).alias("day"),
     )
 
-    # 요구된 일일 전체 재생성 방식으로 날짜 파티션을 덮어쓴다.
+    # 라이브 방송 종료 시점 특정 방송 ID만 조준 압축하는 경우 필터링
+    if target_broadcast_id:
+        print(f"[info] 라이브 방송 종료 트리거 수신 - broadcast_id={target_broadcast_id} 대상 개별 압축 진행")
+        ml_ready_df = ml_ready_df.filter(F.col("broadcast_id") == target_broadcast_id)
+
+    # 방송 단위(broadcast_id) 및 날짜 파티션으로 Parquet 합병 저장
+    write_mode = "append" if target_broadcast_id else "overwrite"
     (
-        ml_ready_df.write.mode("overwrite")
-        .partitionBy("year", "month", "day")
+        ml_ready_df.write.mode(write_mode)
+        .partitionBy("broadcast_id", "year", "month", "day")
         .parquet(ML_READY_OUTPUT_PATH)
     )
 
@@ -71,3 +91,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
