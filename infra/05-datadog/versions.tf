@@ -26,6 +26,11 @@ terraform {
     # `datadog/` 이 아니라 `observability/` 다. 스택 번호도 쓰지 않는다.
     # 번호는 의존 순서라 바뀔 수 있고(D-025 에서 05는 media 예약이었다),
     # 키가 바뀌면 state 가 갈린다. 역할로 이름을 둔다.
+    #
+    # `datadog-new-org/` 접미사는 체험판 조직(AP1) -> 팀 조직(US5) 이주 때 붙었다.
+    # 구 조직의 대시보드·Monitor ID 를 든 옛 state 가 `observability/terraform.tfstate`
+    # 에 그대로 있어서 같은 키를 다시 쓸 수 없었다. "new" 는 이름으로서는 낡는 말이지만
+    # **키를 다시 바꾸면 state 가 또 갈리므로 그대로 둔다.**
     key          = "observability/datadog-new-org/terraform.tfstate"
     region       = "ap-northeast-2"
     encrypt      = true
@@ -38,8 +43,18 @@ terraform {
 # 남고, Secrets Manager data source 로 읽으면 **state 에 평문으로 남는다**
 # (data source 결과도 state 에 저장된다). D-026 과 같은 이유다.
 #
-#   $env:DD_API_KEY = "..."   # o2/dev/datadog 의 api-key
-#   $env:DD_APP_KEY = "..."   # o2/dev/datadog 의 app-key
+#   $env:DD_API_KEY = "..."   # o2/dev/datadog-new 의 api-key
+#   $env:DD_APP_KEY = "..."   # o2/dev/datadog-new 의 app-key
 provider "datadog" {
   api_url = var.datadog_api_url
+}
+
+# 대시보드 링크의 앱 도메인. `api_url` 에서 파생시킨다.
+#
+# 따로 변수로 두면 `datadog_api_url` 과 갈릴 수 있고, 그러면 apply 는 성공한 채로
+# output 링크만 다른 조직을 가리킨다 — 이주(AP1 -> US5) 때 실제로 그렇게 남아 있었다.
+#
+#   https://api.us5.datadoghq.com/ -> https://us5.datadoghq.com
+locals {
+  dd_app_url = replace(trimsuffix(var.datadog_api_url, "/"), "://api.", "://")
 }

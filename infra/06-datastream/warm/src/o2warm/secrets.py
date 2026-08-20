@@ -57,7 +57,7 @@ def resolve(
 
     출처 우선순위는 **직접 주입 → Secrets Manager → SSM** 입니다.
     Secrets Manager 가 SSM 보다 앞인 것은 이 저장소의 원본이 그쪽이기
-    때문입니다(`o2/dev/datadog`). SSM 은 대안 경로로 남겨 둡니다.
+    때문입니다(`o2/dev/datadog-new`). SSM 은 대안 경로로 남겨 둡니다.
 
     반환값의 의미는 모듈 docstring 의 표를 따릅니다.
     """
@@ -135,7 +135,7 @@ def _client(service: str, region: str | None):
 def _from_secrets_manager(secret_id: str, prop: str, region: str | None) -> str | None:
     """SecretString 이 JSON 이면 property 를, 아니면 문자열 전체를 씁니다.
 
-    `o2/dev/datadog` 은 `{"api-key": ..., "app-key": ...}` 형태라 property 가
+    `o2/dev/datadog-new` 은 `{"api-key": ..., "app-key": ...}` 형태라 property 가
     필요합니다. 단일 문자열 시크릿도 받아들이는 편이 호출자를 단순하게 합니다.
     """
     try:

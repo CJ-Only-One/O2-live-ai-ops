@@ -1,13 +1,13 @@
 variable "datadog_api_url" {
   description = <<-EOT
-    Datadog API 엔드포인트. **조직이 AP1 이라 기본값(US1)을 쓰면 안 된다.**
+    Datadog API 엔드포인트. **조직이 US5 라 기본값(US1)을 쓰면 안 된다.**
 
     `04-platform` 의 `datadog_site` 와 `06-datastream` 의 `datadog_site` 가
     가리키는 곳과 같은 조직이어야 한다. 세 곳이 갈리면 Agent·집계 Lambda·
     대시보드가 서로 다른 조직을 보고, 증상은 "대시보드가 빈다" 하나다.
   EOT
   type        = string
-  default     = "https://api.ap1.datadoghq.com/"
+  default     = "https://api.us5.datadoghq.com/"
 }
 
 variable "metric_prefix" {

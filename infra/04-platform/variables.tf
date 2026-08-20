@@ -138,7 +138,7 @@ variable "datadog_kubernetes_secret_name" {
 variable "datadog_secrets_manager_secret_name" {
   description = "api-key와 app-key JSON을 보관하는 AWS Secrets Manager 원본 Secret 이름. 이 리소스는 platform stack이 소유하지 않는다"
   type        = string
-  default     = "o2/dev/datadog"
+  default     = "o2/dev/datadog-new"
 }
 
 variable "datadog_secret_refresh_interval" {
@@ -148,9 +148,9 @@ variable "datadog_secret_refresh_interval" {
 }
 
 variable "datadog_site" {
-  description = "Datadog site. 현재 계정은 AP1 사이트를 사용한다"
+  description = "Datadog site. 현재 조직은 US5 사이트를 사용한다 (체험판 AP1 조직에서 이주)"
   type        = string
-  default     = "ap1.datadoghq.com"
+  default     = "us5.datadoghq.com"
 }
 
 # ── External Secrets Operator ───────────────────────────────────

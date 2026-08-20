@@ -38,7 +38,7 @@ git 히스토리가 곧 비밀이 된다.
 ```powershell
 $env:AWS_PROFILE = "o2-data"      # S3 백엔드용. 이 스택에 aws 프로바이더는 없지만 백엔드는 쓴다
 
-$raw = aws secretsmanager get-secret-value --secret-id o2/dev/datadog --query SecretString --output text
+$raw = aws secretsmanager get-secret-value --secret-id o2/dev/datadog-new --query SecretString --output text
 $j = $raw | ConvertFrom-Json
 $env:DD_API_KEY = $j.'api-key'
 $env:DD_APP_KEY = $j.'app-key'
@@ -56,11 +56,11 @@ terraform apply tfplan
 
 | 스택 | 변수 | 값 |
 |---|---|---|
-| `04-platform` | `datadog_site` | `ap1.datadoghq.com` |
-| `06-datastream` | `datadog_site` | `ap1.datadoghq.com` |
-| 여기 | `datadog_api_url` | `https://api.ap1.datadoghq.com/` |
+| `04-platform` | `datadog_site` | `us5.datadoghq.com` |
+| `06-datastream` | `datadog_site` | `us5.datadoghq.com` |
+| 여기 | `datadog_api_url` | `https://api.us5.datadoghq.com/` |
 
-**갈려도 apply 는 성공한다.** 증상은 "대시보드가 빈다" 하나다. AP1 조직인데
+**갈려도 apply 는 성공한다.** 증상은 "대시보드가 빈다" 하나다. US5 조직인데
 US1 기본값으로 보내면 403이 나고, `datadog.py` 가 그것을 삼켜 집계를 막지
 않기 때문이다(의도된 설계).
 

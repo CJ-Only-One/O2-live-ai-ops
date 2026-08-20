@@ -1537,7 +1537,7 @@ provider 상향은 6.0 upgrade guide를 보고 plan이 비는 것을 확인한 �
 
 집계 Lambda 가 Datadog 키를 SSM 사본에서 읽게 하려다 멈췄다. **키는 이미
 있었다** — `04-platform` 이 ESO 로 Agent 에 넣는 Secrets Manager
-`o2/dev/datadog` 이 그것이다. 사본을 만들지 않고 같은 시크릿을 Lambda 가
+`o2/dev/datadog-new` 가 그것이다. 사본을 만들지 않고 같은 시크릿을 Lambda 가
 직접 읽는다.
 
 ### 사본을 두면 회전이 사고가 된다
@@ -1569,7 +1569,7 @@ state 와 Lambda 콘솔에 평문으로 남는다.** state 버킷은 암호화·
 
 | 비밀 | 원본 | 소비자 |
 |---|---|---|
-| Datadog `api-key` | Secrets Manager `o2/dev/datadog` | Agent(ESO) + `o2-agg` |
+| Datadog `api-key` | Secrets Manager `o2/dev/datadog-new` | Agent(ESO) + `o2-agg` |
 | 조회 API `X-O2-Key` | SSM SecureString `/o2/warm/api-key` | `o2-warm-api` |
 
 `terraform.tfvars` 는 커밋되는 파일이고(루트 `.gitignore` 의
