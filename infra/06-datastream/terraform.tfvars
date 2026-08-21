@@ -8,8 +8,9 @@
 # 지표의 env 태그. 04-platform 의 environment 와 같아야 APM 과 이어진다.
 environment = "dev"
 
-datadog_secret_name     = "o2/dev/datadog-new"
-datadog_secret_property = "api-key"
+datadog_secret_name         = "o2/dev/datadog-new"
+datadog_secret_property     = "api-key"
+datadog_secret_app_property = "app-key" # o2-hot-api 의 Datadog 역쿼리(DD-APPLICATION-KEY)에만 쓰인다
 
 # SSM 대안 경로. Secrets Manager 를 쓰므로 비워 둔다.
 # 둘 다 지정하면 Secrets Manager 가 이긴다.
@@ -33,3 +34,9 @@ warm_api_key_param = "/o2/warm/api-key"
 
 # warm_api_key(값 직접 주입)는 여기 적지 않는다. 그 경로는 state 에 평문으로
 # 남으므로 로컬 실험용이다. 배포에는 위 warm_api_key_param 을 쓴다.
+
+# o2-hot-api 는 X-O2-Key 가 아니라 AWS_IAM(SigV4) 인증이다 — D-031: 이 계정은
+# Organizations 멤버 계정이라 Function URL 을 NONE(공개)으로 열면 조직 밖
+# 정책에 403 으로 막힌다. 값을 비워 두지 않는다 — 비우면 아무도 호출하지
+# 못한다(AWS_IAM 기본은 전부 거부). Dify EC2 인스턴스 역할(infra/06-agent).
+hot_api_invoker_role_arn = "arn:aws:iam::066107819912:role/o2-dev-dify-role"
