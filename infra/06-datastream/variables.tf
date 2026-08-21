@@ -83,6 +83,17 @@ variable "datadog_secret_property" {
   default     = "api-key"
 }
 
+variable "datadog_secret_app_property" {
+  description = <<-EOT
+    위 시크릿 JSON 에서 app-key 를 담은 property 이름. `o2-hot-api` 전용이다
+    — Datadog v1 `/query` 역쿼리는 api-key 만으로 인증되지 않고 반드시
+    app-key(DD-APPLICATION-KEY)를 함께 보내야 한다. o2-agg(집계 Lambda)는
+    전송(v2 series)만 하므로 이 property 를 쓰지 않는다.
+  EOT
+  type        = string
+  default     = "app-key"
+}
+
 variable "datadog_ssm_param" {
   description = <<-EOT
     Datadog API 키가 담긴 SSM SecureString 파라미터 이름. **대안 경로입니다** —
@@ -115,4 +126,30 @@ variable "datadog_site" {
   EOT
   type        = string
   default     = "us5.datadoghq.com"
+}
+
+variable "hot_api_invoker_role_arn" {
+  description = <<-EOT
+    `o2-hot-api` Function URL(`authorization_type = AWS_IAM`)을 호출할 수
+    있는 유일한 IAM 주체의 ARN. 이 리소스에는 공유 시크릿이 없다 —
+    D-031 에서 확인했듯 이 계정은 AWS Organizations 멤버 계정이라 Function
+    URL 을 공개(`NONE` + X-O2-Key)로 열면 조직 밖 정책에 403 으로 막힌다.
+    `AWS_IAM` 은 그 패턴에 걸리지 않을 가능성이 높고, 무엇보다 회전할 키가
+    없다.
+
+    기본값은 Dify EC2 인스턴스 역할(`infra/06-agent/iam.tf` 의
+    `aws_iam_role.dify`, 실제 조회한 ARN)이다. 이 스택은 06-agent 를
+    remote state 로 참조하지 않는다(`irsa.tf` 와 같은 이유 — 이름으로
+    직접 조회하거나, 여기처럼 실측 ARN 을 값으로 못 박는다). 그 역할
+    이름이 바뀌면 이 기본값도 함께 고쳐야 한다.
+
+    비우면 아무도 호출할 수 없다(AWS_IAM 기본은 전부 거부) — 검증 없이
+    배포만 먼저 하고 싶을 때만 비운다.
+
+    **미확인**: Dify 의 Custom Tool 이 이 역할 자격증명으로 SigV4 서명을
+    실제로 할 수 있는지는 아직 확인하지 않았다. 못 하면 EC2 인스턴스에서
+    로컬로 서명해 중계하는 프록시가 별도로 필요하다.
+  EOT
+  type        = string
+  default     = "arn:aws:iam::066107819912:role/o2-dev-dify-role"
 }
