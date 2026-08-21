@@ -63,7 +63,12 @@ variable "node_instance_types" {
       테스트 페이지 외에 뭐라도 하나 더 올리는 순간 이쪽으로 올려야 한다.
 
     t3.small 선택 근거: 3주 기준 t3.medium 대비 약 $27 절감.
-    부족해지면 instance_types만 바꿔 apply하면 노드그룹이 롤링 교체된다.
+
+    부족해지면 instance_types만 바꾸면 되지만 **롤링 교체가 아니다.**
+    이 값은 ForceNew라 plan에 `must be replaced`가 뜨고, node_group_name이
+    "default"로 고정돼 있어 create_before_destroy도 못 건다. 즉 노드그룹을
+    지운 뒤 새로 만든다 — 그동안 노드가 0대이고 모든 Pod가 Pending이다.
+    서비스가 뜬 상태에서 바꾸려면 중단 창을 잡고 해라.
   EOT
   type        = list(string)
   default     = ["t3.small"]
