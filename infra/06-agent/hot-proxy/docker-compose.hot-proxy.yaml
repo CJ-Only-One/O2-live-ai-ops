@@ -1,0 +1,39 @@
+# Dify 의 compose 에 얹는 조각. 단독으로 뜨지 않는다.
+#
+#   docker compose -f docker-compose.yaml -f /opt/o2-hot-proxy/docker-compose.hot-proxy.yaml up -d
+#
+# **이미지는 미리 빌드해서 이름으로만 참조한다.** compose 를 -f 로 여러 개
+# 겹치면 build context 의 상대 경로가 어느 파일 기준인지 헷갈리는 자리라
+# (첫 파일 기준으로 도는 판이 있다), 빌드를 분리해 그 문제를 없앤다.
+#
+#   docker build -t o2-hot-proxy:latest /opt/o2-hot-proxy
+services:
+  hot-proxy:
+    image: o2-hot-proxy:latest
+    container_name: o2-hot-proxy
+    restart: always
+
+    environment:
+      # 06-datastream 의 `terraform output -raw hot_api_url`
+      O2_HOT_API_URL: ${O2_HOT_API_URL:?O2_HOT_API_URL 를 .env 에 넣으세요}
+      AWS_REGION: ${AWS_REGION:-ap-northeast-2}
+      # 비우면 인증 없이 받는다. 이 프록시는 호스트로 포트를 내보내지
+      # 않으므로 그 상태로도 밖에서는 못 부른다.
+      O2_HOT_PROXY_KEY: ${O2_HOT_PROXY_KEY:-}
+
+    # **두 망에 모두 붙어야 한다.** Dify 의 api·worker 가 같은 모양이다.
+    #
+    #   ssrf_proxy_network — squid 가 이 컨테이너에 닿는 길. Dify 의 툴
+    #     호출은 전부 squid 를 거친다(core/tools/custom_tool/tool.py).
+    #   default          — IMDS(169.254.169.254)와 Function URL 로 나가는 길.
+    #
+    # ssrf_proxy_network 는 `internal: true` 라 바깥으로 못 나간다. 여기만
+    # 붙이면 자격증명을 못 받아 **부팅 직후부터 재시작을 반복한다** —
+    # 실제로 그렇게 한 번 겪었다. 로그에 "자격증명을 찾지 못했습니다" 만
+    # 남고 Dify 쪽에는 아무 단서도 안 생긴다.
+    networks:
+      - ssrf_proxy_network
+      - default
+
+    # 포트를 호스트로 내보내지 않는다. 밖에서 부를 일이 없고, 내보내면
+    # 서명을 대신 해 주는 창구가 인스턴스 밖으로 열린다.
