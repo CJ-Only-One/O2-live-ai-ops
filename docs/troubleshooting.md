@@ -28,6 +28,7 @@
 | T-010 | 문서·자료의 메뉴 이름이 화면과 다르다 | Dify 출력 노드, Datadog Test 버튼, Monitor 섹션명 |
 | T-011 | Dify 는 워크플로가 실패해도 HTTP 200 을 준다 | `data.status`, 비동기, `raise` |
 | T-012 | Dify 가 넘긴 값을 안 쓰는데 에러도 안 난다 | 모르는 입력 키 무시, 계약 불일치 |
+| T-013 | 아무 일도 안 하는데 클러스터가 느려진다 | `CPUCreditBalance`, t3 버스트, `kubectl top`, `/proc/*/task` |
 
 ---
 
@@ -462,3 +463,123 @@ T-002 와 같은 종류인데 더 나쁘다 — T-002 는 답변에 `{{변수}}`
 
 계약을 바꿀 때 "어디를 같이 고쳐야 하는가" 를 문서에 적어두지 않으면
 반드시 한 곳이 남는다.
+
+---
+
+## T-013. 아무 일도 안 하는데 클러스터가 느려진다
+
+**증상** — 에러가 없다. 파드는 `Running` 이고 재시작도 0 이다. 그런데 전반적으로
+느리다. 임계값을 넘는 지표도 없어서 알람이 울리지 않는다.
+
+이 절은 **부하 테스트를 하기 전에 반드시 확인할 것**을 담는다. 크레딧이 없는
+노드에서 부하를 걸면 앱 성능이 아니라 스로틀링을 재게 되고, 그 숫자는
+그럴듯하게 나오지만 틀린 값이다.
+
+### 1. 크레딧부터 본다
+
+노드그룹이 `t3` 계열이면(`02-eks/terraform.tfvars` 의 `node_instance_types`)
+CPU 를 항상 다 쓸 수 있는 것이 아니다. 시간당 정해진 만큼 크레딧을 받고,
+그보다 많이 쓰면 빚을 진다.
+
+```bash
+ID=$(aws ec2 describe-instances --region ap-northeast-2 \
+  --filters "Name=private-dns-name,Values=<노드이름>" \
+  --query 'Reservations[0].Instances[0].InstanceId' --output text)
+
+for M in CPUCreditBalance CPUSurplusCreditBalance CPUSurplusCreditsCharged; do
+  echo "== $M"
+  aws cloudwatch get-metric-statistics --region ap-northeast-2 \
+    --namespace AWS/EC2 --metric-name $M \
+    --dimensions Name=InstanceId,Value=$ID \
+    --start-time $(date -u -v-6H +%Y-%m-%dT%H:%M:%SZ) \
+    --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
+    --period 3600 --statistics Average \
+    --query 'sort_by(Datapoints,&Timestamp)[].[Timestamp,Average]' --output text
+done
+```
+
+`CPUCreditBalance` 가 0 이면 baseline 으로 제한된 상태다. `t3.small` 의
+baseline 은 **노드당 400m** 이다 — `kubectl top nodes` 가 그보다 높게 나오면
+빚을 지고 있다는 뜻이다.
+
+T3 기본값이 `unlimited` 이라 크레딧이 떨어져도 그냥 돌아간다. 대신 초과분이
+과금된다. 모드는 이렇게 본다.
+
+```bash
+aws ec2 describe-instance-credit-specifications --instance-ids $ID --region ap-northeast-2
+```
+
+**빚은 인스턴스에 붙어 있다.** 노드를 교체하면 사라지지만 종료 시점에
+미상환분이 청구된다. 실측값과 금액 계산은 M-008 에 있다.
+
+### 2. 어느 파드가 먹는지 본다
+
+```bash
+kubectl top pods -A --sort-by=cpu
+```
+
+`metrics-server` 가 없으면 이 명령이 안 된다. `describe nodes` 는 **요청량**
+(예약한 양)만 보여주므로 실사용량을 알 수 없다.
+
+### 3. 파드 안에서 어느 스레드인지 좁힌다
+
+컨테이너에 `ps` 도 `py-spy` 도 없는 경우가 많다. `/proc` 을 직접 읽는다.
+
+```bash
+# 스레드별 누적 CPU 시간 (14번 필드 = utime, 단위는 tick — 보통 1/100초)
+kubectl exec -n <ns> <pod> -- sh -c \
+  'for t in /proc/1/task/*; do echo "$(basename $t) $(awk "{print \$14}" $t/stat) $(cat $t/comm)"; done' \
+  | sort -k2 -n -r | head -5
+```
+
+한 스레드만 값이 압도적이면 그 스레드가 범인이다. **현재 속도**는 두 번 재서
+차이를 본다 — 10초에 약 1000 ticks 면 한 코어를 통째로 쓰는 중이다.
+
+```bash
+kubectl exec -n <ns> <pod> -- sh -c \
+  'awk "{print \$14}" /proc/1/task/31/stat; sleep 10; awk "{print \$14}" /proc/1/task/31/stat'
+```
+
+I/O 대기인지 순수 스핀인지는 이걸로 가른다.
+
+```bash
+kubectl exec -n <ns> <pod> -- cat /proc/1/task/31/syscall
+```
+
+`running` 이면 유저 공간에서 도는 중 — 폴링이 아니라 바쁜 루프다.
+
+### 실제 사례 (2026-08-20)
+
+`api` 가 987m, `order-worker` 가 955m 을 **트래픽 0 인 상태에서** 상시 소모하고
+있었다. 마지막 주문 처리가 같은 날 새벽 1시였고 측정은 오후 5시 40분이었다.
+
+원인은 이벤트 SDK(`o2events`) 의 emitter 스레드였다. `_run()` 의 `deadline`
+갱신이 `if batch:` 안에 있어, 큐가 비어 있으면 배치가 비어 그 블록에 못 들어가고
+`deadline` 이 과거에 멈춘다. 그러면 `get(timeout=...)` 의 timeout 이 0.0 으로
+고정되어 즉시 반환하고 루프가 쉬지 않고 돈다.
+
+**이벤트가 없을수록 CPU 를 더 쓴다.** 이벤트가 흐르면 `batch` 가 차면서
+`deadline` 이 정상 갱신되므로, 바쁜 서비스에서는 안 보이고 한가한 서비스에서
+먼저 드러난다.
+
+`chat-gateway` 만 멀쩡했던 것이 결정적인 단서였다. 그 서비스는 TypeScript 라
+이 SDK 대신 같은 봉투를 내는 얇은 클라이언트를 쓴다
+(`apps/chat-gateway/src/events.ts`). **Python SDK 를 쓰는 두 서비스만 정확히
+영향을 받았다.**
+
+수정은 o2-sdk-for-event#2 (`5b4d86e`, 0.3.1), 반영은 이 저장소 #91 이다.
+배포 후 4m·1m 으로 떨어졌다.
+
+### 왜 늦게 찾았나
+
+**`metrics-server` 가 없어서 `kubectl top` 을 쓸 수 없었다.** CPU 를 태우고
+있다는 사실 자체가 안 보였다. 노드 여유를 `describe nodes` 의 요청량으로만
+보고 있었는데, `api` 의 CPU 요청량은 100m 이라 표에는 얌전하게 찍힌다.
+실제로 987m 을 쓰고 있어도 그 차이를 볼 수단이 없었다.
+
+같은 날 `metrics-server` 를 넣자마자 5분 만에 드러났다.
+
+증상 쪽도 고약했다. 크레딧 고갈은 **에러를 내지 않는다.** 파드가 죽지도, 재시작
+하지도 않는다. 알람을 걸 임계값도 마땅치 않다 — 방송 시작 직후에는 CPU 가 원래
+높기 때문이다. 부하 테스트를 먼저 돌렸다면 "`chat-gateway` 가 4,000 을 못
+버틴다" 는 결론을 냈을 것이고, 그 숫자로 40,000 을 외삽했을 것이다.
