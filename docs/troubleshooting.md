@@ -33,6 +33,7 @@
 | T-015 | 부하 테스트에서 서버가 느린 게 아니라 k6 가 못 따라간 것이었다 | `dropped_iterations`, `preAllocatedVUs`, `maxVUs`, 생성기 병목 |
 | T-016 | 노드를 바꿨더니 총 여유가 45% 인데 파드가 안 뜬다 | `Insufficient memory`, DaemonSet Pending, 파드 쏠림, `topologySpreadConstraints` |
 | T-017 | 부하도 안 줬는데 AI 에이전트가 계속 깨어난다 | `notify_no_data`, `@webhook-dify`, Downtime, EWMA baseline 오염 |
+| T-018 | 과거 사례가 늘 비는데 워크플로는 성공으로 끝난다 | `s3vectors:GetVectors`, `returnMetadata`, 의도한 조용한 실패, 로그에만 남음 |
 
 ---
 
@@ -897,3 +898,80 @@ Dify 로그 → Worker Lambda → ingress Lambda → Datadog webhook → 모니�
 
 **받는 사람이 없는 알림은 조용히 실패한다.** 비용도 지금은 작아서 청구서로도
 안 드러났다.
+
+---
+
+## T-018. 과거 사례가 늘 비는데 워크플로는 성공으로 끝난다
+
+**증상** — 이력을 붙였는데 Dify 의 `past_cases` 가 언제나 빈 문자열이다.
+겉으로는 아무 문제가 없다.
+
+- Dify 워크플로 `succeeded`
+- Lambda 성공, DLQ 비어 있음, 알람 안 울림
+- `incidents/` 에 원본 JSON 도 정상으로 쌓인다
+- **저장은 되는데 검색만 안 된다**
+
+원인은 CloudWatch 로그 한 줄에만 있다.
+
+```
+history search failed: AccessDeniedException ... is not authorized to perform:
+s3vectors:GetVectors on resource: .../index/incidents
+```
+
+### 원인 — QueryVectors 는 GetVectors 도 요구한다
+
+`s3vectors:QueryVectors` 만 주면 거부된다. `returnMetadata = true` 로 부르면
+AWS 가 메타데이터를 돌려주면서 **`s3vectors:GetVectors` 를 함께 검사한다.**
+
+| 신원 기반 정책 | 결과 |
+|---|---|
+| `QueryVectors` 만 | **AccessDeniedException** |
+| `QueryVectors` + `GetVectors` | 200 |
+| `PutVectors` 만 (저장) | 200 — 그래서 저장은 되고 검색만 죽는다 |
+
+**저장이 되니까 권한은 맞다고 착각하기 쉽다.** 쓰기와 읽기가 요구하는 액션
+집합이 다르다.
+
+T-014 와 같은 종류의 함정이다 — API 이름(`QueryVectors`)만 보고 권한을 맞추면
+걸린다. 그쪽은 `InvokeFunctionUrl` 에 `InvokeFunction` 이 더 필요했다.
+
+### 가려내는 법
+
+증상이 조용하므로 **로그를 먼저 본다.** 알람을 기다리면 영원히 안 온다.
+
+```bash
+aws logs tail /aws/lambda/datadog-to-dify-worker --since 30m --region ap-northeast-2 \
+  | grep -E "history"
+```
+
+정상이면 이 줄이 나온다. `matched 0 of 0` 은 권한이 아니라 **아직 이력이
+비었다**는 뜻이므로 구분해야 한다.
+
+```
+history: matched 2 of 3
+history: stored incidents/dt=2026-08-21/....json
+```
+
+권한만 따로 떼어 확인하려면 CLI 로 같은 호출을 해 본다.
+
+```bash
+aws s3vectors list-vectors --vector-bucket-name o2-dev-dify-history-vectors \
+  --index-name incidents --region ap-northeast-2
+```
+
+### 왜 늦게 찾았나
+
+**조용히 실패하도록 일부러 만들었기 때문이다.** 검색은 보조 기능이라 실패해도
+예외를 올리지 않는다 — 과거 사례 하나 때문에 알림 분석 전체를 잃지 않으려는
+설계이고, 그 판단 자체는 맞다(D-044).
+
+문제는 **그 방어가 동시에 눈가리개라는 점이다.** 알람도 DLQ 도 안 울리므로
+로그를 직접 열어 보기 전에는 기능이 죽은 것을 모른다. 저장은 정상이라
+`incidents/` 만 확인하면 "잘 되는구나" 로 끝난다.
+
+배포 직후 로그를 한 번 봤기 때문에 잡았다. **안 봤으면 발표 때 "과거 사례를
+참고합니다" 라고 말하면서 실제로는 한 번도 참고하지 않는 상태였다.**
+
+조용한 실패를 의도했다면 **그것을 확인하는 절차도 같이 만들어야 한다.**
+지금은 배포 후 로그 확인이 그 절차다. 검색 실패가 반복되는 것이 문제가 되면
+`history search failed` 를 메트릭 필터로 잡아 알람에 붙인다.

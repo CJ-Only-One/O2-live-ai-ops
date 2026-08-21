@@ -190,11 +190,23 @@ data "aws_iam_policy_document" "alert_worker" {
     resources = ["arn:aws:bedrock:${var.region}::foundation-model/${local.embed_model_id}"]
   }
 
+  # ★ QueryVectors 하나로는 안 된다. GetVectors 도 있어야 한다 — 실측:
+  #
+  #     AccessDeniedException ... is not authorized to perform:
+  #     s3vectors:GetVectors on resource: .../index/incidents
+  #
+  #   `returnMetadata = true` 로 부르면 AWS 가 메타데이터를 돌려주면서
+  #   GetVectors 를 함께 검사한다. API 이름만 보고 권한을 맞추면 걸린다
+  #   (iam.tf 의 InvokeFunctionUrl/InvokeFunction 과 같은 모양이다).
+  #
+  #   더 나쁜 것은 **이 실패가 알림 분석을 멈추지 않는다는 점이다.** 검색만
+  #   조용히 비고 워크플로는 succeeded 로 끝난다. 로그를 봐야 보인다.
   statement {
     sid    = "SearchAndStoreVectors"
     effect = "Allow"
     actions = [
       "s3vectors:QueryVectors",
+      "s3vectors:GetVectors",
       "s3vectors:PutVectors",
     ]
     resources = [aws_s3vectors_index.incidents.index_arn]
