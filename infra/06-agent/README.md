@@ -183,6 +183,7 @@ Dify 콘솔은 **LLM API 키를 보관하고 sandbox 컨테이너로 임의 코�
 | `docker: permission denied` | 그룹 반영이 안 됐다. 세션을 다시 연다 |
 | 파드에서 Dify 호출이 타임아웃 | 노드 SG 가 아닌 곳에서 부른 것이다. 인그레스는 노드 SG 로만 열려 있다 |
 | plugin_daemon 이 계속 재시작 | 메모리 부족. `free -m` 확인 후 인스턴스 등급을 올린다 |
+| 로그에 `history search failed: UnknownServiceError` | Lambda 런타임의 boto3 가 `s3vectors` 를 모른다. 같은 줄에 boto3 버전이 찍힌다. 런타임을 올리거나(`python3.13`) zip 에 최신 boto3 를 넣는다. **알림 분석 자체는 계속 돈다** — 이력만 안 쌓인다 |
 
 ## 워크플로 소스
 
@@ -192,9 +193,84 @@ Dify 안에서 만든 워크플로는 Terraform 이 만들지 않는다. DSL 로
 알림을 여기까지 실어 나르는 Lambda 는 [`lambda.tf`](lambda.tf) 와
 [`lambda/ingress.py`](lambda/ingress.py) 와 [`lambda/worker.py`](lambda/worker.py) 에 있다.
 
+## 이력 저장소
+
+에이전트가 내린 판단을 쌓아, 다음 알림이 왔을 때 **"이미 해결한 인시던트와
+비슷한가"** 를 판정한다. 정의는 [`history.tf`](history.tf) 에 있다.
+
+| 무엇 | 어디 | 쓰임 |
+|---|---|---|
+| 원본 JSON | `o2-dev-dify-history-*` (S3) | 진실은 여기 하나뿐. 재색인·분석·MTTR |
+| 벡터 | `o2-dev-dify-history-vectors` / 인덱스 `incidents` (S3 Vectors) | 비슷한 인시던트 검색 |
+
+```
+s3://…-history/incidents/dt=2026-08-21/<cycle_key>.json   Triggered + Dify 판단
+s3://…-history/resolutions/<cycle_key>.json               Recovered 시각
+```
+
+### 왜 Dify 번들 weaviate 가 아닌가
+
+Dify 는 벡터 DB(weaviate)를 이미 컨테이너로 들고 있다. 그런데 그것은
+**루트 볼륨에만 있고 `delete_on_termination = true`** 라, 아래 "함정" 표의
+"인스턴스 교체 = 워크플로 전멸" 이 그대로 적용된다. 이력은 이 프로젝트의
+산출물이므로 EC2 밖에 둔다.
+
+S3 Vectors 는 2025년 12월 GA 이고 서울 리전에서 쓸 수 있다.
+이 규모(월 5,000건)에서 OpenSearch 대비 비용이 두 자릿수 배 싸다.
+
+### 흐름
+
+검색과 저장이 **전부 `lambda/worker.py` 안에서** 끝난다.
+
+```
+알림 → 임베딩 1회(Bedrock Titan) → S3 Vectors 검색 → past_cases 로 Dify 실행 → 저장
+```
+
+**Dify 는 벡터를 모른다.** 시작 노드에 텍스트 변수(`past_cases`)가 하나 는 것이
+전부다 — 지식 검색 노드도 외부 지식 API 도 없다.
+입력 계약은 [`dify/README.md`](dify/README.md) 1.1.1.
+
+검색용 벡터와 저장용 벡터가 같다. 그래서 Bedrock 호출이 알림당 한 번이다.
+이유는 `lambda/worker.py` 의 `_alert_text` 주석에 있다.
+
+### 켜져 있는 파이프라인은 하나뿐이다
+
+`lambda_o2.tf` 의 두 번째 파이프라인은 **같은 zip 을 공유하지만 이력은 꺼져 있다.**
+환경변수(`HISTORY_BUCKET` 등)가 없으면 그 기능만 꺼지고 중계는 정상으로 돈다.
+
+**환경변수만 복사해 붙이지 마라.** 두 파이프라인이 같은 Datadog 모니터를
+받으면 `cycle_key` 가 같아서 서로의 인시던트를 덮어쓴다. 켜려면 키에
+파이프라인 구분을 먼저 넣는다.
+
+### MTTR
+
+Datadog 은 한 장애에 `Triggered` 와 `Recovered` 를 두 번 보내고 `cycle_key` 가
+그 둘을 묶는다. 두 파일의 시각 차가 MTTR(장애 발생부터 복구까지)이다.
+
+```
+MTTR = resolutions/<cycle_key>.json  －  incidents/…/<cycle_key>.json
+```
+
+`Recovered` 는 Dify 로 보내지 않지만 **시각은 남긴다** (`lambda/ingress.py`).
+
+### 이력 쪽에서 아직 안 한 것
+
+- **검증 필터.** 지금은 사람이 검증하지 않은 판단도 검색된다.
+  `human_verified` 메타데이터는 붙어 있지만 항상 `false` 다. 지금 필터를
+  걸면 결과가 늘 0건이라 기능이 죽은 것을 눈치채기 어렵다.
+  사례가 쌓이면 `_search` 에 메타데이터 필터를 걸고, 그 전까지는
+  프롬프트의 "참고이지 정답이 아니다" 문장이 유일한 방어선이다
+  (근거: `docs/architecture.md` 7.4)
+- **`outcome` 채우기.** `resolved` · `mttr_sec` · `root_cause_label` 이 비어 있다.
+  `incidents/` 와 `resolutions/` 를 `cycle_key` 로 짝짓는 재색인 스크립트가
+  한 번에 채운다. 검증 필터와 같이 만든다
+- **Athena.** 원본이 `dt=` 로 파티션되어 있어 Glue 테이블만 얹으면 되지만,
+  건수가 적어 아직 `aws s3 cp` 로 충분하다
+
 ## 아직 안 한 것
 
-- **EBS 스냅샷.** 개발 단계라 걸지 않았다. 워크플로 자체는 [`dify/`](dify/) 의 DSL 로 백업되지만
-  **지식베이스와 실행 이력은 루트 볼륨에만 있다.** 그것들이 자산이 되는 시점에 DLM 으로 건다
+- **EBS 스냅샷.** 개발 단계라 걸지 않았다. 워크플로 자체는 [`dify/`](dify/) 의 DSL 로 백업되고
+  **인시던트 이력은 S3 로 빠져나갔다.** 남은 것은 Dify 지식베이스와 워크플로 postgres 다.
+  그것들이 자산이 되는 시점에 DLM 으로 건다
 - **Datadog 계측.** EKS 밖이라 클러스터 에이전트가 안 잡는다. 필요해지면 호스트 에이전트를 따로 넣는다
 - **HA.** 단일 인스턴스다. 에이전트 운영 평면이므로 서비스 SLA 대상이 아니다
