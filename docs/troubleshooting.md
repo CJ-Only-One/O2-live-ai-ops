@@ -33,7 +33,7 @@
 | T-015 | 부하 테스트에서 서버가 느린 게 아니라 k6 가 못 따라간 것이었다 | `dropped_iterations`, `preAllocatedVUs`, `maxVUs`, 생성기 병목 |
 | T-016 | 노드를 바꿨더니 총 여유가 45% 인데 파드가 안 뜬다 | `Insufficient memory`, DaemonSet Pending, 파드 쏠림, `topologySpreadConstraints` |
 | T-017 | 부하도 안 줬는데 AI 에이전트가 계속 깨어난다 | `notify_no_data`, `@webhook-dify`, Downtime, EWMA baseline 오염 |
-| T-018 | 과거 사례가 늘 비는데 워크플로는 성공으로 끝난다 | `s3vectors:GetVectors`, `returnMetadata`, 의도한 조용한 실패, 로그에만 남음 |
+| T-018 | 과거 사례가 늘 비는데 워크플로는 성공으로 끝난다 | `s3vectors:GetVectors`, `returnMetadata`, 의도한 조용한 실패, 웜 컨테이너가 옛 자격증명을 든다 |
 
 ---
 
@@ -959,6 +959,53 @@ aws s3vectors list-vectors --vector-bucket-name o2-dev-dify-history-vectors \
   --index-name incidents --region ap-northeast-2
 ```
 
+### 고쳤는데 그대로다 — 실행 환경이 옛 자격증명을 들고 있다
+
+권한을 고쳐 `apply` 한 뒤에도 **같은 에러가 계속 났다.** 정책은 분명히 맞았다.
+
+```bash
+# 인라인 정책에 GetVectors 가 들어 있고 Resource 도 에러 메시지와 글자까지 같다
+aws iam get-role-policy --role-name o2-dev-dify-alert-worker-role \
+  --policy-name o2-dev-dify-alert-worker
+
+# 조건 키가 없으므로 시뮬레이터를 믿어도 된다 (T-014 의 함정은 조건 키 얘기다)
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::<계정>:role/o2-dev-dify-alert-worker-role \
+  --action-names s3vectors:QueryVectors s3vectors:GetVectors \
+  --resource-arns arn:aws:s3vectors:ap-northeast-2:<계정>:bucket/<버킷>/index/incidents
+# → 셋 다 allowed
+```
+
+**Lambda 실행 환경이 정책 변경 전에 받은 자격증명을 캐시하고 있었다.**
+IAM 변경은 새 세션에 즉시 반영되지만 살아 있는 세션에는 늦게 붙는다.
+
+가려내는 단서는 **로그 스트림 ID** 다. 실패한 호출이 전부 같은 스트림이면
+같은 실행 환경이다.
+
+```bash
+aws logs tail /aws/lambda/datadog-to-dify-worker --since 30m --region ap-northeast-2 \
+  | grep -E "INIT_START|history"
+```
+
+`INIT_START` 가 없으면 웜이다. 새 실행 환경에서 돈 회차는 스트림 ID 가 다르고
+`INIT_START` 가 찍힌다 — 그때 `history: matched 3 of 3` 로 바뀌었다.
+
+**함정: 확인하려고 알림을 자주 쏘면 그 컨테이너가 안 죽는다.** 2~3분 간격으로
+테스트하면 고장난 환경을 직접 붙잡고 있는 셈이다. **약 15분 유휴로 두면**
+회수된다. `update-function-configuration` 으로 억지로 흔들지 마라 — terraform
+state 와 어긋나 다음 plan 에 엉뚱한 diff 가 뜬다.
+
+급하면 페이로드를 만들어 직접 부르는 편이 빠르다. Ingress 를 거치지 않으므로
+webhook 시크릿도 필요 없다.
+
+```bash
+aws lambda invoke --function-name datadog-to-dify-worker --region ap-northeast-2 \
+  --cli-binary-format raw-in-base64-out --payload file://payload.json out.json
+```
+
+이때 `cycle_key` 를 알아볼 수 있는 값으로 두면 나중에 테스트 데이터만 골라낼
+수 있다. 이력에 실제로 한 건이 쌓이기 때문이다.
+
 ### 왜 늦게 찾았나
 
 **조용히 실패하도록 일부러 만들었기 때문이다.** 검색은 보조 기능이라 실패해도
@@ -975,3 +1022,9 @@ aws s3vectors list-vectors --vector-bucket-name o2-dev-dify-history-vectors \
 조용한 실패를 의도했다면 **그것을 확인하는 절차도 같이 만들어야 한다.**
 지금은 배포 후 로그 확인이 그 절차다. 검색 실패가 반복되는 것이 문제가 되면
 `history search failed` 를 메트릭 필터로 잡아 알람에 붙인다.
+
+두 번째로 늦은 이유는 따로다. **고친 뒤에도 같은 에러가 나오니 "정책이 틀렸나"
+로 돌아가 정책만 세 번 다시 봤다.** 정책은 처음부터 맞았고 봐야 할 것은
+로그 스트림 ID 였다. 같은 에러 메시지라도 **고치기 전과 후는 다른 사건**이다 —
+고친 뒤에도 같은 증상이면 원인이 같다고 가정하지 말고 "변경이 이 호출에
+도달했는가" 를 먼저 묻는다.
