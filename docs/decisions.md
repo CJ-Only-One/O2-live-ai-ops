@@ -56,6 +56,8 @@
 | D-039 | CloudFront 는 `/hls` 만 통과시킨다 | `07-media` 신설, 캐시 정책 둘, `hlsCDNSecret` 공유 |
 | D-040 | 재생 복구는 회로 차단기로 묶는다 | 초당 50건 폭주, 조용한 영구 정지, 숨김 탭 정책 |
 | D-041 | 큐시트로 미리 늘리되 AI가 스케일러가 되지는 않는다 | 큐시트, CapacityPlan, 결정론적 실행, HPA·KEDA 보정, Karpenter 안전망, Dify 제외 |
+| D-042 | `o2-hot-api` 는 `AWS_IAM`(SigV4)이다 | D-031 후속, 멤버 계정은 SCP/RCP 조회 불가, `aws_lambda_permission`, Dify SigV4 미확인 |
+| D-043 | Dify 는 SigV4 를 못 한다 — 서명을 프록시로 분리한다 | `ApiProviderAuthType`, `hot-proxy`, squid allowlist, `internal: true`, IMDS |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -2437,3 +2439,169 @@ HPA를 붙이기 위해 Dify를 대상 EKS로 옮기면 장애 대응기가 장�
 늘리지 않는다. 무상태 API는 요청량 기반 HPA 후보이고, workflow/Celery worker는
 CPU보다 queue backlog 기반 KEDA 후보이다. PostgreSQL·Redis·vector store는 먼저
 외부화해야 하며 HPA 대상이 아니다.
+
+---
+
+## D-042. `o2-hot-api` 는 `AWS_IAM`(SigV4)이다 — 이 계정에서는 조직 정책을 완화할 수 없다
+
+D-031 이 남긴 미해결 질문("Function URL 인그레스를 어떻게 열 것인가")에 대한
+답이다. Hot Path(`o2-hot-api`, Datadog 역쿼리) 구현 중 같은 문제를 다시 만났고,
+이번에는 "완화가 가능한지" 자체를 실제로 확인했다.
+
+### 확인한 것
+
+```
+IAM 유저(KDH) → 그룹 Only_One → AdministratorAccess(계정 내 전체 권한)
+
+aws organizations describe-organization         → AccessDeniedException
+aws organizations list-policies --filter SERVICE_CONTROL_POLICY   → AccessDeniedException
+aws organizations list-policies --filter RESOURCE_CONTROL_POLICY  → AccessDeniedException
+```
+
+계정 내 IAM 권한이 이미 최대치(`AdministratorAccess`)인데도 막힌다. 이건 IAM
+권한 문제가 아니다 — `organizations:DescribeOrganization`/`ListPolicies` 같은
+Organizations API는 **멤버 계정에서는 어떤 IAM 정책을 줘도 호출할 수 없고**,
+조직의 관리(management) 계정이나 위임된 관리자만 호출할 수 있다. 이 계정
+(`066107819912`)은 멤버 계정이므로, SCP/RCP를 보거나 고칠 방법이 이 계정 어떤
+유저에게도 없다. D-031의 "가설"이 여기서 "확인된 구조적 제약"으로 바뀐다.
+
+### 그래서 고른 것
+
+D-031이 대안으로 적어 둔 넷 중 "가장 깨끗하다"고 짚었던 것 — Function URL
+인증을 `NONE`(+ 공유 시크릿) 대신 **`AWS_IAM`으로 바꾼다.**
+
+```
+authorization_type = "AWS_IAM"
+
+aws_lambda_permission {
+  action                  = "lambda:InvokeFunctionUrl"
+  principal                = "<호출을 허용할 IAM 역할 ARN>"
+  function_url_auth_type  = "AWS_IAM"
+}
+```
+
+익명(`Principal: "*"`) 리소스가 아니므로 D-031이 관찰한 차단 패턴(공개
+Function URL에 대한 조직 정책)에 해당하지 않을 가능성이 높다. 그리고 무엇보다
+**공유 키가 사라진다** — `X-O2-Key`는 애초에 "Dify가 SigV4를 못 하니 대신 쓰는
+우회책"이었으므로(`o2warm/handlers/serve.py` docstring), SigV4가 되면 그 우회책
+자체가 필요 없어진다. `o2hot/secrets.py`에 조회 API용 키 저장·조회 로직이
+없는 이유가 이것이다 — `o2-warm-api`와 달리 인증을 코드가 하지 않는다.
+
+기본 허용 principal은 Dify EC2 인스턴스 역할
+(`arn:aws:iam::066107819912:role/o2-dev-dify-role`, `infra/06-agent/iam.tf`의
+`aws_iam_role.dify`)이다. 06-agent를 remote state로 참조하지 않는다 —
+`irsa.tf`가 클러스터를 이름으로 직접 조회하는 것과 같은 이유로, 여기서는
+실측한 ARN 값을 변수 기본값으로 못 박았다. 그 역할 이름이 바뀌면 이 기본값도
+함께 고쳐야 한다.
+
+### 확인한 결과 — 경로는 열렸다
+
+**가설이 맞았다.** `AWS_IAM` Function URL 은 이 계정에서 정상 동작한다.
+D-031 이 `NONE` 에서 본 조직 차원의 403 이 여기서는 나오지 않는다.
+
+| 테스트 | 결과 |
+|---|---|
+| 서명 없는 요청 | 403 (의도대로 차단) |
+| 인터넷에서 SigV4 서명 | 200 |
+| **Dify EC2 (`o2-dev-dify-role`) 에서 SigV4 서명** | **200** |
+| `POST /v1/hot/datadog/query` 실제 역쿼리 | 200, 시계열 반환 (`by {pod_name}` 은 28 계열) |
+
+호출자 ARN 은 함수 로그에 남는다
+(`caller=arn:aws:sts::…:assumed-role/o2-dev-dify-role/i-…`).
+
+여기까지 오는 데 **액션이 하나 더 필요하다는 것**이 걸림돌이었다.
+`lambda:InvokeFunctionUrl` 만으로는 403 이고 `lambda:InvokeFunction` 도
+함께 줘야 한다. 증상이 D-031 과 똑같아서 조직 정책으로 오해하기 쉽다 —
+가려내는 방법과 시뮬레이터의 함정은 **T-014** 에 적었다.
+
+### 아직 확인 못 한 것
+
+여기서 검증한 것은 **호출 경로**이지 Dify 제품 기능이 아니다. Dify 의
+Custom Tool(OpenAPI 3.0)이 SigV4 서명을 스스로 할 수 있는지는 아직
+확인하지 않았다 — 위 200 은 EC2 에서 인스턴스 역할로 직접 서명해 얻은
+것이다. Dify UI 가 SigV4 를 지원하지 않으면 같은 인스턴스에서 로컬로
+서명해 중계하는 얇은 프록시가 필요하다. 자격증명은 이미 그 인스턴스에
+있으므로(위 200 이 그 증거) 남은 것은 Dify 쪽 설정뿐이다.
+
+### 배운 것
+
+D-031의 "노출 여부는 설정이 아니라 요청으로 확인한다"는 여기서 한 겹 더
+간다 — **"이 정책을 우리가 고칠 수 있는가"도 설정을 읽어서가 아니라 그
+API를 실제로 불러서 확인해야 한다.** `AdministratorAccess`라는 IAM 정책
+이름만 보고 "권한이 있다"고 판단했다면 이 조사는 여기서 끝나지 않았을
+것이다.
+
+---
+
+## D-043. Dify 는 SigV4 를 못 한다 — 서명을 프록시로 분리한다
+
+D-042 로 `o2-hot-api` 의 Function URL 을 `AWS_IAM` 으로 열었다. 남은 질문은
+"그래서 Dify 가 그걸 부를 수 있는가" 였고, **못 부른다.**
+
+### 사실
+
+실행 중인 버전(1.16.1)의 소스를 직접 봤다. 문서가 아니라 컨테이너 안이다.
+
+```python
+# core/tools/entities/tool_entities.py:116
+class ApiProviderAuthType(StrEnum):
+    NONE = auto()
+    API_KEY_HEADER = auto()
+    API_KEY_QUERY = auto()
+```
+
+Custom Tool 이 쓸 수 있는 인증은 이 셋뿐이고, 툴 코드 전체에 `sigv4`·`aws4`·
+`botocore.auth` 는 한 건도 없다. **UI 설정으로 풀 수 있는 문제가 아니다.**
+
+### 그래서 무엇을 했나
+
+같은 인스턴스에 작은 중계기(`06-agent/hot-proxy/`)를 둔다. Dify 는 평범한
+HTTP 로 그것을 부르고, 서명은 중계기가 인스턴스 역할로 한다.
+
+```
+Dify api ──▶ ssrf_proxy(squid) ──▶ hot-proxy ──SigV4──▶ o2-hot-api
+```
+
+API Gateway + API 키로 가는 길도 있었다(D-031 의 대안 표). 그쪽은 Dify 가
+네이티브로 붙지만 리소스와 과금이 늘고 인터넷 노출면이 하나 더 생긴다.
+개인 계정이라 비용 쪽을 택했다.
+
+**중계기가 키를 갖지 않는다.** IMDS 에서 임시 자격증명을 받고, boto3 가
+갱신을 맡는다. 손으로 서명하면 이 갱신을 직접 해야 하는데, 만료는 한참
+뒤에 403 으로만 드러나서 원인을 찾기 어렵다.
+
+### 이 경로에서 걸린 것 둘
+
+둘 다 **Dify 에서만 실패하고 직접 부르면 되는** 모양이라 원인이 잘 안 보인다.
+
+`ssrf_proxy_network` 는 `internal: true` 다. 중계기를 거기만 붙이면 IMDS 에
+못 닿아 자격증명을 못 받고 재시작을 반복한다. `default` 도 함께 붙여야 한다 —
+Dify 의 api·worker 가 이미 그 모양인 데는 이유가 있었다.
+
+Dify 의 툴 호출은 전부 squid 를 거치고(`core/tools/custom_tool/tool.py` 가
+`ssrf_proxy.get/post` 를 쓴다), squid 는 사설 대역을 기본 차단한다. 다만
+`deny to_private_networks` **앞에** `include dify_allow_private.conf` 가 있고
+`SSRF_PROXY_ALLOW_PRIVATE_DOMAINS` 로 채워진다. 확장 지점이 이미 있었다.
+
+### 확인한 것
+
+squid 를 경유하는 실제 경로로 쟀다 — Dify 가 가는 길과 같다.
+
+| 확인 | 결과 |
+|---|---|
+| api 컨테이너 → 중계기 (직접) | 200, Datadog 시계열 |
+| **api 컨테이너 → squid → 중계기** | **200** |
+| `/v1/hot/` 밖 경로 | 403 `forbidden_path` |
+| 왕복 시간 | **0.6초** (툴 타임아웃 5초) |
+
+### 남은 것
+
+Dify 스튜디오에서 Custom Tool 을 만들어 워크플로에 넣는 일은 **화면에서**
+한다. 붙여넣을 스키마는 `06-agent/hot-proxy/openapi.yaml` 에 있다.
+
+### 배운 것
+
+**제품이 무엇을 지원하는지는 문서가 아니라 그 버전의 코드에서 확인한다.**
+"Dify 가 SigV4 를 지원하는가" 는 검색으로는 확실해지지 않았다 —
+버전마다 다르고, 플러그인·Bedrock 노드 같은 다른 통합과 섞여 나온다.
+돌고 있는 컨테이너에서 enum 하나를 읽는 편이 빠르고 정확했다.

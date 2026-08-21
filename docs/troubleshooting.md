@@ -29,6 +29,7 @@
 | T-011 | Dify 는 워크플로가 실패해도 HTTP 200 을 준다 | `data.status`, 비동기, `raise` |
 | T-012 | Dify 가 넘긴 값을 안 쓰는데 에러도 안 난다 | 모르는 입력 키 무시, 계약 불일치 |
 | T-013 | 아무 일도 안 하는데 클러스터가 느려진다 | `CPUCreditBalance`, t3 버스트, `kubectl top`, `/proc/*/task` |
+| T-014 | Function URL 이 403 인데 정책은 분명히 허용이다 | `InvokeFunction` 도 필요, `FunctionUrlAuthType` 조건, 시뮬레이터 함정, 페더레이션 토큰 |
 
 ---
 
@@ -583,3 +584,86 @@ kubectl exec -n <ns> <pod> -- cat /proc/1/task/31/syscall
 하지도 않는다. 알람을 걸 임계값도 마땅치 않다 — 방송 시작 직후에는 CPU 가 원래
 높기 때문이다. 부하 테스트를 먼저 돌렸다면 "`chat-gateway` 가 4,000 을 못
 버틴다" 는 결론을 냈을 것이고, 그 숫자로 40,000 을 외삽했을 것이다.
+
+---
+
+## T-014. Function URL 이 403 인데 정책은 분명히 허용이다
+
+**증상** — Lambda Function URL(`authorization_type = AWS_IAM`)에 SigV4 로 서명해
+호출하면 `403 Forbidden` 이다.
+
+```
+HTTP/1.1 403 Forbidden
+x-amzn-ErrorType: AccessDeniedException
+{"Message":"Forbidden. For troubleshooting Function URL authorization issues, see: ..."}
+```
+
+**함수 로그에는 아무것도 남지 않는다** — Lambda 가 호출되기 전에 막힌다.
+D-031 이 본 것과 겉모습이 똑같아서 "또 조직 정책" 으로 오해하기 쉽다.
+
+### 원인 — 액션이 하나 더 필요하다
+
+Function URL 호출에는 **`lambda:InvokeFunctionUrl` 과 `lambda:InvokeFunction`
+둘 다** 있어야 한다. 하나만 있으면 거부된다.
+
+같은 엔드포인트에 세션 정책만 바꿔 가며 잰 값이다.
+
+| 신원 기반 정책 | 결과 |
+|---|---|
+| `lambda:InvokeFunctionUrl` 만 (Resource 를 `*` 로 넓혀도) | **403** |
+| `lambda:InvokeFunction` 만 | **403** |
+| 둘 다 (Resource 는 함수 ARN 하나로 좁혀도) | **200** |
+| `lambda:*` | 200 |
+
+이름이 `InvokeFunctionUrl` 이라 그것 하나로 끝날 것 같지만 아니다.
+
+### 조건 키를 신원 기반 정책에 걸지 않는다
+
+`lambda:FunctionUrlAuthType` 은 **리소스 기반 정책에만** 채워진다.
+신원 기반 정책에 걸면 조건이 매칭되지 않아 그대로 막힌다.
+
+```bash
+# 키를 직접 주입하면 통과한다 — 그래서 시뮬레이터만 믿으면 안 된다
+aws iam simulate-principal-policy --policy-source-arn <role> \
+  --action-names lambda:InvokeFunctionUrl --resource-arns <fn-arn> \
+  --context-entries ContextKeyName=lambda:FunctionUrlAuthType,ContextKeyValues=AWS_IAM,ContextKeyType=string
+# → allowed
+
+# 키 없이 = 실제 요청과 같은 조건
+aws iam simulate-principal-policy --policy-source-arn <role> \
+  --action-names lambda:InvokeFunctionUrl --resource-arns <fn-arn>
+# → implicitDeny, MissingContextValues=[lambda:FunctionUrlAuthType]
+```
+
+### 가려내는 법
+
+403 의 출처가 IAM 인지 조직 정책인지부터 가른다. **세션 정책을 좁힌 임시
+자격증명**으로 같은 엔드포인트를 때려 보면 한 번에 갈린다.
+
+```bash
+aws sts get-federation-token --name t --duration-seconds 900 \
+  --policy '{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+    "Action":["lambda:InvokeFunctionUrl","lambda:InvokeFunction"],"Resource":"<fn-arn>"}]}'
+```
+
+이 자격증명으로 200 이 나오면 조직 정책이 아니라 **호출자 정책 문제**다.
+15분 만료에 그 함수 호출 외에는 아무것도 못 하므로 안전하다.
+
+네트워크 경로 의심(VPC 안에서만 막히는가)은 **같은 자격증명을 VPC 안팎에서
+각각** 써 보면 끝난다. 양쪽이 같으면 경로 문제가 아니다.
+
+### 왜 늦게 찾았나
+
+**증상이 D-031 과 완전히 같았다.** 같은 403, 같은 `AccessDeniedException`,
+같은 "함수 로그 없음". 그래서 "조직 SCP/RCP" 라는 이미 있는 설명에 끼워
+맞췄고, 정작 IAM 정책을 의심하는 데 오래 걸렸다.
+
+**IAM 시뮬레이터가 `allowed` 라고 답한 것이 결정적으로 방해했다.** 조건 키를
+내가 직접 주입해 놓고 그 결과를 "IAM 은 문제없다" 로 읽었다. 시뮬레이터는
+내가 준 컨텍스트로만 답한다 — 실제 요청에 그 키가 오는지는 알려주지 않는다.
+
+단서는 처음부터 있었다. `o2-warm-api` 의 리소스 정책에 statement 가 둘이었고
+(`FunctionURLAllowPublicAccess` + `FunctionURLAllowInvokeAction`), 그중 하나가
+바로 `lambda:InvokeFunction` 이었다. 콘솔이 만들어 준 것이라 "AWS 가 뭔가
+붙였나 보다" 하고 넘겼다. **자동 생성된 정책에 왜 statement 가 둘인지 묻지
+않은 것이 실수였다.**

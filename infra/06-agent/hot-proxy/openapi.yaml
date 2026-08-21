@@ -1,0 +1,105 @@
+# Dify Custom Tool 스키마.
+#
+# Dify 스튜디오 → 도구 → 사용자 지정 도구 만들기 → 이 파일 내용을 붙여넣는다.
+# 인증(Authorization)은 O2_HOT_PROXY_KEY 를 쓸 때만 `API Key · Header` 로
+# 설정한다(헤더 이름 `X-O2-Proxy-Key`). 비웠으면 `None`.
+#
+# **서버 주소가 hot-proxy 인 것이 핵심이다.** Function URL 을 직접 넣으면
+# Dify 가 SigV4 서명을 못 해 403 이 온다(D-043).
+openapi: 3.1.0
+
+info:
+  title: O2 Hot Path — Datadog 지표 역쿼리
+  description: |
+    장애 알림을 받은 뒤 Datadog 에 쌓인 인프라/APM 시계열을 되묻는다.
+    비즈니스 지표(10초 사전집계)는 Warm Path 이고 여기가 아니다.
+  version: "1.0.0"
+
+servers:
+  - url: http://hot-proxy:8788
+    description: 같은 호스트의 서명 중계기. Dify 는 이 주소로만 부른다.
+
+paths:
+  /v1/hot/datadog/query:
+    post:
+      operationId: query_datadog_metrics
+      summary: Datadog 시계열 지표를 조회한다
+      description: |
+        Datadog 쿼리 문법을 그대로 받는다. 시간 범위를 생략하면 최근 10분이다.
+        응답의 pointlist 는 [epoch_ms, value] 쌍이고 최근 10개만 돌아온다.
+
+        예시 쿼리:
+          avg:system.cpu.user{*}
+          avg:kubernetes.cpu.usage.total{*} by {pod_name}
+          avg:kubernetes.memory.usage{kube_namespace:o2-dev} by {pod_name}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  description: Datadog 메트릭 쿼리. 예 `avg:system.cpu.user{*}`
+                from_ts:
+                  type: integer
+                  description: 시작 시각(epoch 초). 생략하면 10분 전
+                to_ts:
+                  type: integer
+                  description: 종료 시각(epoch 초). 생략하면 현재
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path_type:
+                    type: string
+                  query:
+                    type: string
+                  status:
+                    type: string
+                  series_count:
+                    type: integer
+                  series:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        metric:
+                          type: string
+                        scope:
+                          type: string
+                        expression:
+                          type: string
+                        pointlist:
+                          type: array
+                          items:
+                            type: array
+                            items:
+                              type: number
+        "400":
+          description: query 가 없거나 잘못됐다
+        "500":
+          description: Datadog 호출 실패 또는 키 조회 실패
+
+  /v1/hot/health:
+    get:
+      operationId: hot_api_health
+      summary: Hot Path API 상태 확인
+      responses:
+        "200":
+          description: 정상
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  path_type:
+                    type: string
