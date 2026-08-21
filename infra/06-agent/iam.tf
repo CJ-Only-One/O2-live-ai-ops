@@ -60,16 +60,32 @@ resource "aws_iam_role_policy" "bedrock" {
 # 여기도 함께 고쳐야 한다.
 data "aws_iam_policy_document" "hot_api_invoke" {
   statement {
-    sid       = "InvokeHotApiFunctionUrl"
-    effect    = "Allow"
-    actions   = ["lambda:InvokeFunctionUrl"]
+    sid    = "InvokeHotApiFunctionUrl"
+    effect = "Allow"
+
+    # **둘 다 있어야 한다.** 하나만 주면 403 이고, 함수 로그에는 아무것도
+    # 남지 않아 원인이 안 보인다. 실측으로 확인했다(같은 엔드포인트,
+    # 세션 정책만 바꿔 가며):
+    #
+    #   InvokeFunctionUrl 만  (Resource 를 * 로 넓혀도) → 403
+    #   InvokeFunction 만                              → 403
+    #   둘 다                                          → 200
+    #
+    # 문서만 보면 Function URL 은 `lambda:InvokeFunctionUrl` 하나로 되는
+    # 것처럼 읽힌다. `o2-warm-api` 의 리소스 정책에 statement 가 두 개인
+    # 것(`FunctionURLAllowPublicAccess` + `FunctionURLAllowInvokeAction`)이
+    # 같은 이유다 — AWS 콘솔이 만들어 준 것이라 그때는 넘겼던 단서다.
+    actions = [
+      "lambda:InvokeFunctionUrl",
+      "lambda:InvokeFunction",
+    ]
+
     resources = ["arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:o2-hot-api"]
 
     # `lambda:FunctionUrlAuthType` 조건을 걸지 않는다. 리소스 기반 정책
     # (06-datastream 의 aws_lambda_permission)에는 AWS 가 그 키를 채워 주지만,
     # **신원 기반 정책 평가에는 그 키가 오지 않는다.** 조건을 걸면 문이
-    # 안 열린다 — 실제로 걸어 보고 403 을 받았고, 시뮬레이터가 원인을
-    # 짚어 줬다.
+    # 안 열린다 — 이것도 실제로 걸어 보고 403 을 받았다.
     #
     #   simulate-principal-policy (키를 직접 주입) → allowed
     #   simulate-principal-policy (키 없이)        → implicitDeny,

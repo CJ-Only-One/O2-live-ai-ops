@@ -154,17 +154,39 @@ resource "aws_lambda_function_url" "hot_api" {
 }
 
 # 기본 거부다. 이 권한이 있어야 var.hot_api_invoker_role_arn 이
-# lambda:InvokeFunctionUrl 을 할 수 있다. "*" 를 principal 로 두지
-# 않는다 — 그러면 NONE 과 실질적으로 같아지고, 이 리소스를 만든
-# 이유(D-031) 자체가 사라진다.
-resource "aws_lambda_permission" "hot_api_invoker" {
+# Function URL 을 부를 수 있다. "*" 를 principal 로 두지 않는다 —
+# 그러면 NONE 과 실질적으로 같아지고, 이 리소스를 만든 이유(D-031)
+# 자체가 사라진다.
+#
+# **statement 가 둘이어야 한다.** Function URL 호출에는
+# `lambda:InvokeFunctionUrl` 과 `lambda:InvokeFunction` 이 **둘 다**
+# 필요하다 — 하나만으로는 403 이고 함수 로그에 아무것도 안 남는다
+# (실측 근거는 06-agent/iam.tf 의 hot_api_invoke 주석). 기존
+# `o2-warm-api` 의 리소스 정책도 같은 이유로 statement 가 둘이다.
+resource "aws_lambda_permission" "hot_api_invoker_url" {
   count = var.hot_api_invoker_role_arn == "" ? 0 : 1
 
-  statement_id           = "AllowConfiguredInvoker"
+  statement_id           = "AllowConfiguredInvokerUrl"
   action                 = "lambda:InvokeFunctionUrl"
   function_name          = aws_lambda_function.hot_api.function_name
   principal              = var.hot_api_invoker_role_arn
   function_url_auth_type = "AWS_IAM"
+}
+
+resource "aws_lambda_permission" "hot_api_invoker_invoke" {
+  count = var.hot_api_invoker_role_arn == "" ? 0 : 1
+
+  statement_id  = "AllowConfiguredInvokerInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.hot_api.function_name
+  principal     = var.hot_api_invoker_role_arn
+}
+
+# 이름만 바꿨다(hot_api_invoker → …_url). 이것이 없으면 destroy 후
+# create 로 잡혀 잠깐이지만 권한이 사라진다.
+moved {
+  from = aws_lambda_permission.hot_api_invoker
+  to   = aws_lambda_permission.hot_api_invoker_url
 }
 
 ###############################################################################

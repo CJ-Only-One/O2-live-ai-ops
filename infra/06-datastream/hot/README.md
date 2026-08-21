@@ -57,12 +57,27 @@ IAM 주체만 호출할 수 있습니다 — `hot-path.tf` 의
 `handlers/serve.py` 에 `_authorized()` 가 없는 이유도 이것입니다.
 SigV4 검증은 AWS 가 Lambda 를 부르기 전에 이미 끝냅니다.
 
-### ⚠️ 미확인 — Dify 가 SigV4 를 할 수 있는가
+### 호출자에게 필요한 권한 — 액션이 **둘**이다
 
-Dify 의 Custom Tool(OpenAPI 3.0)이 AWS SigV4 서명을 기본으로 지원하는지
-아직 확인하지 않았습니다. 못 하면 이 경로로는 Dify가 직접 못 붙습니다 —
-Dify EC2 인스턴스(같은 IAM 역할)에서 로컬로 서명해 중계하는 작은 프록시가
-필요합니다. 아직 만들지 않았습니다.
+`lambda:InvokeFunctionUrl` 하나로는 **403 입니다.** `lambda:InvokeFunction`
+도 함께 있어야 합니다. 함수 로그에 아무것도 안 남아 원인이 보이지 않으니
+403 을 만나면 여기부터 봅니다 — 실측 근거와 가려내는 방법은
+`docs/troubleshooting.md` **T-014**.
+
+호출자 쪽 권한은 `infra/06-agent/iam.tf` 의 `hot_api_invoke` 가 Dify 역할에
+붙여 줍니다(양쪽 액션 모두). 이 스택의 `aws_lambda_permission` 두 개는
+리소스 기반으로 같은 것을 허용합니다.
+
+### 검증된 것 / 아직 아닌 것
+
+Dify EC2 인스턴스에서 인스턴스 역할로 서명해 호출하면 **200 이고 실제
+Datadog 시계열이 돌아옵니다**(D-042 의 표). 즉 네트워크·IAM·시크릿 경로는
+전부 확인됐습니다.
+
+다만 **Dify 의 Custom Tool(OpenAPI 3.0)이 SigV4 서명을 스스로 하는지는
+확인하지 않았습니다.** 위 200 은 인스턴스에서 직접 서명해 얻은 값입니다.
+Dify UI 가 지원하지 않으면 같은 인스턴스에서 로컬 서명해 중계하는 얇은
+프록시가 필요합니다 — 자격증명은 이미 그 인스턴스에 있습니다.
 
 ## 로컬에서 핸들러만 실행
 
