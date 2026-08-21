@@ -15,6 +15,15 @@
 #   - aws_security_group.alert_relay  (Worker egress, "Dify 호출용" 이라 앱과 무관)
 #   - aws_sns_topic.alert_relay_alarm (같은 사람이 알람을 받으면 되고, 이메일
 #     구독 확인 절차를 또 만들 이유가 없다)
+#
+# ★ 인시던트 이력(history.tf)은 이쪽에 **일부러 안 붙였다.**
+#   코드는 같은 zip 이라 이미 들어 있고, HISTORY_BUCKET 등 환경변수가 없으면
+#   그 기능만 꺼진 채 중계는 정상으로 돈다 (lambda/worker.py 상단 주석).
+#
+#   켜기 전에 먼저 풀어야 할 것: 두 파이프라인이 같은 Datadog 모니터를 받으면
+#   **cycle_key 가 같아서 서로의 인시던트를 덮어쓴다.** 환경변수만 복사해
+#   붙이면 조용히 데이터가 사라진다. S3 키와 벡터 키에 파이프라인 구분을
+#   먼저 넣고, 그 다음에 IAM(bedrock·s3vectors·s3)을 준다.
 
 locals {
   alert_ingress_name_o2 = "o2-dify-ingress"
