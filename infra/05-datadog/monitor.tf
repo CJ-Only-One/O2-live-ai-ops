@@ -145,7 +145,13 @@ resource "datadog_monitor" "order_latency_p95" {
     critical = var.latency_p95_critical
   }
 
-  notify_no_data      = true
+  # dev 에는 주문 트래픽이 상시로 흐르지 않는다. 켜 두면 "지표가 안 온다" 가
+  # 그대로 알람이 되어, 08-19~08-21 사흘 동안 No Data 와 Recovered 를 7번
+  # 왕복했다. 고칠 것이 없는 알람이 매번 에이전트를 깨운다.
+  #
+  # 주문 경로가 실제로 돌기 시작하면 true 로 되돌린다 — 그때는 지표가 끊기는
+  # 것이 진짜 장애 신호다.
+  notify_no_data      = false
   no_data_timeframe   = 10
   require_full_window = true
   renotify_interval   = 0
