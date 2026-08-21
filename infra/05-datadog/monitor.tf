@@ -86,7 +86,7 @@ resource "datadog_monitor" "chat_ingest_surge" {
     하향입니다 — 주문 API 스케일아웃이나 Valkey 등급 상향은 원인이 아니므로
     효과가 없습니다(제안서 시나리오 2 "조치가 갈리는 지점").
 
-    @webhook-dify
+    @webhook-o2-dify
   EOT
 
   query = "min(last_2m):avg:${var.metric_prefix}rps_ratio{service:chat-gateway,env:${local.monitor_env}} >= ${var.chat_rps_ratio_warning}"
@@ -135,7 +135,7 @@ resource "datadog_monitor" "order_latency_p95" {
       기준값 기록·재확인·원복 로직은 이 Monitor가 아니라 에이전트
       오케스트레이션(D-028, `06-agent`) 쪽에 있습니다.
 
-    @webhook-dify
+    @webhook-o2-dify
   EOT
 
   query = "min(last_5m):avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical}"
@@ -223,7 +223,7 @@ resource "datadog_monitor" "cache_absorption_failure" {
     (없는 것은 TTL을 늘려도 없음). 어느 쪽이어도 최대 손해는 가격 반영이
     2초 늦는 것뿐입니다.
 
-    @webhook-dify
+    @webhook-o2-dify
   EOT
 
   notify_no_data      = false
@@ -302,7 +302,7 @@ resource "datadog_monitor" "cache_hit_rate_pod_outlier" {
     **조치**: 해당 파드 재시작 또는 전체 로컬 캐시 플러시. 근본 대응은
     재연결 시 전체 플러시(설계에 있음)와 TTL 안전망입니다.
 
-    @webhook-dify
+    @webhook-o2-dify
   EOT
 
   query = "avg(last_10m):outliers(avg:${var.metric_prefix}cache_hit_rate{service:${var.default_service},env:${local.monitor_env}} by {pod_name}, 'DBSCAN', ${var.pod_cache_outlier_tolerance}) > 0"
@@ -355,7 +355,7 @@ resource "datadog_monitor" "order_confirm_backlog_age" {
     판단이 아니라 비즈니스 판단이므로 에이전트가 자동으로 결정하지 않고
     승인을 요청합니다.
 
-    @webhook-dify
+    @webhook-o2-dify
   EOT
 
   query = "min(last_5m):avg:aws.sqs.approximate_age_of_oldest_message{queuename:${var.order_confirm_queue_name}} >= ${var.queue_backlog_age_critical_seconds}"
@@ -479,7 +479,7 @@ resource "datadog_monitor" "order_confirm_stall" {
     함께 울리면 확정 처리가 완전히 정지된 것이 비즈니스 이벤트 쪽에서도
     교차 확인된 것입니다.
 
-    @webhook-dify
+    @webhook-o2-dify
   EOT
 
   notify_no_data      = false
