@@ -100,6 +100,17 @@ resource "helm_release" "datadog" {
             limits   = { memory = "512Mi" }
           }
         }
+
+        # trace-agent 에 값을 주지 않으면 request·limit 이 모두 비어 QoS 가
+        # BestEffort 가 된다. 노드 메모리가 모자랄 때 가장 먼저 죽는 쪽이고,
+        # 상한이 없어 반대로 노드를 다 먹을 수도 있다. APM 은 트래픽에
+        # 비례해 커지므로 부하 구간에서 특히 그렇다.
+        traceAgent = {
+          resources = {
+            requests = { cpu = "50m", memory = "64Mi" }
+            limits   = { memory = "192Mi" }
+          }
+        }
       }
     }
 
