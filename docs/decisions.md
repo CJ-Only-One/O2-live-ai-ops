@@ -61,6 +61,7 @@
 | D-044 | 인시던트 이력은 S3 Vectors 에 둔다 | 번들 weaviate 유실, DynamoDB 는 유사검색 불가, 임베딩 1회, 공유 zip, MTTR |
 | D-045 | 검증 전에는 원인을 말하지 않는다 | `outcome.state` 다섯 값, 복구≠해결, 추측 세탁, 통제 어휘, Recovered 를 Worker 로 |
 | D-046 | Runbook 조회도 D-043 과 같은 이유로 Lambda 릴레이를 쓴다 | `aws_iam_role.dify` 죽은 권한, SigV4, Function URL, x-api-key |
+| D-047 | 채팅 분석은 Chat Gateway에서 SQS로 직접 분기한다 | Valkey 팬아웃 전용, Lambda, DynamoDB, 60초 원문, Incident Candidate |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -2903,3 +2904,65 @@ Dify (HTTP 요청 노드, x-api-key) ──▶ runbook_lookup Lambda ──Query
 `slack_approval_request.py` 는 평범한 `!=` 비교이고, 이번 범위에서는
 손대지 않았다 — 둘 다 문제라기보다는 이 파일을 새로 쓰는 김에 상수 시간
 비교로 시작한 것뿐이다).
+
+---
+
+## D-047. 채팅 분석은 Valkey 구독이 아니라 Chat Gateway에서 SQS로 직접 분기한다
+
+D-016과 `architecture.md` D-15는 채팅 소비자가 WebSocket 브로드캐스트 하나뿐일 때
+결정했다. 이제 채팅을 사용자 체감 장애의 조기 신호로 쓰는 두 번째 소비 목적이
+생겼다. 과거 결정의 전제가 바뀌었다.
+
+### Valkey Pub/Sub에서 가져오지 않는다
+
+Pub/Sub은 구독자가 끊긴 동안의 메시지를 복구하지 못한다. 더 중요한 것은 기존
+Valkey가 실시간 팬아웃과 재고 판정에 쓰인다는 점이다. 분석 Worker의 backlog와
+재처리 요구를 같은 실패 영역에 넣지 않는다.
+
+```text
+Chat Gateway -> Valkey Pub/Sub -> WebSocket fanout
+Chat Gateway -> dedicated SQS -> Lambda -> DynamoDB -> Incident Candidate
+```
+
+Valkey는 여전히 실시간 팬아웃의 정답이다. D-15를 폐기하는 것이 아니라 적용 범위를
+팬아웃으로 좁힌다. 분석용 Collector가 Valkey를 구독하는 안은 운영 설계가 아니다.
+
+### Agent가 아니라 Candidate까지만 만든다
+
+채팅의 `느리다`는 말은 사용자 체감 증거이지 원인 증거가 아니다. 실제 사용자 증가와
+자동화 요청 증가는 조치가 반대지만 클라이언트 생성 세션 키로는 둘을 가를 수 없다.
+따라서 이번 경로는 `USER_PERCEIVED_LATENCY` Candidate를 만들고 다음으로 끝낸다.
+
+```text
+metric_status=NOT_CHECKED
+root_cause=UNDETERMINED
+agent_handoff_status=NOT_CONFIGURED
+```
+
+D-045의 원칙을 수집 단계부터 적용한 것이다. Datadog Pull과 Dify·Bedrock 호출은
+Candidate 이후의 별도 경로다.
+
+### Lambda와 DynamoDB를 쓴다
+
+PoC 트래픽을 아직 측정하지 않았고 상시 Worker Pod가 필요하지 않다. SQS 연동 Lambda가
+규칙 분류를 수행하고 DynamoDB가 멱등·시간창·고유 사용자·쿨다운을 소유한다. Dify는
+동시 집계 상태의 원본이 아니다.
+
+초기 임계치는 15초 안에 관련 메시지 4건, 고유 사용자 3명이다. 이것은 실측값이나
+SLO가 아니라 Shadow Mode 비교를 위한 가설이다. 근거와 변경 게이트는
+`chat-incident-candidate.md` 5·10절에 둔다.
+
+### 원문은 60초 뒤 사라진다
+
+분류하려면 Worker까지 원문이 필요하지만 저장 코퍼스로 만들지는 않는다. 원문은
+암호화된 SQS 메시지에만 있고 보존 기간은 60초다. 처리 후 즉시 삭제하며 로그,
+DynamoDB, Candidate, 원문 DLQ에는 넣지 않는다.
+
+그 결과 Worker가 60초 넘게 멈추면 분석 신호가 유실될 수 있다. 고객 트랜잭션이 아닌
+조기 탐지 보조 신호이므로 PoC에서는 재처리보다 개인정보 최소화를 우선한다.
+
+### 구현 원본
+
+- 처리 규칙과 완료 조건: `docs/chat-incident-candidate.md`
+- 입력·출력 스키마: `docs/contracts.md` 5.6·5.7
+- 기존 `chat.send` Kinesis 관측 이벤트: `docs/contracts.md` 5.3, 별도 경로

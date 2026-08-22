@@ -1,6 +1,7 @@
 # 03-data
 
-라이브커머스의 데이터 계층. RDS MySQL, ElastiCache Valkey, 주문 확정 SQS.
+라이브커머스의 데이터 계층. RDS MySQL, ElastiCache Valkey, 주문 확정 SQS,
+Chat Signal SQS와 Incident Candidate 상태 DynamoDB.
 
 `01-network` 의 출력을 remote state 로 참조한다. **apply 는 `01` 다음이다.**
 
@@ -87,6 +88,19 @@ Valkey RBAC 으로 간다.
 **큐에 접근할 IAM 역할.** 파드의 ServiceAccount 이름과 네임스페이스가 정해져야
 Pod Identity association 을 걸 수 있는데, 그건 애플리케이션이 생기는 Phase 3 의
 일이다. `order_queue_arn` 을 출력해 두었다.
+
+## 채팅 기반 Incident Candidate
+
+`chat_signal.tf`는 D-047의 데이터 리소스만 소유한다.
+
+| 리소스 | 역할 | 원문 |
+|---|---|---|
+| Chat Signal SQS | Chat Gateway와 Lambda 사이의 60초 분석 버퍼 | 암호화 상태로 최대 60초 |
+| Incident State DynamoDB | 멱등·시간창·고유 사용자·쿨다운·Candidate | 저장 금지 |
+
+원문 DLQ는 만들지 않는다. 처리 규칙은
+[`docs/chat-incident-candidate.md`](../../docs/chat-incident-candidate.md), 입력·출력
+스키마는 [`docs/contracts.md`](../../docs/contracts.md) 5.6·5.7이 원본이다.
 
 ## 명령
 

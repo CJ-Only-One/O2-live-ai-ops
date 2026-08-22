@@ -163,8 +163,16 @@ Argo CD가 [`O2-live-deploy`](https://github.com/CJ-Only-One/O2-live-deploy)를
 | ConfigMap `o2-data` | RDS·Valkey 엔드포인트, SQS 큐 URL, `O2_EVENTS_SINK` |
 | Secret `o2-db` | `DB_PASSWORD` — RDS 관리형 시크릿을 ESO 가 동기화 |
 | Secret `o2-events` | `O2_EVENTS_SALT` — `user_key` HMAC salt (D-027) |
-| IAM | SQS 접근, Kinesis `PutRecords`, ESO 의 시크릿 읽기 |
+| IAM | 서비스별 최소 SQS 접근, Kinesis `PutRecords`, ESO 의 시크릿 읽기 |
 | ServiceAccount + Pod Identity | `api` · `order-worker` · `chat-gateway` |
+
+Pod Identity 역할은 공유하지 않는다.
+
+| ServiceAccount | SQS 권한 |
+|---|---|
+| `api` | 주문 큐 `SendMessage` |
+| `order-worker` | 주문 큐 `ReceiveMessage`·`DeleteMessage` |
+| `chat-gateway` | Chat Signal 큐 `SendMessage` |
 
 엔드포인트는 `03-data` 의 remote state 에서 읽는다. 데이터 스택을 다시 만들어도
 이 스택만 apply 하면 따라간다.

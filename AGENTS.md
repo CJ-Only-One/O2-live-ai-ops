@@ -28,6 +28,7 @@ sed -n '553,607p' docs/decisions.md     # 그 절만 읽는다
 | **이 숫자 어디서 나왔나 / 실측값** | `docs/measurements.md` (직접 잰 것만. 추정치는 없다) |
 | 부하 수치, 캐싱, 스케일링 | `docs/architecture.md` (인덱스 → 해당 절만) |
 | API·WebSocket·캐시 키·이벤트 규격 | `docs/contracts.md` |
+| 채팅 기반 Incident Candidate | `docs/chat-incident-candidate.md` (**구현 전 필독**) |
 | 테이블·컬럼·인덱스, MySQL/Valkey 경계 | `docs/schema.md` |
 | 저장소 사용법, 배포 흐름 | `README.md` |
 | 특정 인프라 스택 | `infra/<스택>/README.md` |
@@ -72,6 +73,10 @@ graceful shutdown + 지터 재연결 / resource requests / readiness·liveness �
 `contracts.md`와 코드가 어긋나면 **코드를 고친다.** 계약을 바꾸려면 문서를 먼저
 고치고 합의한다. 특히 넷은 합의 없이 못 바꾼다 — WebSocket 프레임 포맷,
 캐시 키 이름, 이벤트 스키마, 오류 `code` 체계.
+
+채팅 분석 경로는 `docs/chat-incident-candidate.md`와 `contracts.md` 3.8·5.6·5.7을
+먼저 읽는다. **Valkey 구독 Collector를 운영 소스로 만들지 않는다.** 분석 이벤트는
+Chat Gateway 인입 지점에서 전용 SQS로 직접 분기한다(D-047).
 
 ## 문서를 고칠 때
 
