@@ -24,6 +24,7 @@ infra/
   06-datastream/ Kinesis, Firehose, S3 레이크, Glue, DynamoDB, Lambda
                  에이전트가 쓰는 내부 데이터 시스템 (backend key는 `data/` · D-029)
   07-media/      MediaMTX, NLB, CloudFront — 영상 (미작성 · D-033)
+  08-chat-signal/ Chat Signal Lambda·실행 IAM — 트리거 비활성 골격 (D-048)
 apps/<service>/  Dockerfile + src
 loadtest/        부하 테스트 시나리오
 AGENTS.md        작업 시작 전에 읽을 것 — 규약과 함정, 문서 지도 (D-022)
@@ -48,6 +49,10 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 `03-data`와 `06-datastream`은 이름이 비슷하지만 다른 것이다. 앞은 서비스가
 읽고 쓰는 저장소, 뒤는 그 서비스를 관찰한 결과다. **state 키를 서로 바꿔 쓰면
 상대 리소스를 지운다** (D-015, D-029).
+
+`08-chat-signal`은 `03-data`의 Chat Signal SQS와 Candidate DynamoDB를 참조한다.
+따라서 `03-data` 이후에 적용하며, Phase 1B에서는 event source mapping을 코드에
+하드코딩해 비활성 상태로 둔다(D-048).
 
 배경과 근거는 [`docs/decisions.md`](docs/decisions.md)에 있다.
 

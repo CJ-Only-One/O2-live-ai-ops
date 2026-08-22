@@ -83,11 +83,15 @@ AUTH 토큰은 두지 않는다. 접근 통제는 보안 그룹이 EKS 노드로
 토큰을 두면 관리 대상이 하나 늘기 때문이다. 멀티테넌시가 생기면 그때
 Valkey RBAC 으로 간다.
 
-## 아직 없는 것
+## 큐 IAM 경계
 
-**큐에 접근할 IAM 역할.** 파드의 ServiceAccount 이름과 네임스페이스가 정해져야
-Pod Identity association 을 걸 수 있는데, 그건 애플리케이션이 생기는 Phase 3 의
-일이다. `order_queue_arn` 을 출력해 두었다.
+이 스택은 큐와 ARN 출력만 소유하고 실행 역할은 소유하지 않는다.
+
+- `04-platform`: `api`, `order-worker`, `chat-gateway`의 서비스별 Pod Identity 역할
+- `08-chat-signal`: Chat Signal Lambda의 큐 소비·Candidate 테이블 쓰기 역할
+
+역할을 데이터 스택에 합치지 않아 파드·Lambda의 배포 수명주기와 저장소 수명주기를
+분리한다(D-048).
 
 ## 채팅 기반 Incident Candidate
 
@@ -100,7 +104,8 @@ Pod Identity association 을 걸 수 있는데, 그건 애플리케이션이 생
 
 원문 DLQ는 만들지 않는다. 처리 규칙은
 [`docs/chat-incident-candidate.md`](../../docs/chat-incident-candidate.md), 입력·출력
-스키마는 [`docs/contracts.md`](../../docs/contracts.md) 5.6·5.7이 원본이다.
+스키마는 [`docs/contracts.md`](../../docs/contracts.md) 5.6·5.7이 원본이다. 실행
+리소스는 [`08-chat-signal`](../08-chat-signal/README.md)이 소유한다.
 
 ## 명령
 

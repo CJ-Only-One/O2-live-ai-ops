@@ -1,0 +1,104 @@
+data "archive_file" "worker" {
+  type        = "zip"
+  source_file = "${path.module}/lambda/handler.py"
+  output_path = "${path.module}/lambda/chat_signal_worker.zip"
+}
+
+data "aws_iam_policy_document" "worker_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "worker" {
+  name               = "${local.worker_name}-role"
+  assume_role_policy = data.aws_iam_policy_document.worker_assume.json
+}
+
+data "aws_iam_policy_document" "worker" {
+  statement {
+    sid = "ConsumeChatSignalQueue"
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes",
+    ]
+    resources = [local.chat_signal_queue_arn]
+  }
+
+  statement {
+    sid = "WriteDerivedIncidentState"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:TransactWriteItems",
+    ]
+    resources = [local.chat_incident_table_arn]
+  }
+
+  statement {
+    sid = "WriteSanitizedWorkerLogs"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ]
+    resources = ["${aws_cloudwatch_log_group.worker.arn}:*"]
+  }
+}
+
+resource "aws_iam_role_policy" "worker" {
+  name   = "chat-signal-worker"
+  role   = aws_iam_role.worker.id
+  policy = data.aws_iam_policy_document.worker.json
+}
+
+resource "aws_cloudwatch_log_group" "worker" {
+  name              = "/aws/lambda/${local.worker_name}"
+  retention_in_days = 7
+}
+
+resource "aws_lambda_function" "worker" {
+  function_name = local.worker_name
+  role          = aws_iam_role.worker.arn
+  handler       = "handler.handler"
+  runtime       = "python3.13"
+  architectures = ["arm64"]
+
+  memory_size                    = 128
+  timeout                        = 5
+  reserved_concurrent_executions = 1
+
+  filename         = data.archive_file.worker.output_path
+  source_code_hash = data.archive_file.worker.output_base64sha256
+
+  environment {
+    variables = {
+      CHAT_INCIDENT_TABLE_NAME = local.chat_incident_table_name
+      WORKER_MODE              = "SKELETON_DISABLED"
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.worker]
+}
+
+resource "aws_lambda_event_source_mapping" "chat_signal" {
+  event_source_arn = local.chat_signal_queue_arn
+  function_name    = aws_lambda_function.worker.arn
+
+  # Phase 1B 안전 게이트. 변수로 우회하지 않는다. 실제 처리기와 AC-001~010이
+  # 준비된 뒤 별도 변경에서만 true로 바꾼다.
+  enabled = false
+
+  batch_size                         = 10
+  maximum_batching_window_in_seconds = 0
+  function_response_types            = ["ReportBatchItemFailures"]
+
+  depends_on = [aws_iam_role_policy.worker]
+}
