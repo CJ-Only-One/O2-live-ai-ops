@@ -243,6 +243,36 @@ variable "enable_chat_events" {
   default     = false
 }
 
+variable "chat_signal_mode" {
+  description = <<-EOT
+    Chat Gateway의 Incident Candidate SQS 분기 모드. 초기값은 off다.
+
+    shadow는 accepted chat 원문을 60초 보존 SQS에 전송하기 시작한다. Phase 3
+    처리기와 개인정보 검증 전에는 shadow로 바꾸지 않는다.
+  EOT
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "shadow"], var.chat_signal_mode)
+    error_message = "chat_signal_mode는 off 또는 shadow여야 한다."
+  }
+}
+
+variable "chat_signal_send_timeout_ms" {
+  description = <<-EOT
+    SQS 백그라운드 요청 누적을 막는 초기 timeout. 실측 SLO가 아니며 Shadow
+    Mode에서 성공률과 지연을 측정한 뒤 조정한다.
+  EOT
+  type        = number
+  default     = 500
+
+  validation {
+    condition     = var.chat_signal_send_timeout_ms >= 1 && var.chat_signal_send_timeout_ms <= 5000
+    error_message = "chat_signal_send_timeout_ms는 1-5000 범위여야 한다."
+  }
+}
+
 variable "events_stream_business" {
   description = "주문·재고·쿠폰 이벤트가 가는 스트림. 백데이터 파트 소유이며 SDK 기본값과 같아야 한다"
   type        = string
