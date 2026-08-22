@@ -34,6 +34,7 @@
 | T-016 | 노드를 바꿨더니 총 여유가 45% 인데 파드가 안 뜬다 | `Insufficient memory`, DaemonSet Pending, 파드 쏠림, `topologySpreadConstraints` |
 | T-017 | 부하도 안 줬는데 AI 에이전트가 계속 깨어난다 | `notify_no_data`, `@webhook-dify`, Downtime, EWMA baseline 오염 |
 | T-018 | 과거 사례가 늘 비는데 워크플로는 성공으로 끝난다 | `s3vectors:GetVectors`, `returnMetadata`, 의도한 조용한 실패, 웜 컨테이너가 옛 자격증명을 든다 |
+| T-019 | Worker Lambda가 타임아웃 나는데 Dify 쪽은 매번 성공으로 남는다 | `urllib.request.urlopen timeout=55`, `workflow_runs`, Hot Path·Runbook Lookup, Slack 승인 |
 
 ---
 
@@ -1028,3 +1029,45 @@ aws lambda invoke --function-name datadog-to-dify-worker --region ap-northeast-2
 로그 스트림 ID 였다. 같은 에러 메시지라도 **고치기 전과 후는 다른 사건**이다 —
 고친 뒤에도 같은 증상이면 원인이 같다고 가정하지 말고 "변경이 이 호출에
 도달했는가" 를 먼저 묻는다.
+
+---
+
+## T-019. Worker Lambda가 타임아웃 나는데 Dify 쪽은 매번 성공으로 남는다
+
+**증상**
+
+```
+Error: timed out
+```
+
+`worker.py` 304행 `urllib.request.urlopen(req, timeout=55)` 에서 예외가 난다.
+그런데 Dify EC2 안에서 `workflow_runs` 테이블을 직접 조회하면 같은 실행이
+`status=succeeded` 로 정상 종료돼 있다.
+
+**원인**
+
+Hot Path·Runbook Lookup API 가 붙으면서 워크플로 1회 처리 시간이 실측
+39.8~58초대로 늘었다(M-001). Worker(`worker.py`)의 urlopen 타임아웃은 여전히
+55초, Lambda 함수 자체 타임아웃도 60초로 남아 있어서 워크플로가 실제로는
+끝났는데도 클라이언트가 먼저 포기하는 상황이 생겼다.
+
+여기에 Slack 승인이 얹히면 Dify 승인 노드가 최대 600초까지 기다리므로 격차가
+훨씬 커진다. 또한 Worker 의 재시도 정책(`maximum_retry_attempts=2`)과 겹치면,
+이미 성공한 실행에 대해 클라이언트만 타임아웃 나서 불필요한 재실행(중복 LLM
+비용, 중복 인시던트 적재)까지 유발할 수 있었다.
+
+**해결**
+
+`worker.py` 의 urlopen timeout 을 55→820초로, `lambda_o2.tf` 의 Lambda 함수
+timeout 을 60→850초로 올렸다(Lambda 자체 상한 900초 대비 여유를 둠). 이 둘의
+대소관계(Lambda timeout > urlopen timeout)는 반드시 유지해야 한다 — 반대가
+되면 Lambda 런타임이 이 예외처리보다 먼저 함수를 강제 종료해서 DLQ 로그가
+지금보다 훨씬 알아보기 어려운 형태로 남는다.
+
+**왜 늦게 찾았나**
+
+클라이언트 쪽 예외(`Error: timed out`)만 보면 Dify 워크플로 자체가 실패한
+것처럼 보인다. 하지만 Dify 는 자기 `workflow_runs` 테이블에 `succeeded` 를
+정확히 남기기 때문에, "워크플로가 느려서 실패한다"와 "워크플로는 끝났는데
+클라이언트가 먼저 포기한다"는 겉으로 같은 에러 메시지를 낸다. Dify Postgres
+를 EC2 안에서 직접 조회해 대조해보고 나서야 후자라는 게 확인됐다.

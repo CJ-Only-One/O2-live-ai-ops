@@ -485,11 +485,17 @@ def lambda_handler(event, context):
         },
     )
 
-    # blocking 이라 워크플로가 끝날 때까지 기다린다. 현재 2~3초다.
-    # 노드가 늘어 30초를 넘기기 시작하면 Dify 워커 점유가 병목이 되므로,
-    # 그때는 이 호출을 콜백 방식으로 바꾼다(설계 문서 참조).
+    # blocking 이라 워크플로가 끝날 때까지 기다린다. Hot Path/Runbook Lookup
+    # API 붙고 나서 승인 없는 경로도 실측 40~60초대로 늘었고, Slack 승인이
+    # 걸리면 Dify 쪽 노드 타임아웃(최대 600초)만큼 기다려야 한다.
+    # ★ 이 값보다 함수 자체의 timeout(lambda_o2.tf)이 반드시 더 커야 한다 —
+    #   짧으면 Lambda 런타임이 이 예외처리보다 먼저 강제 종료해서 DLQ 로그가
+    #   훨씬 알아보기 어려운 형태로 남는다.
+    #
+    # 노드가 더 늘어 이 값을 자꾸 올려야 하는 상황이 오면, 이 호출을 콜백
+    # 방식으로 바꾼다(설계 문서 참조) — Dify 워커 점유가 병목이 되기 시작한다는 신호다.
     try:
-        with urllib.request.urlopen(req, timeout=55) as res:
+        with urllib.request.urlopen(req, timeout=820) as res:
             result = json.loads(res.read())
     except urllib.error.HTTPError as e:
         # 본문을 통째로 찍지 않는다. Dify 오류 응답에 입력이 되비쳐 나온다.
