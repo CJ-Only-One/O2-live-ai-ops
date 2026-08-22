@@ -33,6 +33,7 @@ VPC 안에 있어야 Dify 를 사설 IP 로 부를 수 있다. 동시성은 Dify
 import datetime
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -202,6 +203,19 @@ def _ending(state, mttr_sec):
     }.get(state, took)
 
 
+# Datadog `$EVENT_TITLE` 이 앞에 붙이는 상태 딱지. 요약에서는 걷어낸다.
+#
+# ★ 걷어내는 이유가 토큰 절약만이 아니다. 이 줄은 "과거 사례"로 프롬프트에
+#   들어가는데, `[Triggered] ... · 12분 뒤 자동복구` 는 **한 줄 안에서 서로
+#   모순된다.** 상태는 우리가 붙이는 딱지([미검증]/[확인됨])가 말한다.
+#
+# `[TEST]` 나 `[O2]` 처럼 팀이 붙인 것은 건드리지 않는다.
+_DD_TRANSITION = re.compile(
+    r"^\s*(\[(triggered|re-triggered|recovered|warn|no data|renotify)\]\s*)+",
+    re.IGNORECASE,
+)
+
+
 def _summary(title, outcome):
     """프롬프트에 그대로 들어가는 한 줄.
 
@@ -229,7 +243,8 @@ def _summary(title, outcome):
     else:
         head = "[미검증]"
 
-    parts = [head, (title or "").strip()[:60]]
+    clean = _DD_TRANSITION.sub("", title or "").strip()
+    parts = [head, clean[:60]]
     if verified and label:
         parts.append(label)
     parts.append(_ending(state, outcome.get("mttr_sec")))

@@ -141,6 +141,20 @@ def test_summary_hides_cause_until_verified():
     assert "[확인됨]" in verified
 
 
+def test_summary_strips_datadog_transition_prefix():
+    """`[Triggered] ... 12분 뒤 자동복구` 는 한 줄 안에서 모순된다."""
+    out = {"state": "auto_recovered", "mttr_sec": 720, "verified": False}
+    got = worker._summary("[Triggered] [TEST] [O2] 주문 확정 큐가 밀린다", out)
+
+    assert "[Triggered]" not in got, got
+    assert "[TEST]" in got, "팀이 붙인 딱지는 건드리지 않는다"
+    assert "[미검증]" in got
+    assert got.startswith("[미검증] · [TEST]"), got
+
+    # 여러 개가 겹쳐 오거나 대소문자가 달라도 걷어낸다
+    assert "[" not in worker._summary("[Recovered][Warn] 큐", out).split("·")[1]
+
+
 def test_summary_marks_open_and_false_alarm():
     open_case = worker._summary("x", {"state": "unresolved", "verified": False})
     assert "[진행중]" in open_case and "복구 미확인" in open_case
