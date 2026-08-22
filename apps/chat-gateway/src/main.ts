@@ -19,7 +19,9 @@ import Redis from 'ioredis';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { config } from './config.js';
-import { digest, emitChatSend, hashUserKey } from './events.js';
+import { createChatIngressHandler, type ChatIngressConnection } from './chat-ingress.js';
+import { emitChatSend, hashUserKey } from './events.js';
+import { emitChatSignal } from './chat-signal.js';
 
 // ── Valkey ────────────────────────────────────────────────────
 // 구독 전용 연결과 명령용 연결을 나눈다. 구독 모드에 들어간 연결은 다른
@@ -37,14 +39,10 @@ const sub = new Redis(redisOptions);
 
 type Outgoing = { t: string; item: unknown };
 
-type Conn = {
+type Conn = ChatIngressConnection & {
   socket: WebSocket;
-  broadcastId: string;
-  userKey: string;
   // 200ms 창에 쌓이는 것들. 창이 비면 프레임을 보내지 않는다.
   pending: Outgoing[];
-  // 직전 발화. is_duplicate 판정에만 쓰고 본문을 저장하지는 않는다.
-  lastHash: string | null;
 };
 
 const conns = new Set<Conn>();
@@ -102,7 +100,7 @@ setInterval(() => {
 
 // ── 인입 처리 ─────────────────────────────────────────────────
 
-async function overRateLimit(conn: Conn): Promise<boolean> {
+async function overRateLimit(conn: ChatIngressConnection): Promise<boolean> {
   const key = `chat:rate:${conn.broadcastId}:${conn.userKey}`;
   const count = await pub.incr(key);
   // 첫 증가에만 만료를 건다. 매번 걸면 창이 계속 밀려 제한이 무의미해진다.
@@ -110,34 +108,17 @@ async function overRateLimit(conn: Conn): Promise<boolean> {
   return count > config.rateLimitPerMinute;
 }
 
-async function handleChat(conn: Conn, msg: string): Promise<void> {
-  const hash = digest(msg);
-  const isDuplicate = conn.lastHash === hash;
-  conn.lastHash = hash;
-
-  const base = { msg_length: msg.length, msg_hash: hash, is_duplicate: isDuplicate };
-  const ctx = { broadcastId: conn.broadcastId, userKey: conn.userKey };
-
-  // 거부된 발화도 발행한다. 안 하면 레이트 리밋에 걸린 매크로가 통계에서
-  // 사라진다 — coupon.issue 에서 실패를 반드시 발행하는 것과 같은 이유다.
-  if (msg.length > config.maxMessageLength) {
-    emitChatSend({ ...base, rejected_code: 'TOO_LONG' }, ctx);
-    return;
-  }
-  if (await overRateLimit(conn)) {
-    emitChatSend({ ...base, rejected_code: 'RATE_LIMITED' }, ctx);
-    return;
-  }
-
-  emitChatSend(base, ctx);
-
-  // 자기 파드에 직접 넣지 않고 Pub/Sub 으로만 보낸다. 그래야 모든 파드가
-  // 같은 경로로 받아 순서와 중복이 한 곳에서만 정해진다.
-  await pub.publish(
-    channel(conn.broadcastId),
-    JSON.stringify({ user: conn.userKey, nick: conn.userKey.slice(0, 8), msg, ts: Date.now() }),
-  );
-}
+const handleChat = createChatIngressHandler({
+  maxMessageLength: config.maxMessageLength,
+  overRateLimit,
+  emitChatSend,
+  emitChatSignal,
+  publishFanout: (conn, msg) =>
+    pub.publish(
+      channel(conn.broadcastId),
+      JSON.stringify({ user: conn.userKey, nick: conn.userKey.slice(0, 8), msg, ts: Date.now() }),
+    ),
+});
 
 // ── 서버 ──────────────────────────────────────────────────────
 

@@ -352,6 +352,11 @@ accepted chat
 - SQS 전송 실패는 채팅 수락과 Valkey 팬아웃을 실패시키지 않는 `fail-open`이다.
 - Chat Gateway는 분류·집계·Datadog·Agent 호출을 하지 않는다.
 - SQS 입력은 5.6을 따른다.
+- `CHAT_SIGNAL_MODE=off`는 AWS client를 호출하지 않는다. 알 수 없는 값도 `off`로 닫는다.
+- `CHAT_SIGNAL_MODE=shadow`만 전송하며 Valkey 팬아웃은 SQS Promise를 기다리지 않는다.
+- 백그라운드 요청은 `CHAT_SIGNAL_SEND_TIMEOUT_MS` 안에 중단한다. 초기 500ms는 실측
+  SLO가 아니라 요청 누적 방지 가드다.
+- 전송 실패 관측에는 오류 코드와 소요시간만 허용하며 원문과 예외 메시지는 금지한다.
 - 상세 처리 규칙은 [`chat-incident-candidate.md`](chat-incident-candidate.md)가 원본이다.
 
 ---

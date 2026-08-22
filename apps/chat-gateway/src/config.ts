@@ -10,6 +10,20 @@ function num(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function positiveNum(name: string, fallback: number): number {
+  const value = num(name, fallback);
+  return value > 0 ? Math.floor(value) : fallback;
+}
+
+export type ChatSignalMode = 'off' | 'shadow';
+
+const rawChatSignalMode = process.env.CHAT_SIGNAL_MODE ?? 'off';
+export function parseChatSignalMode(raw: string | undefined): ChatSignalMode {
+  return raw === 'shadow' ? 'shadow' : 'off';
+}
+
+const chatSignalMode = parseChatSignalMode(rawChatSignalMode);
+
 export const config = {
   port: num('PORT', 8080),
 
@@ -51,6 +65,19 @@ export const config = {
    * EMIT_CHAT_EVENTS=true로 명시적으로 켜는 것이 안전하다.
    */
   emitChatEvents: (process.env.EMIT_CHAT_EVENTS ?? 'false') === 'true',
+
+  /**
+   * Incident Candidate 입력용 SQS 분기. 기본값과 알 수 없는 값은 fail-safe로 off다.
+   * shadow는 큐에 쓰기만 하며 사용자 응답이나 Valkey 팬아웃 결과를 기다리지 않는다.
+   */
+  chatSignalMode,
+  chatSignalQueueUrl: process.env.SQS_CHAT_SIGNAL_QUEUE_URL ?? '',
+
+  /**
+   * 백그라운드 SQS 요청이 무한히 쌓이지 않게 하는 초기 가드다. 500ms는 실측 SLO가
+   * 아니며 Shadow Mode에서 성공률·지연을 측정한 뒤 조정한다.
+   */
+  chatSignalSendTimeoutMs: positiveNum('CHAT_SIGNAL_SEND_TIMEOUT_MS', 500),
 
   /**
    * chat.send 전송 목적지. Python SDK 의 O2_EVENTS_SINK 와 같은 이름·같은 값

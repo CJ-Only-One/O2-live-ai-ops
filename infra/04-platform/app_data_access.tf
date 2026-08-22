@@ -66,8 +66,10 @@ resource "kubectl_manifest" "app_data_config" {
       #   redis-py: Redis(..., ssl=True) / ioredis: new Redis({ tls: {} })
       VALKEY_TLS = tostring(local.datastore.valkey_tls_required)
 
-      SQS_ORDER_QUEUE_URL       = local.datastore.order_queue_url
-      SQS_CHAT_SIGNAL_QUEUE_URL = local.datastore.chat_signal_queue_url
+      SQS_ORDER_QUEUE_URL         = local.datastore.order_queue_url
+      SQS_CHAT_SIGNAL_QUEUE_URL   = local.datastore.chat_signal_queue_url
+      CHAT_SIGNAL_MODE            = var.chat_signal_mode
+      CHAT_SIGNAL_SEND_TIMEOUT_MS = tostring(var.chat_signal_send_timeout_ms)
 
       # HLS 플레이리스트 주소의 앞부분. 프론트와 MediaMTX 가 같은 ALB 뒤에
       # 있어 상대 경로다. CloudFront 를 앞에 붙이면 절대 주소로 바꾼다.
