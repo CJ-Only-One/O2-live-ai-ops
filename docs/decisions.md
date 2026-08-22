@@ -60,6 +60,7 @@
 | D-043 | Dify 는 SigV4 를 못 한다 — 서명을 프록시로 분리한다 | `ApiProviderAuthType`, `hot-proxy`, squid allowlist, `internal: true`, IMDS |
 | D-044 | 인시던트 이력은 S3 Vectors 에 둔다 | 번들 weaviate 유실, DynamoDB 는 유사검색 불가, 임베딩 1회, 공유 zip, MTTR |
 | D-045 | 검증 전에는 원인을 말하지 않는다 | `outcome.state` 다섯 값, 복구≠해결, 추측 세탁, 통제 어휘, Recovered 를 Worker 로 |
+| D-046 | Runbook 조회도 D-043 과 같은 이유로 Lambda 릴레이를 쓴다 | `aws_iam_role.dify` 죽은 권한, SigV4, Function URL, x-api-key |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -2839,3 +2840,66 @@ Datadog 이 기다린다.
 (`worker.py` 가 라우팅용으로 소비하고 끝낸다) 승인 Lambda 의 `incident_id` 가
 `"unknown"` 으로 떨어진다. 이으려면 Dify 입력 계약에 `cycle_key` 를 추가해야
 한다 — `dify/README.md` 1절의 네 곳을 같이 고치는 그 작업이다.
+
+## D-046. Runbook 조회도 D-043 과 같은 이유로 Lambda 릴레이를 쓴다
+
+Runbook 테이블(`runbook.tf`)의 첫 초안은 읽기 권한(`GetItem`·`Query`)을
+**`aws_iam_role.dify`(Dify EC2 인스턴스 역할)에 직접** 붙이는 모양이었다.
+Node 11 이 그 역할로 DynamoDB 를 바로 두드린다는 전제였다. **적용 전
+설계 검토에서 이 전제가 틀렸다는 게 드러났다.**
+
+### 왜 틀렸나
+
+D-043 이 이미 확인한 사실이 그대로 적용된다 — Dify 1.16.1 의 Custom
+Tool/HTTP 요청 노드가 쓸 수 있는 인증은 `NONE`·`API_KEY_HEADER`·
+`API_KEY_QUERY` 세 가지뿐이고, 어디에도 SigV4 서명 경로가 없다. DynamoDB
+API 는 SigV4 서명 없이는 호출 자체가 안 된다.
+
+즉 `aws_iam_role.dify` 에 `dynamodb:Query` 를 아무리 붙여봐야, **그 권한을
+실제로 행사할 방법이 Node 11 에 없다.** Node 11 은 그 역할의 자격증명을
+서명에 쓸 수 있는 도구가 아니라 평범한 HTTP 요청 노드이기 때문이다. IAM
+문서만 보면 문제가 없어 보이지만, 워크플로 쪽에서 절대 쓰이지 않는
+죽은 권한이 남는 것과 같다 — 그 자체로 사고는 아니지만, 다음 사람이
+"이미 권한이 있으니 Node 11 이 직접 조회한다"고 잘못 읽을 근거가 된다.
+
+### 그래서 무엇을 했나
+
+D-043 의 `hot-proxy` 와 같은 모양을, 이번에는 EC2 인스턴스 안 프록시가
+아니라 독립 Lambda 로 둔다(`runbook_lookup.tf`, `lambda/runbook_lookup.py`).
+
+```
+Dify (HTTP 요청 노드, x-api-key) ──▶ runbook_lookup Lambda ──Query──▶ DynamoDB
+```
+
+- Lambda 는 **자신의 실행 역할**로 `GetItem`·`Query` 만 갖는다
+  (`aws_iam_role.dify` 는 이 권한을 더 이상 갖지 않는다 — `runbook.tf` 에서
+  뺐다).
+- Dify → Lambda 구간은 Function URL(`authorization_type = NONE`) + 코드
+  내부 `x-api-key` 비교로 인증한다. `slack_approval.tf` 와 같은 모양이다.
+- `hot-proxy` 와 달리 **수동 SigV4 서명이 필요 없다.** 대상이 이미
+  AWS 서비스(DynamoDB)라서 Lambda 안에서 boto3 로 부르면 SDK 가 서명을
+  알아서 한다. `hot-proxy` 는 대상이 *다른* Function URL(`AWS_IAM`)이라
+  서명을 직접 만들어야 했던 것과 다르다 — 이번이 더 단순한 경우다.
+
+### slack_approval.tf 와 같은 모양이지만 이유는 다르다
+
+두 곳 다 "Lambda + Function URL + 코드 내부 헤더 검증" 이지만, 그 모양을
+쓰는 이유가 다르다.
+
+| | slack_approval.tf | runbook_lookup.tf |
+|---|---|---|
+| 문제 | Dify 의 동기 HTTP 노드와 Slack 의 비동기 콜백을 잇는다 | Dify 가 DynamoDB 를 직접 서명 호출할 수 없다 |
+| 이 파일이 없다면 | 버튼 클릭을 받을 방법이 없다 | Node 11 이 애초에 테이블에 못 닿는다 |
+| 근거 | (그 자체로 필요한 중계) | D-043 |
+
+같은 부품을 다른 이유로 재사용한 것이라, "왜 또 Lambda 를 두나" 라는
+질문이 나올 때 이 표를 본다.
+
+### 적용 전에 잡았다
+
+이 IAM 권한은 **한 번도 apply 된 적이 없다** — 설계 리뷰 중에 걸러졌다.
+사후 대응이 아니라 사전 발견이라는 점을 남긴다. `runbook_lookup.py` 의
+`x-api-key` 비교는 여기서 새로 `hmac.compare_digest` 로 썼다 (기존
+`slack_approval_request.py` 는 평범한 `!=` 비교이고, 이번 범위에서는
+손대지 않았다 — 둘 다 문제라기보다는 이 파일을 새로 쓰는 김에 상수 시간
+비교로 시작한 것뿐이다).

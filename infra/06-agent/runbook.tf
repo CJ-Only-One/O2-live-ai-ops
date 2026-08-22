@@ -1,0 +1,55 @@
+# Runbook 저장소. Node 11(진단 이후 조치 조회)이 읽는 원천이다.
+#
+# 스키마는 이미 확정되어 있다:
+#
+#   PK  rca_type              RCA 유형 하나
+#   SK  DEF                    유형당 정확히 하나. success_criteria(복구 판정 조건) 보관
+#       ACTION#{action_id}     유형당 여러 개. risk_level·expected_effect·blast_radius·
+#                              parameters_schema 보관
+#
+# ★ parameters_schema.source 는 두 갈래다 — observability.*(런타임 관측값, Node 7 이
+#   observability 키 아래로 몰아넣은 것) vs static:xxx(고정 정책값). 이 구분은 테이블
+#   스키마가 아니라 ACTION 아이템 안 값의 관례라 여기 코드엔 드러나지 않지만,
+#   Node 19(파라미터 리졸버)가 이 관례를 그대로 믿고 파싱한다.
+#
+# related_docs·usage_stats·escalation_target 은 아직 스키마에 안 넣는다.
+# 서비스 레벨 정보라 따로 관리하기로 한 항목들이다.
+#
+# ★ labels.txt 의 runbooks/<label>.md(사람이 읽는 마크다운 대응 문서)와는
+#   다른 것이다. 이 테이블은 에이전트가 자동으로 조회·실행하는 기계 판독용
+#   카탈로그다 — 이름이 같아서 헷갈리기 쉽다.
+
+resource "aws_dynamodb_table" "runbook" {
+  name         = "${local.name}-runbook"
+  billing_mode = "PAY_PER_REQUEST"
+
+  hash_key  = "rca_type"
+  range_key = "sk"
+
+  attribute {
+    name = "rca_type"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  # PITR 안 건다. 진짜 원본은 이 테이블이 아니라 시딩 스크립트다 — 테이블이
+  # 날아가도 스크립트를 다시 돌리면 그대로 복구된다. history.tf 의 S3 버전관리와는
+  # 반대 결론인데, 거기는 "산출물이라 원본이 코드 밖에만 있는" 경우고 여기는
+  # "원본이 스크립트(=코드)로 남아있는" 경우라 그렇다.
+  point_in_time_recovery {
+    enabled = false
+  }
+
+  tags = {
+    Name = "${local.name}-runbook"
+  }
+}
+
+output "runbook_table_name" {
+  description = "시딩 스크립트와 runbook_lookup Lambda 환경변수에 넣을 테이블 이름"
+  value       = aws_dynamodb_table.runbook.name
+}

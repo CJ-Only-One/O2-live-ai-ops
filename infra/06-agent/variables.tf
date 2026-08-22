@@ -181,6 +181,26 @@ variable "slack_approval_secret_name" {
   default     = "o2/dev/slack-approval"
 }
 
+# ── Runbook Lookup Lambda ────────────────────────────────────────
+
+variable "runbook_lookup_secret_name" {
+  description = <<-EOT
+    Runbook Lookup Lambda 가 실행 시점에 읽는 **Secrets Manager 시크릿 이름**.
+
+    값이 아니라 이름만 참조한다. 시크릿은 apply 전에 손으로 한 번 만든다.
+    키 하나가 필요하다:
+
+      runbook-lookup-api-key   임의로 정하는 값. Dify 의
+                                RUNBOOK_LOOKUP_API_KEY 환경변수와 반드시 같아야 한다
+
+      aws secretsmanager create-secret --name o2/dev/runbook-lookup \
+        --secret-string '{"runbook-lookup-api-key":"..."}' \
+        --region ap-northeast-2
+  EOT
+  type        = string
+  default     = "o2/dev/runbook-lookup"
+}
+
 # ── Session Manager ──────────────────────────────────────────────
 
 variable "manage_session_preferences" {
