@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["boto3", "botocore[crt]"]
+# ///
 """검증 안 된 인시던트를 하나씩 보여주고 사람이 원인을 확정한다.
 
     python3 scripts/verify.py            # 미검증 건을 순서대로 처리

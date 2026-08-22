@@ -33,9 +33,14 @@ def tf_output(name):
         text=True,
     )
     if out.returncode != 0:
+        # 제일 흔한 원인은 apply 를 아직 안 한 것이다. 출력은 state 에 들어가야
+        # 읽히는데, 코드에 추가한 것만으로는 state 가 안 바뀐다.
         sys.exit(
-            f"terraform output '{name}' 실패. {MODULE} 에서 terraform init 이 됐는지,\n"
-            f"AWS 세션이 살아 있는지 확인해라.\n{out.stderr.strip()}"
+            f"terraform output '{name}' 을 못 읽었다. 흔한 순서로:\n"
+            f"  1. {MODULE} 에서 terraform apply 를 했는가 (출력은 apply 뒤에 생긴다)\n"
+            f"  2. terraform init 은 됐는가\n"
+            f"  3. AWS 세션은 살아 있는가 (aws sts get-caller-identity)\n\n"
+            f"{out.stderr.strip()}"
         )
     return out.stdout.strip()
 

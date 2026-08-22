@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["boto3", "botocore[crt]"]
+# ///
 """원인 라벨별 횟수와 런북 유무를 낸다. 런북을 무엇부터 쓸지 정하는 도구다.
 
     python3 scripts/label-report.py

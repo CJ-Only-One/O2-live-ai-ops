@@ -319,10 +319,23 @@ mttr_sec = recovered_at － occurred_at
 ### 도구
 
 ```bash
-python3 scripts/verify.py         # 미검증 건에 사람이 원인을 확정한다
-python3 scripts/verify.py --list  # 목록만
-python3 scripts/label-report.py   # 라벨별 횟수 + 런북 유무
+./scripts/verify.py         # 미검증 건에 사람이 원인을 확정한다
+./scripts/verify.py --list  # 목록만
+./scripts/label-report.py   # 라벨별 횟수 + 런북 유무
 ```
+
+★ **`pip install` 이 필요 없다.** 두 스크립트는 셔뱅이 `uv run --script` 이고
+파일 안에 의존성이 선언돼 있다(PEP 723). `uv` 만 있으면 첫 실행에서 알아서
+받아 격리된 환경으로 돌린다 — 이 저장소에 venv 를 만들지 않는다.
+
+`botocore[crt]` 가 의존성에 들어 있는 이유는 **`aws login` 으로 받은 자격증명을
+읽으려면 그게 있어야 하기 때문이다.** 없으면 `MissingDependencyException` 이 난다.
+
+`uv` 가 없으면 `brew install uv`. 굳이 안 쓰겠다면 `python3 scripts/...` 로도
+돌지만 그때는 boto3 를 직접 깔아야 한다.
+
+버킷 이름은 `terraform output` 으로 읽는다. 스크립트에 적어 두지 않는다 —
+**출력은 `apply` 뒤에 생기므로 apply 전에는 안 돈다.**
 
 `label-report.py` 가 런북을 무엇부터 쓸지 알려준다. 같은 라벨이 3회 반복되면
 표시된다 (심각도가 높으면 1회로도 쓴다).
