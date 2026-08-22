@@ -16,14 +16,12 @@
 #   - aws_sns_topic.alert_relay_alarm (같은 사람이 알람을 받으면 되고, 이메일
 #     구독 확인 절차를 또 만들 이유가 없다)
 #
-# ★ 인시던트 이력(history.tf)은 이쪽에 **일부러 안 붙였다.**
-#   코드는 같은 zip 이라 이미 들어 있고, HISTORY_BUCKET 등 환경변수가 없으면
-#   그 기능만 꺼진 채 중계는 정상으로 돈다 (lambda/worker.py 상단 주석).
-#
-#   켜기 전에 먼저 풀어야 할 것: 두 파이프라인이 같은 Datadog 모니터를 받으면
-#   **cycle_key 가 같아서 서로의 인시던트를 덮어쓴다.** 환경변수만 복사해
-#   붙이면 조용히 데이터가 사라진다. S3 키와 벡터 키에 파이프라인 구분을
-#   먼저 넣고, 그 다음에 IAM(bedrock·s3vectors·s3)을 준다.
+# ★ 인시던트 이력을 켰다. history.tf(원본, alert-triage 전용)와는 버킷을
+#   완전히 분리했다 — history_o2.tf 의 aws_s3_bucket.history_o2 /
+#   aws_s3vectors_vector_bucket.history_o2 / aws_s3vectors_index.incidents_o2.
+#   같은 Datadog 모니터가 두 파이프라인에 다 알림을 보내도 cycle_key 가
+#   서로 다른 버킷/인덱스에 떨어지므로 덮어쓸 일이 없다. 코드(worker.py/
+#   ingress.py) 수정은 필요 없다 — 환경변수만 O2 전용 리소스를 가리킨다.
 
 locals {
   alert_ingress_name_o2 = "o2-dify-ingress"
@@ -64,6 +62,15 @@ data "aws_iam_policy_document" "alert_relay_o2" {
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.alert_worker_o2.arn]
   }
+
+  # 복구 알림의 시각만 남긴다 (MTTR 재료). incidents/ 는 Worker 것이므로
+  # 접두사를 갈라 준다 — 원본(lambda.tf)의 WriteResolutions 와 같은 이유.
+  statement {
+    sid       = "WriteResolutionsO2"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.history_o2.arn}/resolutions/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "alert_relay_o2" {
@@ -98,6 +105,7 @@ resource "aws_lambda_function" "alert_relay_o2" {
     variables = {
       ALERT_SECRET_NAME = var.alert_secret_name_o2
       WORKER_FUNCTION   = aws_lambda_function.alert_worker_o2.function_name
+      HISTORY_BUCKET    = aws_s3_bucket.history_o2.bucket
     }
   }
 
@@ -142,6 +150,46 @@ data "aws_iam_policy_document" "alert_worker_o2" {
     actions   = ["sqs:SendMessage"]
     resources = [aws_sqs_queue.alert_dlq_o2.arn]
   }
+
+  # 알림 텍스트를 벡터로 바꾼다. history.tf 의 local.embed_model_id 를 그대로
+  # 재사용한다 — 원본(lambda.tf)의 EmbedAlertText 와 같은 이유로 모델 하나로 좁힌다.
+  statement {
+    sid       = "EmbedAlertTextO2"
+    effect    = "Allow"
+    actions   = ["bedrock:InvokeModel"]
+    resources = ["arn:aws:bedrock:${var.region}::foundation-model/${local.embed_model_id}"]
+  }
+
+  # QueryVectors 만으로는 안 된다. returnMetadata=true 로 부르면 AWS 가
+  # GetVectors 도 함께 검사한다 (원본 lambda.tf 의 SearchAndStoreVectors 주석,
+  # 실측 AccessDeniedException 근거 동일).
+  statement {
+    sid    = "SearchAndStoreVectorsO2"
+    effect = "Allow"
+    actions = [
+      "s3vectors:QueryVectors",
+      "s3vectors:GetVectors",
+      "s3vectors:PutVectors",
+    ]
+    resources = [aws_s3vectors_index.incidents_o2.index_arn]
+  }
+
+  statement {
+    sid       = "WriteIncidentsO2"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.history_o2.arn}/incidents/*"]
+  }
+
+  # Recovered 처리(worker.py _handle_recovery)가 원본을 다시 읽어 병합한다.
+  # 원본 lambda.tf 의 WriteIncidents 에는 이 GetObject 가 빠져 있었다 —
+  # 여기서는 빠뜨리지 않는다.
+  statement {
+    sid       = "ReadIncidentsO2"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.history_o2.arn}/incidents/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "alert_worker_o2" {
@@ -185,6 +233,11 @@ resource "aws_lambda_function" "alert_worker_o2" {
     variables = {
       DIFY_URL          = "http://${aws_instance.dify.private_ip}/v1/workflows/run"
       ALERT_SECRET_NAME = var.alert_secret_name_o2
+
+      HISTORY_BUCKET = aws_s3_bucket.history_o2.bucket
+      VECTOR_BUCKET  = aws_s3vectors_vector_bucket.history_o2.vector_bucket_name
+      VECTOR_INDEX   = aws_s3vectors_index.incidents_o2.index_name
+      EMBED_MODEL_ID = local.embed_model_id
     }
   }
 
