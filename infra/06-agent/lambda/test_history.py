@@ -99,6 +99,127 @@ def test_incident_key_falls_back():
     assert worker._incident_key({}) == "unknown"
 
 
+# ── 복구 결과 적재 ────────────────────────────────────────────────
+
+
+def test_epoch_sec_tells_seconds_from_millis():
+    """단위를 틀리면 MTTR 이 1000배 어긋나는데 숫자가 그럴듯해서 안 보인다."""
+    assert worker._epoch_sec(1787312904) == 1787312904        # 초
+    assert worker._epoch_sec(1787312904000) == 1787312904     # 밀리초
+    assert worker._epoch_sec("1787312904") == 1787312904      # 문자열로 온다
+    assert worker._epoch_sec("") is None
+    assert worker._epoch_sec(None) is None
+
+
+def test_mttr_rejects_nonsense():
+    assert worker._mttr_sec(1787312904, 1787313624) == 720
+    assert worker._mttr_sec(1787312904, 1787312904000) == 0   # 단위가 섞여도 맞춘다
+    assert worker._mttr_sec(1787313624, 1787312904) is None   # 복구가 발생보다 앞
+    assert worker._mttr_sec(None, 1787312904) is None
+
+
+def test_summary_hides_cause_until_verified():
+    """★ 이 파일에서 가장 중요한 검사다.
+
+    검증 안 된 사례가 원인을 말하면 에이전트 추측이 다음 판단의 '과거 사례'가
+    되어 사실로 승격된다. 그 경로를 코드로 막았는지 본다.
+    """
+    out = {
+        "state": "auto_recovered",
+        "mttr_sec": 720,
+        "root_cause_label": "db_lock_contention",
+        "verified": False,
+    }
+    unverified = worker._summary("주문 생성 지연", out)
+    assert "db_lock_contention" not in unverified, unverified
+    assert "[미검증]" in unverified
+    assert "12분 뒤 자동복구" in unverified
+
+    out["verified"] = True
+    verified = worker._summary("주문 생성 지연", out)
+    assert "db_lock_contention" in verified
+    assert "[확인됨]" in verified
+
+
+def test_summary_strips_datadog_transition_prefix():
+    """`[Triggered] ... 12분 뒤 자동복구` 는 한 줄 안에서 모순된다."""
+    out = {"state": "auto_recovered", "mttr_sec": 720, "verified": False}
+    got = worker._summary("[Triggered] [TEST] [O2] 주문 확정 큐가 밀린다", out)
+
+    assert "[Triggered]" not in got, got
+    assert "[TEST]" in got, "팀이 붙인 딱지는 건드리지 않는다"
+    assert "[미검증]" in got
+    assert got.startswith("[미검증] · [TEST]"), got
+
+    # 여러 개가 겹쳐 오거나 대소문자가 달라도 걷어낸다
+    assert "[" not in worker._summary("[Recovered][Warn] 큐", out).split("·")[1]
+
+
+def test_summary_marks_open_and_false_alarm():
+    open_case = worker._summary("x", {"state": "unresolved", "verified": False})
+    assert "[진행중]" in open_case and "복구 미확인" in open_case
+
+    bogus = worker._summary("x", {"state": "false_alarm", "verified": True})
+    assert "[오탐]" in bogus
+
+
+def _incident(**outcome):
+    base = {
+        "state": "unresolved",
+        "mttr_sec": None,
+        "root_cause_label": None,
+        "verified": False,
+    }
+    return {
+        "s3_key": "incidents/dt=2026-08-21/k.json",
+        "started_at": "2026-08-21T11:48:37+00:00",
+        "trigger": {"monitor_id": 21940247},
+        "context": {"service": "api", "env": "dev", "signal_summary": "주문 생성 지연"},
+        "outcome": {**base, **outcome},
+    }
+
+
+def test_metadata_omits_unknown_values():
+    """빈 값에 -1 이나 '' 를 넣으면 나중에 필터가 그 표식까지 걸러야 한다."""
+    meta = worker._metadata(_incident())
+    assert "mttr_sec" not in meta
+    assert "root_cause_label" not in meta
+    assert meta["outcome_state"] == "unresolved"
+    assert meta["verified"] is False
+    assert meta["occurred_at"] == "2026-08-21"
+
+    filled = worker._metadata(_incident(mttr_sec=720, root_cause_label="cache_cold_start",
+                                        verified=True, state="auto_recovered"))
+    assert filled["mttr_sec"] == 720
+    assert filled["root_cause_label"] == "cache_cold_start"
+
+
+def test_recovery_skips_already_closed_incident():
+    """flapping. Recovered 가 또 와도 MTTR 을 마지막 진동으로 덮어쓰지 않는다."""
+
+    class Vectors:
+        def get_vectors(self, **kw):
+            return {"vectors": [{"key": "k", "data": {"float32": []},
+                                 "metadata": {"outcome_state": "auto_recovered"}}]}
+
+        def put_vectors(self, **kw):
+            raise AssertionError("이미 닫힌 건을 다시 썼다")
+
+    worker._clients = lambda: (None, None, Vectors())
+    assert worker._handle_recovery({"cycle_key": "k"}) == {"ok": True, "merged": False}
+
+
+def test_recovery_without_incident_is_not_an_error():
+    """Triggered 를 놓친 경우. 예외로 올리면 DLQ 가 쓰레기로 찬다."""
+
+    class Vectors:
+        def get_vectors(self, **kw):
+            return {"vectors": []}
+
+    worker._clients = lambda: (None, None, Vectors())
+    assert worker._handle_recovery({"cycle_key": "없는키"})["merged"] is False
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

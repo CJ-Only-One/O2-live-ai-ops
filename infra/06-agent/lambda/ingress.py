@@ -44,15 +44,22 @@ def _load_secrets():
 
 
 def _record_recovery(body):
-    """복구 시각만 S3 에 남긴다. MTTR 재료다.
+    """복구 시각을 남기고, 이력 적재를 Worker 에게 넘긴다.
 
-    ★ incidents/ 의 기존 객체를 고치지 않고 **따로 쓴다.** 그쪽은 날짜로
-      파티션되어 있어 고치려면 어느 날짜인지 먼저 찾아야 하고, 그러면 읽기가
-      생긴다. 따로 쓰면 읽기가 없고 append-only 원칙도 지켜진다.
-      MTTR 은 나중에 cycle_key 로 두 파일을 짝지어 빼면 나온다.
+    두 가지를 한다. 순서가 의미 있다.
 
-    ★ 무슨 일이 있어도 예외를 밖으로 내보내지 않는다. 이 함수의 실패로
-      200 을 못 주면 Datadog 이 재시도하고, 그 재시도가 다시 여기로 온다.
+      1. resolutions/<cycle_key>.json 에 복구 시각을 쓴다 — 증거를 먼저 남긴다
+      2. Worker 를 비동기로 깨워 이력의 outcome 을 채우게 한다
+
+    2가 실패해도 1이 남아 있으므로 나중에 짝지어 복구할 수 있다. 그래서 순서가
+    반대면 안 된다.
+
+    ★ incidents/ 를 여기서 직접 고치지 않는다. 그쪽은 날짜로 파티션되어 있어
+      어느 날짜인지부터 찾아야 하고, Ingress 는 VPC 밖의 가벼운 문지기로 두는
+      것이 콜드스타트 설계의 전제다(623ms, M-002). 무거운 일은 Worker 몫이다.
+
+    ★ 무슨 일이 있어도 예외를 밖으로 내보내지 않는다. 이 함수의 실패로 200 을
+      못 주면 Datadog 이 알림을 재전송하고, 그 재전송이 다시 여기로 온다.
       **지표 결손이 알림 파이프라인 교란보다 싸다.**
     """
     if not HISTORY_BUCKET:
@@ -83,6 +90,16 @@ def _record_recovery(body):
     except Exception as e:  # noqa: BLE001 — 알림 경로를 막지 않는다
         print("recovery record failed:", type(e).__name__, e)
 
+    try:
+        _lambda.invoke(
+            FunctionName=WORKER_FUNCTION,
+            InvocationType="Event",
+            Payload=json.dumps(body).encode(),
+        )
+        print("recovery queued:", cycle_key)
+    except Exception as e:  # noqa: BLE001 — 위와 같은 이유
+        print("recovery queue failed:", type(e).__name__, e)
+
 
 def lambda_handler(event, context):
     secrets = _load_secrets()
@@ -105,18 +122,19 @@ def lambda_handler(event, context):
 
     print("incoming:", json.dumps(body, ensure_ascii=False))
 
-    # 복구 알림은 분석할 필요가 없다. 1차 필터는 Datadog Monitor 메시지의
+    # 복구 알림은 **분석하지 않는다.** Dify 로 보내지 않으므로 LLM 비용도
+    # Dify 워커 점유도 생기지 않는다. 1차 필터는 Datadog Monitor 메시지의
     # {{#is_alert}} 이고, 이건 그 조건을 빠뜨린 모니터를 대비한 2차 방어선이다.
-    # 여기서 걸러야 대기열과 재시도 횟수를 낭비하지 않는다.
     #
-    # **분석은 안 하지만 시각은 버리지 않는다.** Datadog 은 한 장애에 대해
-    # Triggered 와 Recovered 를 두 번 보내고 cycle_key 가 그 둘을 묶는다.
-    # 두 시각의 차가 곧 MTTR(장애 발생부터 복구까지)이고, 이 프로젝트의
-    # 평가 지표다. 여기서 버리면 되찾을 방법이 없다.
+    # **다만 버리지도 않는다.** Datadog 은 한 장애에 Triggered 와 Recovered 를
+    # 두 번 보내고 cycle_key 가 그 둘을 묶는다. 두 시각의 차가 MTTR 이고,
+    # "어떻게 끝났는가" 는 이 신호로만 알 수 있다. 여기서 버리면 되찾을 방법이 없다.
+    #
+    # 원래 이 자리에서 그냥 반환했다. Recovered 에 할 일이 생겨서 바꾼 것이지
+    # 걸러내던 판단이 틀렸던 것이 아니다 — 분석은 여전히 안 한다.
     if body.get("alert_transition") == "Recovered":
         _record_recovery(body)
-        print("skipped: recovered", body.get("event_id"))
-        return {"statusCode": 200, "body": "skipped"}
+        return {"statusCode": 200, "body": "recovered"}
 
     _lambda.invoke(
         FunctionName=WORKER_FUNCTION,
