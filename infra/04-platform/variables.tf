@@ -192,14 +192,24 @@ variable "app_namespace" {
 
 variable "app_service_accounts" {
   description = <<-EOT
-    Pod Identity 를 걸 ServiceAccount 목록. 서비스 이름과 같게 둔다.
+    Pod Identity 를 걸 고정 ServiceAccount 목록. 서비스 이름과 같게 둔다.
 
     매니페스트의 serviceAccountName 이 여기 없는 이름을 가리키면 파드는 뜨지만
     AWS 자격증명이 없어 SQS 호출에서만 실패한다 — 기동은 성공하고 런타임에
-    깨지므로 알아채기 늦다. 서비스를 추가할 때 여기도 함께 늘릴 것.
+    깨지므로 알아채기 늦다. 역할 매핑은 app_data_access.tf 에서 서비스별로
+    명시하므로, 서비스를 추가할 때 변수만 늘리면 안 되고 역할·정책·매핑을
+    함께 추가해야 한다.
   EOT
   type        = list(string)
   default     = ["api", "order-worker", "chat-gateway"]
+
+  validation {
+    condition = (
+      length(var.app_service_accounts) == 3 &&
+      toset(var.app_service_accounts) == toset(["api", "order-worker", "chat-gateway"])
+    )
+    error_message = "app_service_accounts는 api, order-worker, chat-gateway 세 항목과 정확히 일치해야 한다. 서비스 추가 시 역할·정책·매핑도 함께 변경해야 한다."
+  }
 }
 
 variable "enable_app_events" {

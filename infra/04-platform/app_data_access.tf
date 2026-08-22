@@ -66,7 +66,8 @@ resource "kubectl_manifest" "app_data_config" {
       #   redis-py: Redis(..., ssl=True) / ioredis: new Redis({ tls: {} })
       VALKEY_TLS = tostring(local.datastore.valkey_tls_required)
 
-      SQS_ORDER_QUEUE_URL = local.datastore.order_queue_url
+      SQS_ORDER_QUEUE_URL       = local.datastore.order_queue_url
+      SQS_CHAT_SIGNAL_QUEUE_URL = local.datastore.chat_signal_queue_url
 
       # HLS 플레이리스트 주소의 앞부분. 프론트와 MediaMTX 가 같은 ALB 뒤에
       # 있어 상대 경로다. CloudFront 를 앞에 붙이면 절대 주소로 바꾼다.
@@ -184,8 +185,10 @@ resource "aws_iam_role_policy" "external_secrets_read_db" {
   policy = data.aws_iam_policy_document.external_secrets_read_db[0].json
 }
 
-# ── SQS 접근 권한 ─────────────────────────────────────────────
-# API 파드가 주문 메시지를 넣고, 워커가 꺼낸다.
+# ── 애플리케이션별 AWS 접근 권한 ──────────────────────────────
+# API는 주문 큐 전송, order-worker는 주문 큐 소비, chat-gateway는 Chat Signal
+# 전송만 허용한다. 하나의 공용 역할을 쓰면 chat-gateway가 주문 메시지를 삭제할
+# 수도 있으므로 역할을 서비스별로 분리한다(D-047).
 # IRSA 가 아니라 Pod Identity 를 쓴다 — ESO 와 같은 방식이고,
 # ServiceAccount 애노테이션이나 OIDC 결합이 없어 클러스터 재생성이 단순하다.
 
@@ -206,34 +209,77 @@ data "aws_iam_policy_document" "app_assume" {
 resource "aws_iam_role" "app" {
   count = var.enable_app_data_wiring ? 1 : 0
 
+  # 기존 역할 주소와 이름을 API 역할로 유지해 불필요한 교체를 피한다.
   name               = "${var.project}-${var.environment}-app"
   assume_role_policy = data.aws_iam_policy_document.app_assume[0].json
 }
 
-data "aws_iam_policy_document" "app_sqs" {
+resource "aws_iam_role" "order_worker" {
   count = var.enable_app_data_wiring ? 1 : 0
 
-  # 큐 하나로 리소스를 좁힌다. 계정의 모든 큐에 대한 권한을 주면
-  # 백데이터 파트의 큐까지 닿는다.
+  name               = "${var.project}-${var.environment}-order-worker"
+  assume_role_policy = data.aws_iam_policy_document.app_assume[0].json
+}
+
+resource "aws_iam_role" "chat_gateway" {
+  count = var.enable_app_data_wiring ? 1 : 0
+
+  name               = "${var.project}-${var.environment}-chat-gateway"
+  assume_role_policy = data.aws_iam_policy_document.app_assume[0].json
+}
+
+data "aws_iam_policy_document" "api_order_queue" {
+  count = var.enable_app_data_wiring ? 1 : 0
+
   statement {
-    effect = "Allow"
-    actions = [
-      "sqs:SendMessage",
-      "sqs:ReceiveMessage",
-      "sqs:DeleteMessage",
-      "sqs:GetQueueAttributes",
-      "sqs:GetQueueUrl",
-    ]
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
     resources = [local.datastore.order_queue_arn]
   }
 }
 
-resource "aws_iam_role_policy" "app_sqs" {
+resource "aws_iam_role_policy" "api_order_queue" {
   count = var.enable_app_data_wiring ? 1 : 0
 
-  name   = "order-queue"
+  name   = "send-order-queue"
   role   = aws_iam_role.app[0].id
-  policy = data.aws_iam_policy_document.app_sqs[0].json
+  policy = data.aws_iam_policy_document.api_order_queue[0].json
+}
+
+data "aws_iam_policy_document" "order_worker_queue" {
+  count = var.enable_app_data_wiring ? 1 : 0
+
+  statement {
+    effect    = "Allow"
+    actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage"]
+    resources = [local.datastore.order_queue_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "order_worker_queue" {
+  count = var.enable_app_data_wiring ? 1 : 0
+
+  name   = "consume-order-queue"
+  role   = aws_iam_role.order_worker[0].id
+  policy = data.aws_iam_policy_document.order_worker_queue[0].json
+}
+
+data "aws_iam_policy_document" "chat_gateway_queue" {
+  count = var.enable_app_data_wiring ? 1 : 0
+
+  statement {
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [local.datastore.chat_signal_queue_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "chat_gateway_queue" {
+  count = var.enable_app_data_wiring ? 1 : 0
+
+  name   = "send-chat-signal-queue"
+  role   = aws_iam_role.chat_gateway[0].id
+  policy = data.aws_iam_policy_document.chat_gateway_queue[0].json
 }
 
 # ServiceAccount 를 여기서 만드는 이유:
@@ -262,10 +308,16 @@ resource "aws_eks_pod_identity_association" "app" {
   cluster_name    = local.cluster_name
   namespace       = var.app_namespace
   service_account = each.value
-  role_arn        = aws_iam_role.app[0].arn
+  role_arn = {
+    api          = aws_iam_role.app[0].arn
+    order-worker = aws_iam_role.order_worker[0].arn
+    chat-gateway = aws_iam_role.chat_gateway[0].arn
+  }[each.value]
 
   depends_on = [
-    aws_iam_role_policy.app_sqs,
+    aws_iam_role_policy.api_order_queue,
+    aws_iam_role_policy.order_worker_queue,
+    aws_iam_role_policy.chat_gateway_queue,
     kubectl_manifest.app_service_account,
   ]
 }

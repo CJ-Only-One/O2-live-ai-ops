@@ -15,7 +15,8 @@ infra/
   00-cicd/       GitHub OIDC, IAM 역할, ECR
   01-network/    VPC, 서브넷, 라우팅, NAT
   02-eks/        클러스터, 노드그룹, EKS 애드온
-  03-data/       RDS, Valkey, SQS (backend key는 `datastore/` · D-015, D-017)
+  03-data/       RDS, Valkey, 주문·Chat Signal SQS, Candidate DynamoDB
+                 (backend key는 `datastore/` · D-015, D-017, D-047)
   04-platform/   Argo CD, Load Balancer Controller, ESO, Datadog 에이전트,
                  클러스터 접근 권한과 앱 배선
   05-datadog/    Datadog 대시보드
@@ -30,6 +31,7 @@ docs/
   architecture.md  전체 설계 (부하 가정, 캐싱, 스케일링, 리스크)
   decisions.md   결정 기록
   contracts.md   인터페이스 계약 (REST, WebSocket, 캐시 키, 이벤트)
+  chat-incident-candidate.md  채팅 기반 Incident Candidate canonical spec
   schema.md      MySQL 테이블·Valkey 키·마이그레이션
 ```
 
