@@ -123,7 +123,19 @@ def lambda_handler(event, context):
     secrets = _load_secrets()
 
     if headers.get(API_KEY_HEADER) != secrets["approval-api-key"]:
-        print("rejected: bad api key")
+        # ★ 실제 값은 절대 로그에 남기지 않는다. 길이/공백/해시만 비교해서
+        #   "뭐가 다른지"를 진단한다 (T: Dify 테스트 워크플로우에서 403 반복 —
+        #   원인 규명용으로 임시로 추가, 안정화되면 제거해도 된다).
+        received = headers.get(API_KEY_HEADER) or ""
+        expected = secrets["approval-api-key"]
+        print(
+            "rejected: bad api key",
+            "received_len=", len(received),
+            "expected_len=", len(expected),
+            "stripped_match=", received.strip() == expected.strip(),
+            "received_sha256=", hashlib.sha256(received.encode()).hexdigest(),
+            "expected_sha256=", hashlib.sha256(expected.encode()).hexdigest(),
+        )
         return {"statusCode": 403, "body": json.dumps({"error": "forbidden"})}
 
     try:
