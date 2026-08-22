@@ -1,7 +1,26 @@
 data "archive_file" "worker" {
   type        = "zip"
-  source_file = "${path.module}/lambda/handler.py"
   output_path = "${path.module}/lambda/chat_signal_worker.zip"
+
+  source {
+    content  = file("${path.module}/lambda/runtime/handler.py")
+    filename = "handler.py"
+  }
+
+  source {
+    content  = file("${path.module}/lambda/runtime/classifier.py")
+    filename = "classifier.py"
+  }
+
+  source {
+    content  = file("${path.module}/lambda/runtime/processor.py")
+    filename = "processor.py"
+  }
+
+  source {
+    content  = file("${path.module}/lambda/runtime/repository.py")
+    filename = "repository.py"
+  }
 }
 
 data "aws_iam_policy_document" "worker_assume" {
@@ -81,7 +100,7 @@ resource "aws_lambda_function" "worker" {
   environment {
     variables = {
       CHAT_INCIDENT_TABLE_NAME = local.chat_incident_table_name
-      WORKER_MODE              = "SKELETON_DISABLED"
+      WORKER_MODE              = "PHASE3_READY_SOURCE_DISABLED"
     }
   }
 
