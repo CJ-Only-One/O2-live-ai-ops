@@ -62,6 +62,7 @@
 | D-045 | 검증 전에는 원인을 말하지 않는다 | `outcome.state` 다섯 값, 복구≠해결, 추측 세탁, 통제 어휘, Recovered 를 Worker 로 |
 | D-046 | Runbook 조회도 D-043 과 같은 이유로 Lambda 릴레이를 쓴다 | `aws_iam_role.dify` 죽은 권한, SigV4, Function URL, x-api-key |
 | D-047 | 채팅 분석은 Chat Gateway에서 SQS로 직접 분기한다 | Valkey 팬아웃 전용, Lambda, DynamoDB, 60초 원문, Incident Candidate |
+| D-048 | Chat Signal Worker는 독립 `08-chat-signal` 스택에 둔다 | EKS 비결합, state 분리, 비활성 trigger, fail-safe skeleton |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -2966,3 +2967,33 @@ DynamoDB, Candidate, 원문 DLQ에는 넣지 않는다.
 - 처리 규칙과 완료 조건: `docs/chat-incident-candidate.md`
 - 입력·출력 스키마: `docs/contracts.md` 5.6·5.7
 - 기존 `chat.send` Kinesis 관측 이벤트: `docs/contracts.md` 5.3, 별도 경로
+
+---
+
+## D-048. Chat Signal Worker는 독립 `08-chat-signal` 스택에 둔다
+
+Chat Signal SQS와 Candidate DynamoDB는 `03-data`가 소유하지만, 메시지를 실행하는
+Lambda까지 데이터 스택에 넣으면 저장소 수명주기와 코드 배포 수명주기가 결합된다.
+`04-platform`에 넣으면 Lambda 변경이 EKS·Helm provider 상태에 의존한다.
+
+따라서 실행 리소스는 `08-chat-signal`로 분리하고 `03-data` remote state의 큐와
+테이블만 참조한다.
+
+```text
+03-data:        SQS + DynamoDB
+08-chat-signal: Lambda + execution IAM + SQS event source mapping
+```
+
+Phase 1B의 event source mapping은 변수로 켤 수 없고 코드에 `enabled = false`로
+고정한다. 실수로 Lambda를 직접 호출해도 골격 handler는 모든 SQS `messageId`를
+`batchItemFailures`로 반환한다. 따라서 Candidate 로직이 없는 상태에서 원문 메시지를
+성공 처리하거나 삭제하지 않는다.
+
+실행 역할은 다음 권한만 갖는다.
+
+- Chat Signal SQS의 `ReceiveMessage`, `DeleteMessage`, `GetQueueAttributes`
+- Candidate DynamoDB의 `GetItem`, `PutItem`, `UpdateItem`, `TransactWriteItems`
+- 전용 CloudWatch Log Group의 `CreateLogStream`, `PutLogEvents`
+
+골격은 SQS body를 파싱하거나 로그에 기록하지 않는다. Phase 3에서 실제 처리기를
+넣더라도 `ReportBatchItemFailures`, 본문 비기록, 조건부/트랜잭션 쓰기 계약은 유지한다.

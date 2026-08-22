@@ -1,7 +1,7 @@
 # Chat Incident Candidate — canonical implementation spec
 
 > **Audience:** coding agents and reviewers
-> **Status:** approved design, Phase 1 partially implemented in code, not applied
+> **Status:** approved design, Phase 1B implemented in code, not applied
 > **Updated:** 2026-08-22
 > **Decision:** `decisions.md` D-047
 > **Wire contracts:** `contracts.md` 5.6-5.7
@@ -14,21 +14,27 @@ implementation_state:
   canonical_docs: COMPLETE
   data_terraform: CODE_VALIDATED_NOT_APPLIED
   service_iam_terraform: CODE_VALIDATED_NOT_APPLIED
-  lambda_processor: NOT_IMPLEMENTED
+  lambda_processor: SKELETON_CODE_VALIDATED_NOT_APPLIED
+  event_source_mapping: CODE_VALIDATED_DISABLED_NOT_APPLIED
   chat_gateway_publisher: NOT_IMPLEMENTED
   candidate_logic: NOT_IMPLEMENTED
   deployed_feature: false
 next_action:
-  phase: 1B
-  goal: ADD_DISABLED_LAMBDA_SKELETON
+  phase: 2
+  goal: ADD_CHAT_GATEWAY_PUBLISHER_BEHIND_OFF_SHADOW_FLAG
   apply_allowed: false
 code_refs:
   data_terraform: infra/03-data/chat_signal.tf
   service_iam_terraform: infra/04-platform/app_data_access.tf
+  worker_terraform: infra/08-chat-signal/worker.tf
+  worker_skeleton: infra/08-chat-signal/lambda/handler.py
 ```
 
 `CODE_VALIDATED_NOT_APPLIED` means `terraform fmt` and `terraform validate` succeeded locally. It
 MUST NOT be interpreted as an AWS resource, deployment, or runtime verification.
+`SKELETON_CODE_VALIDATED_NOT_APPLIED` additionally means fail-safe handler unit tests passed.
+`CODE_VALIDATED_DISABLED_NOT_APPLIED` means the event source is hard-coded disabled and was not
+created in AWS.
 
 ## 0. Agent execution rules
 
@@ -107,7 +113,8 @@ The two branches are independent.
 | Valkey Pub/Sub fanout | implemented and previously live-verified |
 | `chat.send` Kinesis telemetry | implemented; separate from this feature |
 | dedicated Chat Signal SQS | Terraform code validated; not applied |
-| Chat Signal Lambda | not implemented |
+| Chat Signal Lambda | fail-safe skeleton code validated; not applied |
+| SQS event source mapping | Terraform code validated; hard-disabled; not applied |
 | DynamoDB aggregation state | Terraform code validated; not applied |
 | service-specific SQS IAM | Terraform code validated; not applied |
 | Incident Candidate creation | not implemented |
