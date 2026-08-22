@@ -1,7 +1,7 @@
 # Chat Incident Candidate — canonical implementation spec
 
 > **Audience:** coding agents and reviewers
-> **Status:** approved design, Phase 2 implemented and locally verified, default off, not deployed
+> **Status:** approved design, Phase 3 implemented and locally verified, source disabled, not deployed
 > **Updated:** 2026-08-22
 > **Decision:** `decisions.md` D-047
 > **Wire contracts:** `contracts.md` 5.6-5.7
@@ -14,27 +14,32 @@ implementation_state:
   canonical_docs: COMPLETE
   data_terraform: CODE_VALIDATED_NOT_APPLIED
   service_iam_terraform: CODE_VALIDATED_NOT_APPLIED
-  lambda_processor: SKELETON_CODE_VALIDATED_NOT_APPLIED
+  lambda_processor: CODE_VALIDATED_NOT_APPLIED
   event_source_mapping: CODE_VALIDATED_DISABLED_NOT_APPLIED
   chat_gateway_publisher: CODE_VALIDATED_DEFAULT_OFF_NOT_DEPLOYED
-  candidate_logic: NOT_IMPLEMENTED
+  candidate_logic: CODE_VALIDATED_NOT_APPLIED
   deployed_feature: false
 next_action:
-  phase: 3
-  goal: ADD_DETERMINISTIC_CLASSIFICATION_AND_AGGREGATION
+  phase: 3_REVIEW
+  goal: MERGE_PHASE_2_THEN_REVIEW_AND_MERGE_PHASE_3
   apply_allowed: false
 code_refs:
   data_terraform: infra/03-data/chat_signal.tf
   service_iam_terraform: infra/04-platform/app_data_access.tf
   worker_terraform: infra/08-chat-signal/worker.tf
-  worker_skeleton: infra/08-chat-signal/lambda/handler.py
+  worker_runtime: infra/08-chat-signal/lambda/runtime/
+  worker_tests: infra/08-chat-signal/lambda/tests/
   chat_gateway_publisher: apps/chat-gateway/src/chat-signal.ts
   chat_ingress_fork: apps/chat-gateway/src/chat-ingress.ts
 verification:
   chat_gateway_npm_ci: PASS
   chat_gateway_tests: PASS_20
   chat_gateway_typescript_build: PASS
-  chat_gateway_docker_build: NOT_RUN_DOCKER_DAEMON_UNAVAILABLE
+  chat_gateway_docker_build: PASS_LOCAL_IMAGE
+  worker_python_tests: PASS_20
+  worker_lambda_python_3_13_import: PASS
+  worker_terraform_validate: PASS
+  acceptance_cases_local: PASS_AC_001_THROUGH_AC_010
   platform_terraform_validate: PASS
   aws_sqs_iam_integration: NOT_RUN
   eks_runtime_verification: NOT_RUN
@@ -42,7 +47,6 @@ verification:
 
 `CODE_VALIDATED_NOT_APPLIED` means `terraform fmt` and `terraform validate` succeeded locally. It
 MUST NOT be interpreted as an AWS resource, deployment, or runtime verification.
-`SKELETON_CODE_VALIDATED_NOT_APPLIED` additionally means fail-safe handler unit tests passed.
 `CODE_VALIDATED_DISABLED_NOT_APPLIED` means the event source is hard-coded disabled and was not
 created in AWS.
 `CODE_VALIDATED_DEFAULT_OFF_NOT_DEPLOYED` means unit tests and TypeScript build passed while the
@@ -125,12 +129,12 @@ The two branches are independent.
 | Valkey Pub/Sub fanout | implemented and previously live-verified |
 | `chat.send` Kinesis telemetry | implemented; separate from this feature |
 | dedicated Chat Signal SQS | Terraform code validated; not applied |
-| Chat Signal Lambda | fail-safe skeleton code validated; not applied |
+| Chat Signal Lambda | deterministic classifier/aggregator code validated; not applied |
 | SQS event source mapping | Terraform code validated; hard-disabled; not applied |
 | DynamoDB aggregation state | Terraform code validated; not applied |
 | service-specific SQS IAM | Terraform code validated; not applied |
 | Chat Gateway SQS publisher | code locally verified; default `off`; not deployed |
-| Incident Candidate creation | not implemented |
+| Incident Candidate creation | code locally validated; not applied or AWS-integrated |
 | Datadog Pull and Dify handoff | out of scope / not implemented |
 
 Do not report a Terraform validation, image build, or document merge as a deployed feature.

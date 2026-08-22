@@ -73,7 +73,7 @@ test('rate limited: 원문 SQS와 Valkey 모두 보내지 않는다', async () =
   assert.equal(state.telemetry[0].payload.rejected_code, 'RATE_LIMITED');
 });
 
-test('SQS Promise가 거부돼도 Valkey 팬아웃은 성공한다', async () => {
+test('AC-008: SQS Promise가 거부돼도 Valkey 팬아웃은 성공한다', async () => {
   const state = fixture({
     emitChatSignal: async () => {
       throw new Error('SQS unavailable');
