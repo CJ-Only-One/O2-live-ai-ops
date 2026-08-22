@@ -47,7 +47,10 @@ def tf_output(name):
 
 def labels():
     """통제 어휘. labels.txt 가 원본이다."""
-    text = (MODULE / "labels.txt").read_text()
+    # 인코딩을 명시 안 하면 로케일 기본값을 쓴다 — 한국어 Windows 는 cp949 라
+    # UTF-8 로 저장된 이 파일(한글 주석 포함)을 못 읽는다. 리눅스/맥은 로케일이
+    # 보통 이미 UTF-8 이라 지금까지 안 드러났을 뿐이다.
+    text = (MODULE / "labels.txt").read_text(encoding="utf-8")
     return [
         line.strip()
         for line in text.splitlines()
