@@ -158,6 +158,29 @@ variable "alert_relay_max_concurrency" {
   default     = 5
 }
 
+# ── Slack 승인 중계 Lambda ───────────────────────────────────────
+
+variable "slack_approval_secret_name" {
+  description = <<-EOT
+    Slack 승인 중계 Lambda 가 실행 시점에 읽는 **Secrets Manager 시크릿 이름**.
+
+    alert_secret_name 과 같은 이유로 값이 아니라 이름만 참조한다. 시크릿은
+    apply 전에 손으로 한 번 만든다. 키 네 개가 필요하다:
+
+      slack-bot-token       Bot User OAuth Token (xoxb-...)
+      slack-channel-id      알림 보낼 채널 ID (C로 시작, 채널 이름 아님)
+      slack-signing-secret  Slack App Basic Information 의 Signing Secret
+      approval-api-key      임의로 정하는 값. Dify 의 SLACK_APPROVAL_API_KEY
+                             환경변수와 반드시 같아야 한다
+
+      aws secretsmanager create-secret --name o2/dev/slack-approval \
+        --secret-string '{"slack-bot-token":"xoxb-...","slack-channel-id":"C...","slack-signing-secret":"...","approval-api-key":"..."}' \
+        --region ap-northeast-2
+  EOT
+  type        = string
+  default     = "o2/dev/slack-approval"
+}
+
 # ── Session Manager ──────────────────────────────────────────────
 
 variable "manage_session_preferences" {
