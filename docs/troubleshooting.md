@@ -34,6 +34,7 @@
 | T-016 | 노드를 바꿨더니 총 여유가 45% 인데 파드가 안 뜬다 | `Insufficient memory`, DaemonSet Pending, 파드 쏠림, `topologySpreadConstraints` |
 | T-017 | 부하도 안 줬는데 AI 에이전트가 계속 깨어난다 | `notify_no_data`, `@webhook-dify`, Downtime, EWMA baseline 오염 |
 | T-018 | 과거 사례가 늘 비는데 워크플로는 성공으로 끝난다 | `s3vectors:GetVectors`, `returnMetadata`, 의도한 조용한 실패, 웜 컨테이너가 옛 자격증명을 든다 |
+| T-019 | Bedrock 모델을 Dify 에 추가하면 `Access denied to inference profile` 또는 Agent 노드가 도구 설명 빈 값으로 실패한다 | `bedrock:GetInferenceProfile`, Agent(Beta), `toolSpec.description`, langgenius/dify#40389 |
 
 ---
 
@@ -1028,3 +1029,68 @@ aws lambda invoke --function-name datadog-to-dify-worker --region ap-northeast-2
 로그 스트림 ID 였다. 같은 에러 메시지라도 **고치기 전과 후는 다른 사건**이다 —
 고친 뒤에도 같은 증상이면 원인이 같다고 가정하지 말고 "변경이 이 호출에
 도달했는가" 를 먼저 묻는다.
+
+---
+
+## T-019. Bedrock 모델을 Dify 에 추가하면 access denied / 도구 설명 빈 값으로 실패한다
+
+**증상**
+
+Dify 콘솔에서 Amazon Bedrock 모델을 "Add Model" 로 추가하면 이렇게 실패한다.
+
+```
+Access denied to inference profile apac.amazon.nova-lite-v1:0
+```
+
+`aws bedrock-runtime converse` 로 같은 모델을 직접 부르면 **정상 응답한다.**
+IAM 자격 증명, IMDS, IAM 정책(`InvokeModel` 은 `Resource: *`) 다 확인해도 문제가 없다.
+
+별개로, 진단 노드를 Agent(Beta) 구조로 바꾼 뒤에는 이런 에러도 난다.
+
+```
+InvokeError: [models] Error: ValidationException:
+Invalid length for parameter toolConfig.tools[0].toolSpec.description, value: 0, valid min length: 1
+```
+
+**원인 (두 가지, 증상은 비슷해 보이지만 완전히 다른 문제다)**
+
+1. **`GetInferenceProfile` 권한 누락.** `InvokeModel` 과 `GetInferenceProfile` 은
+   서로 다른 IAM 액션이다. Dify 의 Bedrock 플러그인은 모델을 추가/검증할 때
+   `InvokeModel` 이 아니라 **`bedrock:GetInferenceProfile`(컨트롤 플레인 API)을
+   부른다.** 이 계정의 인스턴스 역할(`infra/06-agent/iam.tf` 의
+   `aws_iam_role_policy.bedrock`)에는 `InvokeModel` 계열만 있고 이 권한이
+   없었다. 그래서 직접 호출(=`InvokeModel`)은 다 성공하는데 Dify UI 에서만
+   막히는 것처럼 보였다.
+
+2. **Dify Agent(Beta) 의 sandbox shell 도구 4 개가 설명 없이 등록돼 있다.**
+   Bedrock 의 Converse API 는 `toolSpec.description` 최소 길이 1 을 강제하는데,
+   Dify 가 이 필드에 빈 문자열을 보낸다. Dify 자체 버그로, 이미 upstream 에
+   올라와 있다 (langgenius/dify#40389, 고치는 PR #39704 · #40062 는 이 저장소가
+   쓰는 1.16.1 기준 아직 릴리스에 없음).
+
+**해결**
+
+1. `infra/06-agent/iam.tf` 의 `aws_iam_role_policy_document.bedrock` 에
+   `bedrock:GetInferenceProfile`, `bedrock:ListInferenceProfiles` 를 추가하고
+   `terraform apply`. (권한 변경은 즉시 반영된다 — T-018 과 달리 캐시된
+   자격 증명 문제가 아니다.)
+2. `infra/06-agent/docker-compose.override.yaml` 로 `agent_backend` 컨테이너
+   기동 시 `dify_agent/adapters/llm/model.py` 를 패치해서 빈 도구 설명은
+   도구 이름으로, 빈 시스템 프롬프트는 아예 제외하도록 우회한다. 배포는
+   그 파일 상단 주석 참고. **upstream PR 이 1.16.1 이후 릴리스에 들어가면
+   이 파일은 지우고 `dify_ref` 만 올리면 된다.**
+
+모델을 추가할 때는 드롭다운이 아니라 **Add Model 로 inference profile ID 를
+직접 입력**해야 한다는 점은 T-001 과 같다. 검증된 ID: `apac.amazon.nova-lite-v1:0`,
+`apac.amazon.nova-micro-v1:0`, `global.anthropic.claude-sonnet-5`,
+`global.anthropic.claude-opus-5`.
+
+**왜 늦게 찾았나**
+
+두 문제의 증상이 겹쳐 보였다 — 하나를 고치면 남은 하나가 "그래도 안 된다"로
+보였다. `aws bedrock-runtime converse` 직접 호출은 항상 성공했기 때문에
+"권한은 문제없다"고 오판하기 쉬웠다. **`InvokeModel` 성공이 `GetInferenceProfile`
+성공을 보장하지 않는다** — Bedrock 은 모델 호출과 프로필 조회를 별개 액션으로
+나눠 놨고, 이걸 모르면 IAM 정책의 `Resource: *` 만 보고 "권한은 다 열려 있다"고
+넘어가게 된다. 실제 원인은 EC2 인스턴스 역할로 `bedrock:GetInferenceProfile`
+을 직접 호출해 재현해서야 확인됐다.
