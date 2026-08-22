@@ -210,9 +210,11 @@ resource "aws_lambda_function" "alert_worker_o2" {
   runtime       = "python3.12"
   architectures = ["x86_64"]
 
-  # 기본값 3초로는 무조건 실패한다. Dify 워크플로가 blocking 으로 끝날 때까지
-  # 기다리기 때문이다. 55초 타임아웃으로 호출하므로 함수는 그보다 커야 한다.
-  timeout     = 60
+  # ★ worker.py 의 urlopen timeout(820초)보다 반드시 커야 한다 — Slack 승인이
+  #   걸리면 Dify 쪽 승인 노드가 최대 600초까지 기다리는데, 여기서 실측으로
+  #   승인 없는 경로도 40~60초대까지 늘어난 걸 확인했다(Hot Path/Runbook
+  #   Lookup API 추가 이후). 850초로 여유를 둔다 — Lambda 자체 상한이 900초.
+  timeout     = 850
   memory_size = 128
 
   filename         = data.archive_file.alert_worker.output_path
