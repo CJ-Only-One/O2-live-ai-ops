@@ -31,6 +31,12 @@ data "aws_iam_policy_document" "bedrock" {
       "bedrock:InvokeModel",
       "bedrock:InvokeModelWithResponseStream",
       "bedrock:ListFoundationModels",
+      # inference profile 을 쓰려면 InvokeModel 과 별개로 이 권한이 필요하다.
+      # Dify 의 Bedrock 플러그인이 모델 자격 증명을 검증할 때 GetInferenceProfile 을
+      # 부르는데, 이게 없으면 InvokeModel 은 되면서 Dify UI 에서만
+      # "Access denied to inference profile ..." 로 실패한다 (T-019).
+      "bedrock:GetInferenceProfile",
+      "bedrock:ListInferenceProfiles",
     ]
     # 모델 ARN 은 어떤 모델을 쓸지 정한 뒤 좁힌다.
     resources = ["*"]
