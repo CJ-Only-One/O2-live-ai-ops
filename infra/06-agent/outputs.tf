@@ -112,3 +112,23 @@ output "ssm_port_forward_command" {
     "--region ${var.region}",
   ])
 }
+
+# ── 이력 저장소 ───────────────────────────────────────────────────
+#
+# scripts/ 의 도구들이 `terraform output -raw` 로 읽는다. 버킷 이름을
+# 스크립트에 하드코딩하지 않기 위해서다 (D-018 과 같은 원칙).
+
+output "history_bucket" {
+  description = "인시던트 원본 JSON 이 쌓이는 S3 버킷"
+  value       = aws_s3_bucket.history.bucket
+}
+
+output "history_vector_bucket" {
+  description = "유사 인시던트 검색용 S3 Vectors 버킷"
+  value       = aws_s3vectors_vector_bucket.history.vector_bucket_name
+}
+
+output "history_vector_index" {
+  description = "S3 Vectors 인덱스 이름"
+  value       = aws_s3vectors_index.incidents.index_name
+}

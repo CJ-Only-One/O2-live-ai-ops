@@ -212,10 +212,15 @@ data "aws_iam_policy_document" "alert_worker" {
     resources = [aws_s3vectors_index.incidents.index_arn]
   }
 
+  # 읽기가 필요한 이유는 복구 적재다. Recovered 를 받으면 저장해 둔 원본을
+  # 읽어 outcome 을 채우고 다시 쓴다 (worker.py `_handle_recovery`).
   statement {
-    sid       = "WriteIncidents"
-    effect    = "Allow"
-    actions   = ["s3:PutObject"]
+    sid    = "ReadWriteIncidents"
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+    ]
     resources = ["${aws_s3_bucket.history.arn}/incidents/*"]
   }
 }
