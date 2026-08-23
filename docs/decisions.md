@@ -3080,6 +3080,14 @@ Phase 1B transport는 SQS event source mapping과 Worker 실행 플래그를 모
 재호출하면 동일 Agent 실행을 두 번 만들 수 있으므로 fail-closed한다. 운영자가 Dify
 실행 이력과 ledger를 확인한 뒤에만 DLQ 메시지를 재투입한다.
 
+Phase 2 Chat Source Adapter는 Candidate 생성 Worker에 Agent Queue 전송을 추가하지 않고
+Candidate DynamoDB `NEW_IMAGE` Stream의 새 `CANDIDATE#* / META` INSERT만 읽는다. Adapter
+event source와 실행 플래그를 모두 비활성으로 배포하고, Phase 3 cutover 이전 Candidate는
+`NOT_BEFORE_EPOCH`으로 제외한다. Adapter는 Stream read·Agent Trigger SQS send·전용 DLQ·
+로그 외 권한을 갖지 않는다. Stream 재전달이 중복 envelope를 만들 수는 있지만 동일
+Candidate에서 항상 같은 `trigger_id`와 `idempotency_key`를 만들고 Phase 1B Worker
+ledger가 중복 Agent 실행을 차단한다.
+
 구현 원본:
 
 - 기계 판독 Schema: `docs/contracts/agent-trigger-v1.schema.json`

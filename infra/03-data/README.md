@@ -100,12 +100,14 @@ Valkey RBAC 으로 간다.
 | 리소스 | 역할 | 원문 |
 |---|---|---|
 | Chat Signal SQS | Chat Gateway와 Lambda 사이의 60초 분석 버퍼 | 암호화 상태로 최대 60초 |
-| Incident State DynamoDB | 멱등·시간창·고유 사용자·쿨다운·Candidate | 저장 금지 |
+| Incident State DynamoDB | 멱등·시간창·고유 사용자·쿨다운·Candidate, Phase 2 `NEW_IMAGE` Stream | 저장 금지 |
 
 원문 DLQ는 만들지 않는다. 처리 규칙은
 [`docs/chat-incident-candidate.md`](../../docs/chat-incident-candidate.md), 입력·출력
 스키마는 [`docs/contracts.md`](../../docs/contracts.md) 5.6·5.7이 원본이다. 실행
-리소스는 [`08-chat-signal`](../08-chat-signal/README.md)이 소유한다.
+리소스는 [`08-chat-signal`](../08-chat-signal/README.md)이 소유한다. Stream은 새
+Candidate INSERT를 Source Adapter와 분리 전달하기 위한 것이며 원문·사용자 키는 테이블
+payload에 존재하지 않는다.
 
 ## 명령
 

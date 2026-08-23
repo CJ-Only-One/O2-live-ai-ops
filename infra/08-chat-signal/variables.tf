@@ -38,6 +38,18 @@ variable "datastore_state_key" {
   default     = "datastore/terraform.tfstate"
 }
 
+variable "agent_trigger_queue_name" {
+  description = "06-agent Phase 1B가 소유하는 agent.trigger.v1 전용 Queue 이름"
+  type        = string
+  default     = "o2-dev-dify-agent-trigger"
+}
+
+variable "agent_alarm_topic_name" {
+  description = "Agent Entry transport 알람이 공통으로 사용하는 SNS topic 이름"
+  type        = string
+  default     = "o2-dev-dify-alert-relay-alarm"
+}
+
 variable "enable_event_source" {
   description = <<-EOT
     Chat Signal SQS가 Lambda Worker를 호출하게 한다.

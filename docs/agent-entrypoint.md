@@ -1,7 +1,7 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 1A complete; Phase 1B deployed with both execution gates disabled
+> **Status:** Phase 1B deployed disabled; Phase 2 implemented, not applied
 > **Updated:** 2026-08-23
 > **Decision:** `decisions.md` D-050
 > **Wire contract:** `contracts.md` 5.8 and `contracts/agent-trigger-v1.schema.json`
@@ -11,7 +11,7 @@ implementation_state:
   runtime_baseline_verified: COMPLETE
   common_contract: COMPLETE
   agent_trigger_queue: DEPLOYED_EMPTY
-  chat_candidate_adapter: NOT_IMPLEMENTED
+  chat_candidate_adapter: IMPLEMENTED_NOT_APPLIED
   generic_dify_worker: DEPLOYED_EXECUTION_DISABLED
   idempotency_ledger: DEPLOYED_EMPTY
   dedicated_test_workflow: PUBLISHED_CODE_ONLY
@@ -23,7 +23,7 @@ implementation_state:
   datadog_migration: NOT_STARTED
   production_agent_handoff: DISABLED
 activation_blockers:
-  - CHAT_CANDIDATE_SOURCE_ADAPTER_NOT_IMPLEMENTED
+  - PHASE_2_TERRAFORM_NOT_APPLIED
   - PHASE_3_SHADOW_E2E_EXECUTION_GATES_DISABLED
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
@@ -129,7 +129,7 @@ production 전환 시에는 이 안정된 entry workflow가 source 검증·라�
 ```text
 Chat Gateway -> Chat Signal SQS -> Chat Signal Worker -> Candidate DynamoDB
                                                        |
-                                                       | INSERT stream only
+                                                       | Candidate-key stream
                                                        v
                                              Chat Source Adapter
                                                        |
@@ -306,6 +306,47 @@ apply 후 실환경 확인 결과는 다음과 같다.
 
 Phase 1B는 `DEPLOYED_EXECUTION_DISABLED`다. 기존 리소스 4개 plan 변경은 여전히 별도
 검토 대상이며, 이후에도 전체 `06-agent` apply에 섞어 실행하지 않는다.
+
+### 6.3 Phase 2 현재 체크포인트
+
+Candidate DynamoDB의 `NEW_IMAGE` Stream과 `08-chat-signal` 소유 Chat Source Adapter를
+구현했다. Candidate 생성 Worker가 Agent Queue를 직접 호출하지 않으므로 Candidate 저장과
+handoff 실패가 서로의 재시도·지연 경계를 침범하지 않는다.
+
+Phase 2 실행 경계는 다음과 같다.
+
+| 경계 | Phase 2 값 |
+|---|---|
+| Candidate Stream view | `NEW_IMAGE` |
+| Stream filter | `CANDIDATE#*` + `META`; `INSERT` 여부는 Adapter 코드에서 재검증 |
+| Adapter event source | `enabled=false` |
+| Adapter 실행 플래그 | `CHAT_SOURCE_ADAPTER_ENABLED=false` |
+| 과거 Candidate 차단 | `NOT_BEFORE_EPOCH=2100-01-01`; Phase 3 cutover 시각으로 별도 변경 필요 |
+| Adapter 권한 | Candidate Stream read, Agent Trigger SQS send, 전용 DLQ send, 전용 log write |
+| 금지 권한 | Datadog·Dify·Bedrock·EKS·Candidate table write |
+
+Adapter는 Candidate payload의 필드를 정확히 검증하고 `raw_chat_included=false`,
+`root_cause=UNDETERMINED`, `agent_handoff_status=NOT_CONFIGURED`를 강제한다. 원문·사용자 키·
+원문 해시 같은 추가 필드가 있으면 Queue에 보내지 않고 bounded retry 후 Adapter DLQ로
+보낸다. `trigger_id`는 Candidate ULID로 결정적으로 만들고 모든 재전달에서 같은
+`idempotency_key=chat:<candidate_id>`를 사용한다. SQS Standard의 중복 자체는 허용하되
+Phase 1B Worker ledger가 같은 Agent 실행을 차단한다.
+
+로컬 테스트는 기존 Chat Signal 20개와 Source Adapter 8개, 총 28개가 통과했다. Adapter
+범위는 정상 INSERT 1건→공통 envelope 1건, 결정적 멱등 키, UPDATE·비Candidate 제외,
+활성화 이전 Candidate 제외, 사용자 키 거부, 비활성 게이트, Queue 실패 partial retry다.
+Python 컴파일, Terraform fmt·validate도 통과했다.
+
+변경 전 `03-data`와 `08-chat-signal` plan은 모두 `No changes`였다. 구현 후 `03-data`
+plan은 Candidate table의 Stream만 켜는 `0 add, 1 change, 0 destroy`다. `08-chat-signal`
+plan은 이 output이 실제 remote state에 생긴 뒤에만 생성할 수 있으므로 적용 순서는 반드시
+다음과 같다.
+
+1. 병합 후 최신 `main`에서 두 stack plan을 다시 확인한다.
+2. `03-data` 저장 plan으로 Stream만 apply하고 ACTIVE·NEW_IMAGE·Stream ARN을 확인한다.
+3. `08-chat-signal` plan을 처음 생성해 Adapter 외 변경이 없는지 확인한다.
+4. Adapter event source와 실행 플래그가 모두 `false`일 때만 저장 plan을 apply한다.
+5. Queue/DLQ/로그/Dify 신규 실행이 모두 0인지 확인하고 Phase 2에서 중단한다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 

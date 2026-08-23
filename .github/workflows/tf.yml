@@ -117,3 +117,7 @@ jobs:
       - name: Agent Entry Worker 단위 테스트
         if: matrix.stack == '06-agent'
         run: python3 -m unittest lambda/test_agent_entry_worker.py
+
+      - name: Chat Signal·Source Adapter 단위 테스트
+        if: matrix.stack == '08-chat-signal'
+        run: python3 -m unittest discover -s lambda/tests -p 'test_*.py'

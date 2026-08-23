@@ -1,7 +1,37 @@
 # 08-chat-signal
 
-Chat Signal SQS를 소비할 Lambda 실행 계층이다. `03-data`의 remote state에서 전용
-SQS와 Candidate DynamoDB를 참조하며, EKS·Dify와 독립적으로 유지한다(D-048).
+Chat Signal SQS를 소비하고 privacy-safe Candidate를 공통 Agent 진입 계약으로 변환하는
+Lambda 실행 계층이다. `03-data`의 remote state에서 전용 SQS·Candidate DynamoDB·Stream을
+참조하며, EKS·Dify와 독립적으로 유지한다(D-048, D-050).
+
+## Agent Entry Phase 2 — 구현됨, 미적용
+
+```text
+Candidate DynamoDB NEW_IMAGE Stream
+  -> disabled Candidate-key event source
+  -> Chat Candidate Source Adapter (execution flag false)
+  -> Agent Trigger SQS
+```
+
+Phase 2에서는 event source와 실행 플래그를 모두 비활성화한다. 추가로
+`NOT_BEFORE_EPOCH=2100-01-01`을 넣어, 비활성 기간에 Stream에 쌓인 Candidate가 Phase 3
+활성화 시 테스트 입력으로 흘러가지 못하게 한다. Phase 3에서는 합성 테스트 시작 직전
+cutover epoch를 명시해야 한다.
+
+Event source filter는 `CANDIDATE#* + META` 키만 통과시킨다. Adapter 코드가
+`INSERT` 여부와 Candidate 계약을 다시 검증해
+`agent.trigger.v1`을 만든다. 원문·사용자 키·원문 해시는 입력 Candidate와 출력 envelope
+모두 금지한다. Stream 재전달은 같은 `trigger_id`와 `idempotency_key`를 만들며, SQS
+중복은 Phase 1B Worker ledger가 최종 차단한다.
+
+전용 Adapter DLQ는 원문이 없는 Stream record 실패 메타데이터만 14일 보관한다. bounded
+retry는 3회·최대 300초이며, DLQ와 Lambda Error 알람은 기존 Agent 알람 SNS를 재사용한다.
+Adapter IAM에는 Candidate Stream read, Agent Trigger SQS send, DLQ send, log write만 있다.
+Datadog·Dify·Bedrock·Candidate table write 권한은 없다.
+
+적용은 `03-data` Stream 활성화 후 `08-chat-signal` 순서로만 한다. Stream output이 remote
+state에 생기기 전에는 Adapter plan을 만들 수 없다. 세부 gate와 검증 상태는
+`docs/agent-entrypoint.md` 6.3을 따른다.
 
 2026-08-23 현재 `03-data`의 SQS·DynamoDB와 이 스택의 Lambda·IAM은 적용됐다.
 최초 외부 E2E는 Worker 5초 timeout과 SQS in-flight 지연으로 Candidate를 만들지 못했고,
@@ -64,8 +94,7 @@ terraform validate
 
 로컬 검증 범위:
 
-- Python Worker 테스트 20개: `AC-001`-`AC-007`, `AC-009`-`AC-010`, late arrival,
-  중간 실패 복구, DynamoDB 조건부 쓰기 구조
+- Python 테스트 28개: 기존 Worker 20개와 Phase 2 Source Adapter 8개
 - Chat Gateway 테스트 20개: `AC-008` fail-open 포함
 - Lambda Python 3.13 컨테이너: runtime 모듈과 기본 제공 `boto3` import
 - Terraform: `fmt -check`, `validate`
