@@ -65,6 +65,7 @@
 | D-048 | Chat Signal Worker는 독립 `08-chat-signal` 스택에 둔다 | EKS 비결합, state 분리, 비활성 trigger, fail-safe skeleton |
 | D-049 | Phase 4 Shadow는 생산자와 소비자를 독립 스위치로 제어한다 | enable_event_source, chat_signal_mode, 순차 활성화, 즉시 롤백 |
 | D-050 | Agent 앞에서 source별 JSON을 공통 envelope로 정규화한다 | agent.trigger.v1, discriminator, custom_alert_json, idempotency, read-only |
+| D-051 | Karpenter·KEDA 는 안전망이지 주력이 아니다 | D-037 조건 충족, NodePool 을 좁힌 이유, IAM 태그 조건, ScaledObject 는 배포 저장소 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3077,3 +3078,97 @@ Shadow E2E, Datadog dual-run 순서로 전환한다.
 - 기계 판독 Schema: `docs/contracts/agent-trigger-v1.schema.json`
 - 필드와 예시: `docs/contracts.md` 5.8
 - 단계·실패 격리·완료 게이트: `docs/agent-entrypoint.md`
+
+---
+
+## D-051. Karpenter·KEDA 를 넣는다 — 안전망이지 주력이 아니다
+
+D-037 이 "스케일링 부품은 필요해질 때 넣는다" 로 미뤄 둔 것들이다. 그 결정을
+뒤집는 것이 아니라 **거기 걸어 둔 조건이 충족됐다.** 부하 테스트로 파드당 한계를
+재고 나서야(M-009 · M-010) 임계값을 추측이 아닌 값으로 걸 수 있게 됐다.
+
+### 둘 다 2차 보정이다
+
+| 계층 | 무엇 | 반응 시간 |
+|---|---|---|
+| 1차 (주력) | 큐시트 기반 사전 확장 (D-041) | 방송 시작 전 |
+| 2차 (보정) | HPA · KEDA | 43~63초 |
+| 4차 (최후) | Karpenter | 노드 Ready 39초 + ECR pull (M-008) |
+
+방송 시작 스파이크는 30초 안에 끝난다. **어느 쪽도 첫 스파이크를 못 받는다.**
+이 둘은 사전 확장이 빗나갔을 때, 예상보다 크거나 오래 지속되는 부하를 받는다.
+이 문장이 없으면 다음 사람이 Karpenter 를 스파이크 해결책으로 믿고 사전 확장을
+뺀다.
+
+### NodePool 을 넷으로 좁힌 이유
+
+후보는 `c6i`·`m6i` × `large`·`xlarge`, 온디맨드, amd64 다. 뺀 것마다 이유가 있다.
+
+| 뺀 것 | 왜 |
+|---|---|
+| `t3` 계열 | baseline 이 노드당 400m 인데 Datadog 에이전트가 294~397m 를 쓴다. 부하가 없어도 스로틀된다 (M-008) |
+| Spot | 회수당하면 WebSocket 이 끊긴다. 수천 명이 동시에 재연결하면 그것이 곧 장애다 (`architecture.md` 9.3) |
+| arm64 | ECR 이미지가 amd64 단일 아키다 |
+
+넷 중 **무엇을 띄울지는 Karpenter 가 정한다.** `weight` 도 우선순위도 걸지
+않았다 — Pending 파드를 bin-pack 해서 들어가는 것 중 제일 싼 것을 고른다. 앱
+파드 requests 가 두 자릿수 millicore 라 보통은 `c6i.large` 가, 메모리가 먼저
+차면 `m6i.large` 가 뜬다. 실측 근거는 M-008 에 있다.
+
+우선순위를 고정하지 않은 것이 의도다. 고정하면 메모리 바운드일 때 오히려 비싼
+쪽에 갇힌다.
+
+### 축소 정책은 WebSocket 때문에 느슨하다
+
+| 설정 | 값 | 왜 기본값이 아닌가 |
+|---|---|---|
+| `expireAfter` | `Never` | 기본 720h 는 30일마다 노드를 교체한다. 그 교체가 방송 중에 걸리면 파드가 재배치되고 연결이 끊긴다. AMI 갱신은 관리형 노드그룹 쪽에서 사람이 창을 잡고 한다 |
+| `consolidationPolicy` | `WhenEmpty` | `WhenEmptyOrUnderutilized` 는 방송 중에 노드를 합친다. 노는 노드는 돈 낭비지 장애가 아니다 |
+| `consolidateAfter` | `2h` | 방송 한 편보다 길게 줘서 중간에 잠깐 빈 것으로 반납하지 않게 한다. 다시 사면 노드 준비가 또 든다 |
+| `limits.cpu` | `8` | 비용 상한. 없으면 Pending 파드가 생기는 만큼 인스턴스가 계속 늘어난다. 개인 계정이라 반드시 건다 |
+
+D-041 이 축소를 "cooldown 동안 정상 범위를 확인한 뒤" 로 정했는데 Karpenter 는
+그 판단을 못 한다. 그래서 판단 대신 **시간**을 준 것이다.
+
+### IAM 을 태그 조건으로 좁혔다
+
+컨트롤러 IRSA 역할은 LBC 와 같은 패턴이다. 다만 노드 종료 권한에 태그 조건을
+걸어 **자기가 만든 노드만** 건드리게 했다. 없으면 관리형 노드그룹 노드까지
+종료할 수 있다. `PassRole` 도 노드 역할 하나로 못 박았다.
+
+노드 역할은 새로 만들지 않고 기존 `o2-eks-node-role` 을 재사용한다. 이미 EKS
+접근 항목에 `EC2_LINUX` 로 등록돼 있어 새 노드가 바로 조인한다.
+
+중단 알림 큐(SQS + EventBridge)는 없어도 돌지만 스팟 회수 통보(2분)를 못 받는다.
+지금 NodePool 이 온디맨드 전용이라 당장 쓰이지 않는데도 같이 만든 것은 SQS 비용이
+사실상 0 이고, 나중에 스팟을 열 때 이것부터 빠뜨리면 조용히 깨지기 때문이다.
+
+### KEDA 는 설치만 한다
+
+`ScaledObject` 를 넣으려면 두 가지가 먼저 있어야 한다.
+
+1. **파드당 안전 처리량 실측.** D-041 의 계산식에 들어가는 `safe_capacity_per_pod`
+   를 추정값으로 채우지 않는다. 주문 경로는 아직 부하 테스트를 안 했다 —
+   measurements.md 에 `api`(M-009)와 `chat-gateway`(M-010)만 있다
+2. **매니페스트에서 `replicas` 제거.** KEDA 가 scale 을 소유하는데 `replicas` 가
+   남아 있으면 KEDA 가 늘리고 Argo CD selfHeal 이 되돌리기를 무한 반복한다.
+   **에러가 안 나서 알아채기 늦다** (D-004)
+
+그리고 `ScaledObject` 는 애플리케이션 배포물이라 자리는 Argo CD 가 보는
+O2-live-deploy 쪽이다. 이 저장소는 컨트롤러 설치까지만 한다.
+
+### 넣고 나서 실제로 노드를 띄워 확인했다
+
+Helm 이 뜨고 `EC2NodeClass` 가 `READY=True` 인 것만으로는 **세 가지가 검증되지
+않는다.** 전부 노드를 실제로 띄울 때만 드러난다.
+
+- `RunInstances` 권한과 `PassRole` 태그 조건이 맞는지
+- 새 노드가 클러스터에 join 하는지 (EKS 접근 항목)
+- 종료 권한의 태그 조건이 **자기 노드는 지울 수 있을 만큼** 넓은지 — 좁게 걸었으니
+  반대로 못 지울 수 있다
+
+2026-08-23 에 `requests.cpu = 2` 짜리 `pause` 파드로 셋 다 확인했다. 소요 비용
+$0.014. 시간 값은 M-008 에 있다.
+
+**설치와 검증을 같은 작업으로 묶는다.** 스파이크가 처음 오는 날 시도하면 그때가
+장애다.

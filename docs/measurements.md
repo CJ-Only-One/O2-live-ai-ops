@@ -436,6 +436,72 @@ m6i.large(7,104Mi)에서는 같은 쏠림이 나도 다 들어갔다. **4 GiB �
 갈리게 했다. 다만 **이미 떠 있는 파드는 옮기지 않으므로** 노드를 추가하거나
 교체한 뒤에는 여전히 `rollout restart` 가 필요하다.
 
+### Karpenter 노드 확보 시간 (2026-08-23)
+
+Karpenter 도입(D-037 재검토) 후 처음으로 실제 노드를 띄워 봤다. `pause` 파드에
+`requests.cpu = 2` 를 걸어 기존 노드에 안 들어가게 만든 뒤, `kubectl get nodeclaims`
+를 10초 간격으로 폴링했다.
+
+| 날짜 | 구간 | 시간 |
+|---|---|---|
+| 2026-08-23 | Pending 파드 → NodeClaim 생성 | 10초 미만 (첫 관측이 7초) |
+| 2026-08-23 | NodeClaim 생성 → 노드 등록 | 약 28초 |
+| 2026-08-23 | NodeClaim 생성 → **노드 Ready** | **약 39초** |
+
+조건 — `c6i.xlarge` · 온디맨드 · `ap-northeast-2c` · NodePool `default`.
+
+### 어떤 인스턴스가 뜨는지는 파드 requests 가 정한다
+
+이 테스트에서 `xlarge` 가 뜬 것은 **테스트 파드가 2 vCPU 를 요구했기 때문이지
+평소 동작이 아니다.** NodePool 은 후보만 넷으로 제한하고(c6i·m6i × large·xlarge,
+온디맨드, amd64) 그 안에서 고르는 것은 Karpenter 다 — `weight` 도 우선순위도
+걸려 있지 않다. Pending 파드를 bin-pack 해서 들어가는 후보를 추린 뒤 **제일 싼
+것**을 띄운다.
+
+DaemonSet 이 노드마다 먼저 차지하는 양 (requests 합, 2026-08-23):
+
+| 구성요소 | CPU | 메모리 |
+|---|---|---|
+| `aws-node` | 50m | — |
+| `kube-proxy` | 100m | — |
+| `datadog` | 150m | 320Mi |
+| **합계** | **300m** | **320Mi** |
+
+| 타입 | 시간당 | allocatable | DaemonSet 뺀 여유 |
+|---|---|---|---|
+| c6i.large | $0.096 | 1,930m / 3,140Mi | **1,630m** / 2,820Mi |
+| m6i.large | $0.118 | 1,930m / 7,104Mi | **1,630m** / 6,784Mi |
+| c6i.xlarge | $0.192 | 약 3,920m / 미측정 | — |
+| m6i.xlarge | $0.236 | 미측정 | — |
+
+`xlarge` 두 타입의 allocatable 은 안 쟀다. `max_pods` 가 ENI 구성이 정하는 값이라
+위 오버헤드 공식만으로는 확정할 수 없다.
+
+앱 파드 requests 는 두 자릿수 millicore 다 — `api` 100m/384Mi,
+`chat-gateway` 100m/192Mi, `order-worker` 50m/192Mi, `mediamtx` 100m/256Mi,
+`frontend` 10m/16Mi (2026-08-23). 그래서 실제 스케일아웃은 이렇게 갈린다.
+
+- 보통은 **c6i.large**. CPU 로는 16개, 메모리로는 7개(`api` 기준)가 들어간다
+- 메모리가 먼저 차면 **m6i.large**. `c6i.xlarge` 보다 싸면서 메모리가 2배다
+- 파드 하나가 1,630m 을 넘게 요구하면 **c6i.xlarge**. 이 테스트가 그 경우였다
+
+c6i 는 단가가 선형이라(large 2 vCPU $0.096, xlarge 4 vCPU $0.192) 큰 것이 와도
+vCPU당 가격은 같다. 커지는 것은 최소 구매 단위지 단가가 아니다.
+
+
+**앱 이미지 pull 은 이 값에 없다.** `pause` 이미지(수백 KB)를 썼다. 실제 앱
+파드가 붙으면 ECR pull 이 그만큼 더 붙으므로, 스파이크 대응 시간은 39초보다
+크다. 사전 확장이 주력이고 Karpenter 가 안전망인 이유가 이 숫자다(D-041).
+
+기존에 "노드 확보 최소 26초" 로 인용되던 값은 **이 문서에 근거가 없다.**
+관리형 노드그룹 교체 때 눈으로 본 값으로 보인다. 위 표를 쓴다.
+
+노드 반납은 `consolidationPolicy = WhenEmpty` · `consolidateAfter = 2h` 라
+재보지 않았다. `kubectl delete nodeclaim` 은 즉시 끝났다.
+
+비용 — 노드 수명 약 4.5분에 **$0.014** (`c6i.xlarge` 서울 온디맨드 시간당
+$0.192, `aws pricing` 조회값).
+
 **다시 재야 할 때** — 노드 등급이나 대수를 바꿀 때, 파드를 추가할 때,
 그리고 부하를 실제로 걸었을 때. 무부하 값은 부하를 대표하지 않는다.
 부하 결과는 M-009 · M-010 에 있다.

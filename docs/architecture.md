@@ -1082,7 +1082,7 @@ v1.0에서 달라진 것 셋.
 
 - **Phase 0의 내용이 바뀌었다.** 부하 프로파일은 확정됐으므로, 대신 `data/terraform.tfstate` 고아 state 정리가 들어간다. **이걸 치우기 전에는 Phase 2를 시작할 수 없다** — 새 `03-data`가 같은 키를 쓰면 남의 스택 30개를 자기 것으로 인식한다. `03-data`의 backend key는 `datastore/`로 간다.
 - **Phase 2에 영상 스택이 추가됐다.** D-01 교체로 생겼다. 번호는 `05-media` 로 예약했으나 05·06 을 관측·에이전트·백데이터 스택이 먼저 가져가 `07-media` 가 되었다 (D-033).
-- **Phase 5에서 Karpenter를 뺐다.** 관리형 노드그룹이 이미 돌고 있고, 오버프로비저닝 pause Pod가 노드 대기를 이미 0으로 만든다. 그 위에 Karpenter를 얹으면 Phase 6에서 무엇이 스케일링을 만들었는지 분리가 안 된다. 노드 확보가 실제 병목으로 측정되면 그때 넣는다.
+- **Phase 5에서 Karpenter를 뺐다.** 관리형 노드그룹이 이미 돌고 있고, 오버프로비저닝 pause Pod가 노드 대기를 이미 0으로 만든다. 그 위에 Karpenter를 얹으면 Phase 6에서 무엇이 스케일링을 만들었는지 분리가 안 된다. 노드 확보가 실제 병목으로 측정되면 그때 넣는다. **2026-08-23 에 넣었다 — `decisions.md` D-051.**
 
 **Phase 4가 결정적이다.** Pod 1개당 WebSocket 커넥션 수와 RPS를 측정하기 전에는 HPA 임계값도 Karpenter 인스턴스 타입도 추측이다. 이 숫자 없이 Phase 5를 시작하면 전부 재작업이다.
 
@@ -1349,6 +1349,6 @@ CDN             CloudFront — 영상·정적 자산 전용. API 캐싱 계층�
 관측            Datadog (AWS Marketplace 경유)
 AI 에이전트      Bedrock + AgentCore Gateway + Datadog MCP
 백데이터         별도 파트 소관 — 연동은 이벤트 스키마 계약까지 (7장 범위 주석)
-오케스트레이션    EKS + KEDA + Argo CD (Karpenter는 Phase 6 판단)
+오케스트레이션    EKS + KEDA + Argo CD + Karpenter (D-051)
 IaC             Terraform (00-cicd / 01-network / 02-eks / 03-data / 04-platform / 05-datadog / 06-agent / 06-datastream / 07-media)
 ```
