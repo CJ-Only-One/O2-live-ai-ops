@@ -1,7 +1,7 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 1A complete; Phase 1B implemented in Terraform, not applied
+> **Status:** Phase 1A complete; Phase 1B deployed with both execution gates disabled
 > **Updated:** 2026-08-23
 > **Decision:** `decisions.md` D-050
 > **Wire contract:** `contracts.md` 5.8 and `contracts/agent-trigger-v1.schema.json`
@@ -10,10 +10,10 @@
 implementation_state:
   runtime_baseline_verified: COMPLETE
   common_contract: COMPLETE
-  agent_trigger_queue: IMPLEMENTED_NOT_APPLIED
+  agent_trigger_queue: DEPLOYED_EMPTY
   chat_candidate_adapter: NOT_IMPLEMENTED
-  generic_dify_worker: IMPLEMENTED_NOT_APPLIED
-  idempotency_ledger: IMPLEMENTED_NOT_APPLIED
+  generic_dify_worker: DEPLOYED_EXECUTION_DISABLED
+  idempotency_ledger: DEPLOYED_EMPTY
   dedicated_test_workflow: PUBLISHED_CODE_ONLY
   dedicated_test_workflow_ui_contract_tests: PASS
   dedicated_test_workflow_service_api_tests: PASS
@@ -23,7 +23,9 @@ implementation_state:
   datadog_migration: NOT_STARTED
   production_agent_handoff: DISABLED
 activation_blockers:
-  - PHASE_1B_TERRAFORM_NOT_APPLIED
+  - CHAT_CANDIDATE_SOURCE_ADAPTER_NOT_IMPLEMENTED
+  - PHASE_3_SHADOW_E2E_EXECUTION_GATES_DISABLED
+operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
 production_migration_blockers:
   - EXISTING_O2_DIFY_DLQ_NOT_EMPTY
@@ -256,8 +258,8 @@ LLM 토큰은 0이었다. DSL 원본은
 source/schema 불일치는 Dify HTTP 응답 본문의 `data.status=failed`와
 `CONTRACT_REJECTED:SOURCE_SCHEMA`를 반환했다. 세 호출 모두 `total_tokens=0`이었다.
 
-따라서 Phase 1A 완료 게이트는 충족했다. 다음 구현 범위는 Phase 1B이며, 자동 source는
-여전히 연결하지 않는다.
+따라서 Phase 1A 완료 게이트는 충족했다. Phase 1B도 비활성 상태로 배포했으며, 다음 구현
+범위는 Phase 2 Chat Candidate Source Adapter다. 자동 source는 여전히 연결하지 않는다.
 
 ### 6.2 Phase 1B 현재 체크포인트
 
@@ -282,10 +284,28 @@ Worker 단위 테스트는 Chat·Datadog 정상 envelope, source/schema 불일�
 반면 이 3개만 이전 해시였다. 즉 Phase 1B 코드가 기존 Lambda를 수정한 것이 아니라,
 앞서 병합되고 일부 함수에만 적용된 기존 변경이 같은 stack plan에 섞인 상태다.
 
-따라서 전체 stack apply는 아직 허용하지 않는다. Phase 1B 대상만 지정한 plan에서
-`14 add, 0 change, 0 destroy`를 다시 확인하거나 기존 Lambda 변경을 별도 검토·적용한 뒤
-전체 plan이 깨끗해져야 한다. 이 검증과 실제 AWS resource 확인 전에는 Phase 1B를
-`DEPLOYED`로 표기하지 않는다.
+따라서 전체 stack apply는 허용하지 않고, Phase 1B 대상만 지정한 저장 plan에서
+`14 add, 0 change, 0 destroy`와 두 실행 게이트 `false`를 기계적으로 확인한 뒤 한 번만
+target apply했다. 결과는 `14 added, 0 changed, 0 destroyed`였다.
+
+apply 후 실환경 확인 결과는 다음과 같다.
+
+| 검증 항목 | 결과 |
+|---|---|
+| Phase 1B 대상 재-plan | `No changes` |
+| 전체 `06-agent` 재-plan | `0 add, 4 change, 0 destroy`; 기존 Lambda 3개와 연관 IAM 변경만 남음 |
+| SQS event source | `Disabled`, 처리 결과 없음, batch size 1 |
+| Worker | `Active`, update successful, Python 3.12, timeout 60초, reserved concurrency 2 |
+| Worker 실행 플래그 | `AGENT_ENTRY_EXECUTION_ENABLED=false` |
+| 배포 코드 | Lambda code SHA와 병합본 archive SHA 일치 |
+| Agent Trigger Queue/DLQ | visible 0, in-flight 0, SSE enabled |
+| 멱등 ledger | ACTIVE, `PAY_PER_REQUEST`, SSE·TTL·PITR enabled, item 0 |
+| Worker 실행 흔적 | CloudWatch Log Stream 0개 |
+| 전용 Dify 앱 실행 이력 | 기존 3건 그대로; apply 이후 신규 run 0건 |
+| 알람 | action enabled; Queue age·DLQ·Worker error 모두 `OK` |
+
+Phase 1B는 `DEPLOYED_EXECUTION_DISABLED`다. 기존 리소스 4개 plan 변경은 여전히 별도
+검토 대상이며, 이후에도 전체 `06-agent` apply에 섞어 실행하지 않는다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 
