@@ -3088,6 +3088,11 @@ event source와 실행 플래그를 모두 비활성으로 배포하고, Phase 3
 Candidate에서 항상 같은 `trigger_id`와 `idempotency_key`를 만들고 Phase 1B Worker
 ledger가 중복 Agent 실행을 차단한다.
 
+2026-08-23 Phase 2를 순차 적용했다. Candidate table Stream은 `NEW_IMAGE`이고 Adapter
+event source·실행 플래그는 모두 비활성이다. 적용 후 두 Terraform stack은 `No changes`,
+Agent Trigger Queue·Adapter DLQ·Adapter 실행 로그는 모두 0으로 확인했다. Phase 3 전까지
+Agent/Dify 호출은 열지 않는다.
+
 구현 원본:
 
 - 기계 판독 Schema: `docs/contracts/agent-trigger-v1.schema.json`
