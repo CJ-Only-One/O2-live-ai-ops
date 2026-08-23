@@ -607,5 +607,29 @@ event source 최대 동시성 2. 합성 메시지는 고정 15초 window 경계�
 결정한다(`VERIFY-CHAT-WINDOW-001`). 적용 후 `04-platform`과 `08-chat-signal` Terraform
 plan은 모두 `No changes`였다.
 
+**조건 (2026-08-23, Shadow 관찰 matrix)** — 외부 ALB `/ws`, 격리된 합성 broadcast
+5개, 합성 채팅 24건. 일반 채팅 제외, 동일 사용자 반복, strong 임계치, 고정 window
+경계 3+1, 다음 window 쿨다운 갱신을 한 suite에서 실행했다. Worker는 timeout 10초,
+예약 동시성 2, event source 최대 동시성 2였다.
+
+| 구간 | 실측 |
+|---|---|
+| WebSocket | 21/21 연결 성공, 기대 fanout item 84/84 수신 |
+| Worker 처리 | 24/24 상태 확인 — unrelated 4, below 14, duplicate-user 3, created 2, updated 1 |
+| 일반 채팅 | 4건 모두 `UNRELATED`, Candidate 0 |
+| 동일 사용자 반복 | window matched 1, unique 1, duplicate-user 3, Candidate 0 |
+| strong 임계치 | `MEDIUM/READ_PATH`, matched 4, unique 4, strong 3, weak 1 |
+| 고정 경계 | offset 13.200초의 3건과 다음 window offset 0.399초의 1건으로 분리, Candidate 0 |
+| 쿨다운 | Candidate 1건 유지, version 2, matched 8, unique 8 |
+| Lambda | 13 invocations, duration 67-288ms, `Errors=0`, `Throttles=0`, concurrency max 2 |
+| E2E 직후 Queue | visible 0, in-flight 0 |
+| 원문 비저장 | DynamoDB 전체 67건에서 금지 key 0·합성 원문 0, CloudWatch 합성 원문 0 |
+
+고정 경계 결과는 timeout이나 late drop 없이 정상 처리된 네 메시지만으로 3+1 미탐을
+재현했다. 따라서 현재 tumbling window는 Shadow로 유지한다. 이 합성 표본은 실패 모드의
+존재를 검증하지만 실제 채팅의 오탐률·미탐률을 추정하는 표본은 아니다. 원문을 보존하지
+않으므로 Phase 5 비교 입력은 운영 원문 replay가 아니라 개인정보가 없는 라벨 합성
+데이터로 구성해야 한다.
+
 **다시 재야 할 때** — Worker timeout·예약 동시성·event source 최대 동시성·batch 크기,
 Queue visibility, DynamoDB 처리 구조를 바꿀 때.
