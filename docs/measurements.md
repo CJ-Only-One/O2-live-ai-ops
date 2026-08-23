@@ -657,6 +657,10 @@ CloudWatch Lambda 조회와 Dify Postgres 조회는 실행 시점과 집계 기�
 | 게시 입력 | 10개; `custom_alert_json` optional paragraph, 최대 30,000자 |
 | 게시 graph | `custom_alert_json` 참조 확인 |
 
+위 게시 앱 조회는 Dify 입력 기능을 확인하기 위한 baseline이다. 신규 Agent 진입점의
+테스트 대상이나 연결 대상으로 승인한 것이 아니다. 실제 Shadow E2E는 전용 테스트 앱,
+전용 API key, export된 별도 DSL을 사용한다(D-050).
+
 이 baseline은 새 Chat 호출이 실패했다는 측정이 아니다. Chat handoff는 아직 없다. 기존
 Datadog Agent 경로가 성공과 실패를 모두 갖고 있고 DLQ가 비어 있지 않으므로, 새 source를
 곧바로 같은 Worker에 연결해서는 안 된다는 활성화 전 상태 증거다.

@@ -3059,10 +3059,14 @@ Chat Candidate INSERT -> Chat Source Adapter -----+
 60초 원문 Queue와 Candidate 생성을 막지 않게 하기 위해서다.
 
 Agent Worker는 envelope를 Dify의 `custom_alert_json`으로 전달한다. 2026-08-23 실환경의
-게시 앱에서 이 변수가 optional paragraph로 노출되고 graph에서 참조되는 것을 확인했다.
-다만 저장소 DSL은 배포본보다 오래됐고 기존 Worker DLQ도 비어 있지 않으므로, 현재
-Datadog 경로를 즉시 교체하지 않는다. 비활성 공통 Worker, Chat Shadow E2E, Datadog
-dual-run 순서로 전환한다.
+게시 앱을 읽기 전용으로 조회해 이 입력 형태가 Dify 1.16.1에서 노출되고 graph에서 참조될
+수 있음을 확인했다. 그 앱은 팀원이 노드를 구성 중인 앱이므로 신규 진입점 대상으로 쓰지
+않는다. 전용 테스트 앱·전용 API key·export된 DSL로 contract-only smoke를 먼저 수행한다.
+
+저장소의 기존 DSL은 배포본보다 오래됐고 기존 Worker DLQ도 비어 있지 않다. 두 문제는
+전용 테스트 앱 실험과 격리하고, 기존 Datadog 경로를 공통 진입점으로 옮기는 시점에
+해결한다. 비활성 공통 Worker, 전용 테스트 앱 Chat Shadow E2E, Datadog dual-run 순서로
+전환한다.
 
 현재 권한 경계는 `READ_ONLY`이고 자동 조치는 금지한다. Dify HTTP 200만으로 성공 처리하지
 않고 `data.status=succeeded`를 확인하며, 같은 `idempotency_key`는 LLM을 다시 실행하지

@@ -13,12 +13,16 @@ implementation_state:
   agent_trigger_queue: NOT_IMPLEMENTED
   chat_candidate_adapter: NOT_IMPLEMENTED
   generic_dify_worker: NOT_IMPLEMENTED
+  dedicated_test_workflow: NOT_CREATED
+  existing_team_workflow_targeted: false
   datadog_migration: NOT_STARTED
   production_agent_handoff: DISABLED
 activation_blockers:
-  - EXISTING_O2_DIFY_DLQ_NOT_EMPTY
-  - DEPLOYED_DIFY_DSL_NOT_EXPORTED_TO_REPOSITORY
   - GENERIC_ENTRY_WORKER_AND_IDEMPOTENCY_LEDGER_NOT_IMPLEMENTED
+  - DEDICATED_TEST_WORKFLOW_NOT_CREATED_EXPORTED_AND_PUBLISHED
+production_migration_blockers:
+  - EXISTING_O2_DIFY_DLQ_NOT_EMPTY
+  - DEPLOYED_TEAM_WORKFLOW_DSL_NOT_EXPORTED_TO_REPOSITORY
 ```
 
 이 문서는 Chat Incident Candidate를 AI Agent 호출로 연결하는 **새 진입점**의 원본이다.
@@ -33,16 +37,16 @@ activation_blockers:
 |---|---|
 | Dify 배치 | EKS 밖 private EC2, SSM 접속, Dify 1.16.1 |
 | Agent 호출 | Datadog Ingress Lambda가 비동기로 VPC Worker Lambda를 호출하고 Worker가 Dify Workflow API를 blocking 호출 |
-| 실제 게시 앱 | `O2 Agentic AIOps — Source-Aligned Mock v4` |
-| 실제 공통 입력 후보 | `custom_alert_json`, optional paragraph, 최대 30,000자 |
-| 게시 graph 사용 여부 | `custom_alert_json` 참조 확인 |
+| 관찰한 기존 게시 앱 | `O2 Agentic AIOps — Source-Aligned Mock v4`; 팀 구성 중인 앱이며 신규 진입점 대상이 아님 |
+| 확인한 Dify 입력 기능 | `custom_alert_json` 형태의 paragraph 입력과 게시 graph 참조가 가능함을 확인 |
 | 채팅 Candidate handoff | 미구현, `agent_handoff_status=NOT_CONFIGURED` |
 | 기존 Agent 경로 상태 | 성공 실행도 있으나 Worker 오류와 DLQ backlog가 있어 신규 경로의 무검증 재사용 금지 |
 
-배포된 Dify 앱에는 `behavior`, `custom_alert_json`, Datadog 호환 입력이 있지만 저장소의
-DSL과 README에는 Datadog 입력만 남아 있다(T-022). 따라서 런타임 사실은 API의 `/info`,
-`/parameters`, 게시 workflow graph로 확인했고, 복구 가능한 소스의 정답은 DSL을 다시
-내보낸 뒤에만 회복된다.
+배포된 기존 앱을 읽은 목적은 Dify 1.16.1에서 필요한 입력 형태를 지원하는지 확인하는
+것이었다. 그 앱이나 API key에는 신규 Queue·Worker를 연결하지 않았다. 기존 앱에는
+`behavior`, `custom_alert_json`, Datadog 호환 입력이 있지만 저장소 DSL과 README에는
+Datadog 입력만 남아 있다(T-022). 이 drift는 production migration blocker이지, 별도
+테스트 앱으로 수행할 신규 진입점 실험의 blocker는 아니다.
 
 ## 1. 결정
 
@@ -87,6 +91,28 @@ datadog:<cycle_key>:<transition>
 업데이트 재분석이 필요해지면 `chat:<candidate_id>:<revision>`으로 계약을 올리고,
 호출 빈도와 비용을 측정한 뒤 별도로 결정한다.
 
+### 1.3 팀 workflow와 테스트 workflow를 분리한다
+
+신규 진입점은 팀원이 노드를 구성 중인 기존 앱을 호출하지 않는다. Dify에 전용 테스트
+앱 `O2 Agent Entry Contract Test v1`을 새로 만들고 다음 경계를 지킨다.
+
+| 소유 대상 | 규칙 |
+|---|---|
+| 테스트 앱 | `custom_alert_json` 하나를 start contract로 사용 |
+| API key | 테스트 앱 전용 key를 별도 Secrets Manager secret으로 관리 |
+| DSL | 생성 즉시 export해 `infra/06-agent/dify/`에 커밋 |
+| Worker 설정 | 기존 `dify-api-key`와 분리된 secret 이름을 주입 |
+| 트래픽 | 합성 Candidate만 허용; 기존 Datadog webhook과 운영 Chat source는 연결 금지 |
+
+첫 게시 버전은 `Start -> Code validation -> deterministic output`만 둬 transport와 계약을
+검증한다. 이것이 통과한 뒤 같은 테스트 앱에 Bedrock LLM과 read-only Datadog Pull을
+추가한다. 처음부터 팀 workflow 전체를 복제하면 실패 원인이 진입 계약인지 진단 노드인지
+분리할 수 없다.
+
+production 전환 시에는 이 안정된 entry workflow가 source 검증·라우팅을 소유하고,
+팀의 diagnosis workflow는 그 뒤에서 별도 버전으로 진화하게 한다. 두 workflow 사이의
+호출 방식은 테스트 결과와 Dify export 가능 범위를 확인한 뒤 결정한다.
+
 ## 2. 목표 흐름
 
 ```text
@@ -102,7 +128,7 @@ Datadog Webhook -> Datadog Source Adapter -------------+
                                                        v
                                       Generic Agent Worker in Dify VPC
                                                        v
-                                        Dify custom_alert_json -> Bedrock
+                                  Dedicated Test Workflow -> later Bedrock
 ```
 
 Chat Signal Worker에서 Dify를 직접 호출하지 않는다. Candidate 저장 성공과 Agent 호출
@@ -136,9 +162,10 @@ Chat Source Adapter는 Candidate DynamoDB Stream의 **새 Candidate INSERT만** 
 Chat 예시는 `contracts.md` 5.8에 있다. `evidence`는 Candidate 계약의 허용 필드만 복사하며
 `raw_chat_included`는 evidence가 아니라 공통 `guardrails`에서 항상 `false`로 강제한다.
 
-## 4. Dify 입력 매핑
+## 4. 전용 테스트 Dify 입력 매핑
 
-Generic Agent Worker는 envelope 전체를 compact JSON string으로 직렬화해 다음처럼 보낸다.
+Generic Agent Worker는 팀 workflow가 아니라 전용 테스트 앱을 가리킨다. envelope 전체를
+compact JSON string으로 직렬화해 다음처럼 보낸다.
 
 ```json
 {
@@ -151,7 +178,8 @@ Generic Agent Worker는 envelope 전체를 compact JSON string으로 직렬화�
 ```
 
 - Chat evidence를 `alert_title`, `alert_body` 같은 Datadog 필드로 위장하지 않는다.
-- `custom_alert_json`의 30,000자 제한을 Worker가 호출 전에 검사한다.
+- 테스트 앱의 `custom_alert_json`은 required paragraph로 만들고 최대 길이는 게시 API에서
+  다시 읽어 Worker 검증값과 일치시킨다.
 - `behavior`는 실험용 선택값이므로 공통 계약에 넣지 않는다.
 - Dify의 모르는 입력 키 무시 동작에 기대지 않는다. 호출 전 Schema 검증과 게시 앱
   `/parameters`의 변수 존재 확인을 배포 게이트로 둔다.
@@ -190,13 +218,13 @@ idempotency duplicate, DLQ depth다. 로그에는 Chat 원문이 애초에 들�
 | 0 | 실환경 baseline, 공통 Schema, 결정 기록 | 문서 index, JSON Schema validation, source별 machine-readable 예시와 불변조건 일치 |
 | 1 | Agent Trigger SQS/DLQ, idempotency ledger, Generic Worker를 비활성 상태로 생성 | Terraform fmt/validate, event source disabled, Dify 호출 0 |
 | 2 | Chat Candidate INSERT Source Adapter와 계약 테스트 | synthetic Candidate가 정확히 한 envelope 생성, 원문/사용자 키 0, 중복 Agent 호출 0 |
-| 3 | 별도 실험 workflow로 Dify Shadow E2E | `custom_alert_json` 계약 확인, success 상태 확인, 장애 시 Queue/DLQ 격리, 기존 DLQ 원인 정리 |
-| 4 | Datadog Source Adapter dual-run 후 전환 | legacy/new 결과 비교, Recovered 의미 보존, rollback 확인 |
+| 3 | 전용 테스트 workflow로 Dify Shadow E2E | 기존 앱/API key 미사용, DSL export, contract-only smoke 후 LLM 추가, 장애 시 Queue/DLQ 격리 |
+| 4 | 기존 DLQ·DSL drift 정리 후 Datadog Source Adapter dual-run | legacy/new 결과 비교, Recovered 의미 보존, rollback 확인 |
 | 5 | 운영 hardening | backlog·error·DLQ 알람, replay runbook, concurrency·timeout 실측 근거 |
 
-Phase 1과 2는 Dify를 호출하지 않는 상태로 진행할 수 있다. Phase 3 활성화 전에는 현재 O2
-Worker의 DLQ backlog를 분류하고, 저장소 밖에서 변경된 게시 workflow DSL을 다시
-내보내야 한다.
+Phase 1과 2는 Dify를 호출하지 않는 상태로 진행할 수 있다. Phase 3은 전용 테스트 앱과
+합성 입력만으로 진행하므로 기존 O2 Worker DLQ와 팀 workflow drift를 건드리지 않는다.
+두 문제의 정리는 기존 Datadog 경로를 공통 진입점으로 옮기는 Phase 4의 선행 조건이다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 
