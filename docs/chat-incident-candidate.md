@@ -1,7 +1,7 @@
 # Chat Incident Candidate — canonical implementation spec
 
 > **Audience:** coding agents and reviewers
-> **Status:** approved design, Phase 4 data resources deployed, producer and consumer activation pending
+> **Status:** Phase 4 first E2E failed on Worker runtime limits; producer and consumer rolled back off
 > **Updated:** 2026-08-23
 > **Decision:** `decisions.md` D-047
 > **Wire contracts:** `contracts.md` 5.6-5.7
@@ -13,16 +13,16 @@ types, and enums. D-047 is normative for the reason behind the design.
 implementation_state:
   canonical_docs: COMPLETE
   data_terraform: AWS_VERIFIED_APPLIED
-  service_iam_terraform: PLAN_REVIEWED_NOT_APPLIED
-  lambda_processor: PLAN_REVIEWED_NOT_APPLIED
-  event_source_mapping: PLAN_REVIEWED_ENABLED_NOT_APPLIED
-  chat_gateway_publisher: IMAGE_RUNNING_CONFIG_OFF
-  candidate_logic: CODE_VALIDATED_NOT_AWS_INTEGRATED
+  service_iam_terraform: AWS_VERIFIED_APPLIED
+  lambda_processor: AWS_DEPLOYED_SOURCE_DISABLED_FIX_PENDING
+  event_source_mapping: AWS_DISABLED_AFTER_FAILED_E2E
+  chat_gateway_publisher: IMAGE_RUNNING_CONFIG_OFF_AFTER_ROLLBACK
+  candidate_logic: E2E_FAILED_TIMEOUT_NO_CANDIDATE
   deployed_feature: false
 next_action:
   phase: 4
-  goal: MERGE_PHASE_4_THEN_APPLY_CONSUMER_AND_PRODUCER
-  apply_allowed: AFTER_PHASE_4_CHANGE_MERGED
+  goal: MERGE_RUNTIME_FIX_THEN_REENABLE_AND_REPEAT_E2E
+  apply_allowed: AFTER_RUNTIME_FIX_MERGED_AND_PLAN_REVIEWED
 code_refs:
   data_terraform: infra/03-data/chat_signal.tf
   service_iam_terraform: infra/04-platform/app_data_access.tf
@@ -49,16 +49,24 @@ verification:
   worker_terraform_plan: PASS_5_ADD_0_CHANGE_0_DESTROY
   platform_terraform_plan: REVIEW_7_ADD_3_CHANGE_1_DESTROY
   platform_scaling_diff: NONE
-  aws_sqs_iam_integration: NOT_RUN
-  eks_runtime_verification: IMAGE_READY_2_OF_2_CONFIG_OFF
+  service_iam_and_config_apply: PASS_7_ADD_3_CHANGE_1_DESTROY
+  external_websocket_fanout: PASS_4_CONNECTIONS_16_ITEMS
+  first_shadow_candidate_e2e: FAIL_LAMBDA_TIMEOUT_AND_LATE_DROP
+  runtime_fix_terraform_plan: PASS_0_ADD_2_CHANGE_0_DESTROY
+  raw_chat_persistence_check: PASS_ZERO_RAW_ATTRIBUTES
+  rollback_producer_consumer: PASS_OFF_AND_DISABLED
+  aws_sqs_iam_integration: PASS_SEND_AND_CONSUME
+  eks_runtime_verification: IMAGE_READY_CONFIG_OFF_AFTER_ROLLBACK
 ```
 
 `AWS_VERIFIED_APPLIED` means the dedicated SQS and DynamoDB exist in AWS and their 60-second
 retention, managed SSE, empty backlog, and TTL were read back after apply.
-`PLAN_REVIEWED_NOT_APPLIED` and `PLAN_REVIEWED_ENABLED_NOT_APPLIED` are desired changes only.
-They MUST NOT be interpreted as a Lambda, IAM role, or event source mapping in AWS.
-`IMAGE_RUNNING_CONFIG_OFF` means two ready Chat Gateway replicas run the Phase 3 image, while the
-live ConfigMap contains none of the three Chat Signal keys. The publisher therefore remains off.
+`AWS_DEPLOYED_SOURCE_DISABLED_FIX_PENDING` means the Lambda and IAM exist, but processing is
+intentionally stopped until the runtime-limit fix is merged and applied.
+`AWS_DISABLED_AFTER_FAILED_E2E` means the event source mapping exists and was explicitly disabled
+after the failed first Shadow E2E. It MUST NOT be reported as active processing.
+`IMAGE_RUNNING_CONFIG_OFF_AFTER_ROLLBACK` means the Chat Signal keys exist, but the live ConfigMap
+has `CHAT_SIGNAL_MODE=off` and the restarted Chat Gateway does not publish to SQS.
 
 ## 0. Agent execution rules
 
@@ -137,12 +145,12 @@ The two branches are independent.
 | Valkey Pub/Sub fanout | implemented and previously live-verified |
 | `chat.send` Kinesis telemetry | implemented; separate from this feature |
 | dedicated Chat Signal SQS | applied; 60-second retention, managed SSE, empty backlog verified |
-| Chat Signal Lambda | plan reviewed: create; not applied |
-| SQS event source mapping | plan reviewed: enabled create; not applied |
+| Chat Signal Lambda | applied, then source-disabled after 5-second timeout in first E2E; fix pending |
+| SQS event source mapping | applied and consumed messages, then disabled by rollback |
 | DynamoDB aggregation state | applied; `expires_at` TTL enabled |
-| service-specific SQS IAM | plan reviewed with existing service-role migration; not applied |
-| Chat Gateway SQS publisher | Phase 3 image ready on 2/2 replicas; live ConfigMap has no Chat Signal keys, so off |
-| Incident Candidate creation | code locally validated; AWS end-to-end integration not run |
+| service-specific SQS IAM | applied; Chat Gateway and Order Worker use dedicated Pod Identity roles |
+| Chat Gateway SQS publisher | external send and fanout verified; ConfigMap returned to `off` after failed E2E |
+| Incident Candidate creation | first AWS E2E failed: Candidate 0 due timeout and late drop; T-020 fix pending |
 | Datadog Pull and Dify handoff | out of scope / not implemented |
 
 Do not report a Terraform validation, image build, or document merge as a deployed feature.

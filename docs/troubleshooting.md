@@ -35,6 +35,7 @@
 | T-017 | 부하도 안 줬는데 AI 에이전트가 계속 깨어난다 | `notify_no_data`, `@webhook-dify`, Downtime, EWMA baseline 오염 |
 | T-018 | 과거 사례가 늘 비는데 워크플로는 성공으로 끝난다 | `s3vectors:GetVectors`, `returnMetadata`, 의도한 조용한 실패, 웜 컨테이너가 옛 자격증명을 든다 |
 | T-019 | Worker Lambda가 타임아웃 나는데 Dify 쪽은 매번 성공으로 남는다 | `urllib.request.urlopen timeout=55`, `workflow_runs`, Hot Path·Runbook Lookup, Slack 승인 |
+| T-020 | 채팅은 전달되는데 Incident Candidate가 생성되지 않는다 | Chat Signal Worker 5초 timeout, 예약 동시성 1, SQS in-flight, `LATE_EVENT_DROPPED` |
 
 ---
 
@@ -1071,3 +1072,57 @@ timeout 을 60→850초로 올렸다(Lambda 자체 상한 900초 대비 여유�
 정확히 남기기 때문에, "워크플로가 느려서 실패한다"와 "워크플로는 끝났는데
 클라이언트가 먼저 포기한다"는 겉으로 같은 에러 메시지를 낸다. Dify Postgres
 를 EC2 안에서 직접 조회해 대조해보고 나서야 후자라는 게 확인됐다.
+
+---
+
+## T-020. 채팅은 전달되는데 Incident Candidate가 생성되지 않는다
+
+**증상**
+
+외부 ALB WebSocket으로 합성 사용자 4명이 15초 안에 약한 지연 신호를 보냈다.
+네 연결은 모두 성공했고 각 채팅은 네 클라이언트에 전달됐지만 Candidate는 없었다.
+
+Worker 로그에는 다음 순서가 남았다.
+
+```text
+REPORT Duration: 5000.00 ms Status: timeout
+chat_signal_processed ... status=BELOW_THRESHOLD
+chat_signal_processed ... status=BELOW_THRESHOLD
+chat_signal_processed ... status=LATE_EVENT_DROPPED
+chat_signal_processed ... status=LATE_EVENT_DROPPED
+```
+
+Queue는 visible 0, not-visible 4였다. 메시지가 사라진 것이 아니라 Lambda poller가
+받아 둔 채 처리하지 못하고 있었다. DynamoDB에는 중간 상태 7건만 있고 Candidate는
+0건이었다. 원문 속성은 0건이었다(M-011).
+
+**원인**
+
+두 제한을 실제 SQS-Lambda 경로 없이 정했다.
+
+1. 함수 timeout 5초는 cold start, boto3 자격증명 초기화, 순차 DynamoDB 쓰기를 합친
+   첫 invocation보다 짧았다. 첫 호출은 정확히 5초에서 강제 종료됐다.
+2. 예약 동시성은 1인데 event source mapping의 최대 동시성을 제한하지 않았다. 같은
+   1분 구간에서 CloudWatch `Throttles=2`, `ConcurrentExecutions max=1`이 확인됐다. SQS
+   poller가 받은 다음 batch가 throttling과 visibility 30초 동안 기다렸고, 그 결과
+   15초 window + 5초 late allowance를 넘겨 정상 메시지가 late로 폐기됐다.
+
+**해결**
+
+먼저 D-049 순서대로 생산자를 `off`로 바꾸고 Chat Gateway를 재시작한 뒤 event source
+mapping을 Disabled로 바꿨다. 데이터 리소스는 삭제하지 않았다.
+
+Worker timeout은 10초, 예약 동시성은 2로 바꾸고 event source mapping의
+`maximum_concurrency=2`를 명시한다. poller 최대치와 함수 예약치를 같게 해 throttling으로
+in-flight 메시지가 늦어지는 경로를 닫는다. Queue visibility 30초는 함수 timeout보다
+길고, 원문 보존 60초 안에서 한 번 재시도할 여지를 남기므로 유지한다.
+
+수정 배포 후에는 새 broadcast ID로 같은 외부 WebSocket 4사용자 시나리오를 다시 실행해
+Candidate 1건, Queue visible/in-flight 0, Lambda timeout 0, 원문 속성 0을 모두 확인한다.
+
+**왜 늦게 찾았나**
+
+로컬 AC 테스트는 결정론적 분류·DynamoDB 조건부 쓰기·중복 처리를 검증했지만 Lambda
+cold start와 SQS poller가 batch를 선점하는 동작은 포함하지 않았다. Terraform validate와
+unit test가 모두 통과해 처리 용량도 검증된 것처럼 보였다. visible backlog만 봤다면 0이라
+정상으로 오판했을 것이고, not-visible과 CloudWatch `REPORT`를 함께 봐야 원인이 보였다.
