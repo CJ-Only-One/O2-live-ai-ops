@@ -69,6 +69,12 @@ data "terraform_remote_state" "eks" {
 locals {
   cluster_name = data.terraform_remote_state.eks.outputs.cluster_name
   lbc_role_arn = data.terraform_remote_state.eks.outputs.lbc_role_arn
+
+  # 02-eks 가 enable_karpenter = false 이면 null 로 온다. 그때는 여기 리소스도
+  # count = 0 이라 참조되지 않는다.
+  karpenter_role_arn           = try(data.terraform_remote_state.eks.outputs.karpenter_role_arn, null)
+  karpenter_node_role_name     = try(data.terraform_remote_state.eks.outputs.karpenter_node_role_name, null)
+  karpenter_interruption_queue = try(data.terraform_remote_state.eks.outputs.karpenter_interruption_queue, null)
 }
 
 data "aws_eks_cluster" "this" {

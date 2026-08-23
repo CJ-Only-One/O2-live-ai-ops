@@ -37,3 +37,7 @@ node_max_size       = 3
 # 배포는 Argo CD(GitOps)라 CI가 클러스터에 접근할 필요가 없다. (docs/decisions.md D-009)
 
 cluster_public_access_cidrs = ["0.0.0.0/0"]
+
+# Karpenter 용 IAM·SQS·EventBridge. Helm 설치는 04-platform 의 enable_karpenter.
+# 켜는 순서: 02-eks 먼저, 그다음 04-platform. 끄는 순서는 반대다.
+enable_karpenter = true
