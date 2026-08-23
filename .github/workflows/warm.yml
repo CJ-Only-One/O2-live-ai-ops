@@ -1,0 +1,134 @@
+# warm path 집계기 시험.
+#
+# **잡을 나눈 기준은 "누가 깼는가" 다.**
+#
+#   test               내가 방금 깼다        PR 에서 돈다. 시크릿 없음
+#   contract-deployed  배포와 사본이 어긋났다 PR 에서 안 돈다. 항상 통과해야 함
+#   contract-latest    SDK 가 앞서 나갔다     주기 실행만. 깨져도 프로덕션은 멀쩡
+#
+# 계약 드리프트를 PR 게이트로 걸면 **내가 고칠 수 없는 이유로 남의 PR 이 선다.**
+# 백데이터 파트가 봉투에 필드를 하나 추가하면 무관한 PR 이 전부 빨간불이 되고,
+# 그러면 사람들은 검사를 끄는 쪽으로 간다. D-023 이 terraform 드리프트를 PR
+# 게이트로 승격하지 않으면서 적어둔 판단이 그대로 적용된다 —
+# "PR 은 코드가 바뀐 사건이고 드리프트는 시간이 흐른 사건이다."
+#
+# 그리고 **이 저장소는 public 이다**(D-023). private SDK 토큰이 필요한 잡은
+# `pull_request` 에서 돌면 안 된다. `app.yml` 의 `image` 잡이 이미 같은 이유로
+# `github.event_name != 'pull_request'` 를 걸고 있다 — 그 선을 그대로 따른다.
+#
+# **이 워크플로는 코드가 맞다는 것만 본다. 데이터가 실제로 흐르는지는 못 본다.**
+# 인입·집계·전송이 전부 예외를 삼키도록 설계돼 있어(가용성 우선) 파이프라인이
+# 멈춰도 여기는 초록불이다. 그쪽은 05-datadog 의 파이프라인 생존 Monitor 가
+# 맡아야 한다 — 지금은 없다.
+
+name: warm
+
+on:
+  pull_request:
+    paths: ['infra/06-datastream/warm/**', '.github/workflows/warm.yml']
+  push:
+    branches: [main]
+    paths:
+      - 'infra/06-datastream/warm/**'
+      - '.github/workflows/warm.yml'
+      # SDK 핀을 올리면 계약 사본이 그대로여도 어긋날 수 있다.
+      - 'apps/api/Dockerfile'
+      - 'apps/order-worker/Dockerfile'
+  schedule:
+    # 주간. SDK 가 앞서 나갔는지 보는 용도라 잦을 필요가 없다.
+    # scan.yml 과 같은 시간대를 쓴다.
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warm-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Lambda 런타임과 맞춘다(06-datastream/lambda.tf 의 runtime).
+  # 여기가 갈리면 로컬·CI 는 통과하고 배포된 Lambda 에서만 깨진다.
+  PYTHON_VERSION: '3.11'
+  WARM_DIR: infra/06-datastream/warm
+
+jobs:
+  # ── 시크릿 없이 도는 것 ────────────────────────────────────────
+  #
+  # 집계 로직 전부. SDK 가 없으면 test_contract.py 는 통째로 skip 되고
+  # 나머지가 돈다 — 그게 이 잡의 의도다. 계약 검증은 아래 잡의 일이다.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # dev extra 를 그대로 쓰면 안 된다 — o2events 가 PyPI 에 없어서
+      # `pip install -e ".[dev]"` 는 여기서 실패한다.
+      - name: 의존성
+        working-directory: ${{ env.WARM_DIR }}
+        run: pip install -e ".[aws]" "pytest>=8.0"
+
+      - name: 시험
+        working-directory: ${{ env.WARM_DIR }}
+        run: pytest -q
+
+  # ── 배포와 사본이 맞나 ────────────────────────────────────────
+  #
+  # 우리가 **실제로 배포하는** SDK 커밋으로 대조한다. 어긋나면 프로덕션이
+  # 이미 틀렸다는 뜻이므로 반드시 통과해야 한다. 누군가 SDK_REF 를 올리면서
+  # contract.py 를 안 고치면 여기서 걸린다.
+  contract-deployed:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 배포가 고정한 SDK ref 읽기
+        id: ref
+        run: |
+          # Dockerfile 이 진실의 원천이다. 여기서 따로 적으면 둘이 갈리고,
+          # 갈려도 아무도 모른다.
+          api=$(sed -n 's/^ARG SDK_REF=//p' apps/api/Dockerfile | head -1)
+          worker=$(sed -n 's/^ARG SDK_REF=//p' apps/order-worker/Dockerfile | head -1)
+
+          if [ -z "$api" ]; then
+            echo "::error::apps/api/Dockerfile 에서 SDK_REF 를 못 읽었습니다"
+            exit 1
+          fi
+          if [ "$api" != "$worker" ]; then
+            echo "::error::두 Dockerfile 의 SDK_REF 가 다릅니다: api=$api worker=$worker"
+            exit 1
+          fi
+
+          echo "ref=$api" >> "$GITHUB_OUTPUT"
+          echo "배포 고정 ref = $api"
+
+      - uses: ./.github/actions/warm-contract
+        with:
+          sdk-ref: ${{ steps.ref.outputs.ref }}
+          sdk-token: ${{ secrets.SDK_REPO_TOKEN }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          warm-dir: ${{ env.WARM_DIR }}
+
+  # ── SDK 가 앞서 나갔나 ────────────────────────────────────────
+  #
+  # 알림용이다. 깨져도 프로덕션은 멀쩡하다 — 아직 그 버전을 안 쓰고 있으니까.
+  # **PR 에서도 push 에서도 안 돈다.** 그래서 누구의 작업도 막지 않고, 주기
+  # 실행에서 깨지면 알림만 간다. 그게 이 검사에 맞는 강도다.
+  contract-latest:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/warm-contract
+        with:
+          sdk-ref: main
+          sdk-token: ${{ secrets.SDK_REPO_TOKEN }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          warm-dir: ${{ env.WARM_DIR }}

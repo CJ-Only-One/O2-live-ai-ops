@@ -1,0 +1,75 @@
+# 계약 대조 한 번. `warm.yml` 의 두 잡이 ref 만 바꿔 같은 것을 돌린다.
+#
+# 잡을 둘로 나눈 이유는 **도는 조건이 다르기 때문**이지 하는 일이 다르기
+# 때문이 아니다. 그래서 절차는 여기 한 곳에만 둔다 — 양쪽에 복사해 두면
+# 한쪽만 고쳐지고, 그때 조용해지는 쪽은 알림용(latest)이라 아무도 모른다.
+
+name: warm 계약 대조
+description: 지정한 ref 의 o2events 로 warm 계약 사본을 검증한다
+
+inputs:
+  sdk-ref:
+    description: 대조할 o2-sdk-for-event 의 ref (커밋 SHA 또는 브랜치)
+    required: true
+  sdk-token:
+    description: private SDK 저장소 읽기 토큰
+    required: true
+  python-version:
+    description: Lambda 런타임과 같은 버전
+    required: true
+  warm-dir:
+    description: warm 프로젝트 경로
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # URL 에 토큰을 박지 않는다 — pip 가 그 URL 을 로그에 찍는다.
+    # checkout 액션에 넘기면 자격증명이 로그에 안 남는다.
+    - name: SDK 체크아웃 (${{ inputs.sdk-ref }})
+      uses: actions/checkout@v4
+      with:
+        repository: CJ-Only-One/o2-sdk-for-event
+        ref: ${{ inputs.sdk-ref }}
+        token: ${{ inputs.sdk-token }}
+        path: .sdk
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: 의존성
+      shell: bash
+      run: |
+        pip install ./.sdk
+        pip install -e "${{ inputs.warm-dir }}[aws]" "pytest>=8.0"
+
+    # **이 단계가 없으면 보호가 조용히 사라진다.**
+    # test_contract.py 는 importorskip 이라 SDK 가 없으면 전부 skip 되고
+    # pytest 는 초록불을 준다. 토큰이 만료되거나 저장소 이름이 바뀌면
+    # 검사가 사라진 채로 계속 통과한다 — 이 잡이 막으려는 실패와 정확히
+    # 같은 모양이다(T-015). 그래서 import 를 먼저 강제한다.
+    - name: SDK 가 실제로 설치됐는지 확인
+      shell: bash
+      run: |
+        python - <<'PY'
+        import o2events.emit, o2events.schemas, o2events.sinks
+        print("o2events 로드 확인:", sorted(o2events.schemas.EVENT_NAMES))
+        PY
+
+    - name: 계약 대조
+      shell: bash
+      working-directory: ${{ inputs.warm-dir }}
+      run: |
+        # -rs 로 skip 사유를 찍는다. 위 단계를 통과했으면 skip 이 날 수
+        # 없지만, 나더라도 초록불로 넘어가지 않게 한 번 더 막는다.
+        set +e
+        out=$(pytest tests/test_contract.py -q --no-header -rs 2>&1)
+        status=$?
+        set -e
+        echo "$out"
+        if echo "$out" | grep -qE '[0-9]+ skipped'; then
+          echo "::error::계약 시험이 skip 됐습니다 — SDK 가 안 잡혔다는 뜻입니다"
+          exit 1
+        fi
+        exit $status
