@@ -78,7 +78,7 @@ def test_envelope_fields_match_sdk():
     **이 시험이 없어서 실제로 한 번 놓쳤습니다.** SDK 0.3.0 이 봉투에
     `pod_name` 을 추가했는데, 이 파일의 `E_POD_NAME` 상수만 만들고
     `ENVELOPE_FIELDS` 집합에 넣지 않은 채로 아무 시험도 깨지지 않았습니다
-    (`docs/troubleshooting.md` T-015).
+    (`docs/troubleshooting.md` T-023).
 
     SDK 에는 봉투 필드 목록을 내보내는 상수가 없습니다(v0.3.1 기준). 그래서
     상수끼리 비교하지 못하고 `_envelope()` 을 직접 불러 실제 키를 봅니다 —
