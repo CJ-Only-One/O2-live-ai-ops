@@ -49,6 +49,21 @@ resource "helm_release" "keda" {
         limits   = { memory = "256Mi" }
       }
     }
+
+    # **관리형 노드그룹에만 뜨도록 묶는다** (`02-eks/nodegroup.tf` 의 labels).
+    # Karpenter 컨트롤러와 같은 이유이고, 여기서는 더 직접적이다.
+    #
+    # KEDA 오퍼레이터는 죽지 않는 파드다. Karpenter 가 스파이크 때 산 노드에
+    # 이것이 올라앉으면 `consolidationPolicy = WhenEmpty` 의 "비었다" 조건이
+    # 영원히 안 맞아 **임시 노드가 상시 노드가 된다.** 2026-08-23 에 부하 테스트
+    # 뒤 노드 한 대가 그렇게 남았다 — 파드는 정상이고 요금만 계속 나간다.
+    #
+    # 스케일러가 자기 스케일 대상 노드 위에 있는 것 자체도 곤란하다. 그 노드가
+    # 반납되는 순간 스케일링이 멈춘다.
+    #
+    # 최상위 nodeSelector 하나가 세 파드(operator, metrics-apiserver, webhooks)에
+    # 모두 적용된다 — 차트 2.17.2 기준.
+    nodeSelector = { role = "general" }
   })]
 
   depends_on = [aws_eks_access_policy_association.admin]
