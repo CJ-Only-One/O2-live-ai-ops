@@ -16,7 +16,7 @@ Candidate 1건 생성을 확인했다.
 | Lambda와 실행 IAM | Active; timeout 10초, 예약 동시성 2 |
 | SQS event source mapping | Enabled; 최대 동시성 2 |
 | 결정론적 분류·15초 집계 | 구현·로컬 테스트·AWS same-window 통합 확인 |
-| Candidate 처리 로직 | AC-004 AWS E2E 통과; `LOW/UNKNOWN`, 4 messages, 4 users |
+| Candidate 처리 로직 | same-window·strong·dedup·cooldown AWS E2E 통과 |
 | 전용 SQS·DynamoDB | 적용 완료; 보존 60초·SSE·빈 backlog·TTL 검증 |
 | Datadog·Dify·Bedrock 호출 | 권한·코드 모두 없음 |
 | 원문 로그·DynamoDB·Candidate 저장 | 없음, 테스트로 검증 |
@@ -75,6 +75,40 @@ terraform validate
 E2E에서 이 경계 때문에 T-020을 발견했고, 수정 후 외부 E2E를 반복해 Candidate 생성과
 Queue drain, 원문 비기록을 검증했다. 고정 tumbling-window 경계의 미탐 가능성은 T-021과
 canonical spec의 `VERIFY-CHAT-WINDOW-001`에 남아 있다.
+
+## Shadow 관찰 suite
+
+`apps/chat-gateway/scripts/shadow-observe.mjs`는 외부 WebSocket부터 실제 SQS-Lambda-
+DynamoDB 경로를 반복 검증한다. 실환경 주소는 저장하지 않으며 명시적 허용값이 없으면
+실행을 거부한다.
+
+```bash
+ALLOW_LIVE_SHADOW_TEST=1 \
+CHAT_TEST_WS_BASE=ws://<dev-ingress-host> \
+CHAT_TEST_ID_BASE=<unused-numeric-base> \
+node apps/chat-gateway/scripts/shadow-observe.mjs
+```
+
+`CHAT_TEST_ID_BASE + 1`부터 `+ 5`까지가 broadcast ID로 사용된다. 실행 전 DynamoDB에
+해당 5개 ID의 상태가 없는지 확인하고 매번 새 범위를 사용한다. 이 스크립트는 합성 원문
+24건을 실제 전용 SQS에 넣으므로 dev Shadow에서만 실행한다.
+
+2026-08-23 실행 결과:
+
+| 시나리오 | 결과 |
+|---|---|
+| 일반 채팅 4건 | 모두 `UNRELATED`, Candidate 없음 |
+| 한 사용자 약한 신호 4건 | 1표만 반영, duplicate-user 3, Candidate 없음 |
+| strong 3 + weak 1 | `MEDIUM/READ_PATH` Candidate 1건 |
+| 경계 offset 13.200초 3건 + 다음 window 0.399초 1건 | window 3+1, Candidate 없음 |
+| 두 연속 window 약한 신호 4+4 | Candidate 1건 유지, version 2, matched 8 |
+
+전체 24건은 모두 Worker status로 확인됐고 Queue는 visible/in-flight 0으로 비었다.
+Lambda는 13회, duration 67-288ms, Errors 0, Throttles 0, 동시성 최대 2였다. DynamoDB와
+CloudWatch에서 합성 원문은 0건이었다(M-011).
+
+경계 시나리오는 현 tumbling window의 미탐을 재현하기 위한 것이다. 스크립트 성공을
+rolling-window 보장이나 실제 운영 오탐률 측정으로 해석하지 않는다.
 
 ## Phase 4 적용 순서
 

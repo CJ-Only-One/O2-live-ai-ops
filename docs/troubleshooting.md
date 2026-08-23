@@ -1157,6 +1157,12 @@ T-020 수정 후 외부 WebSocket으로 서로 다른 네 사용자의 약한 �
 messages 4와 unique users 4가 확인됐다. 이것은 AC-004 구현 검증이지 운영 미탐의 해결이
 아니다.
 
+후속 Shadow matrix에서는 cold start 영향을 제거하고 경계를 직접 제어했다. offset
+13.200초에 약한 신호 3건, 다음 window offset 0.399초에 1건을 보냈다. Worker는 네 건을
+모두 정상 처리했지만 DynamoDB window는 3표와 1표로 갈렸고 Candidate는 없었다. 같은
+관찰 구간의 Lambda는 `Errors=0`, `Throttles=0`, duration 67-288ms였다. 따라서 이 현상은
+T-020의 timeout 재발이 아니라 window 의미 자체의 독립된 한계다(M-011).
+
 운영 정책은 `VERIFY-CHAT-WINDOW-001`로 남긴다. Shadow replay에서 경계 미탐률과 비용을
 측정한 뒤 다음 중 하나를 결정한다.
 

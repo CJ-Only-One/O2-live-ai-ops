@@ -1,7 +1,7 @@
 # Chat Incident Candidate — canonical implementation spec
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 4 Shadow active; same-window Candidate E2E verified; fixed-window boundary limitation open
+> **Status:** Phase 4 Shadow active; observation matrix passed; fixed-window boundary limitation reproduced
 > **Updated:** 2026-08-23
 > **Decision:** `decisions.md` D-047
 > **Wire contracts:** `contracts.md` 5.6-5.7
@@ -18,17 +18,19 @@ implementation_state:
   event_source_mapping: AWS_VERIFIED_ENABLED
   chat_gateway_publisher: AWS_VERIFIED_SHADOW_ACTIVE
   candidate_logic: AWS_E2E_VERIFIED_AC_004_SAME_WINDOW
+  shadow_observation: AWS_E2E_PASS_WITH_KNOWN_BOUNDARY_FALSE_NEGATIVE
   deployed_feature: true
 next_action:
-  phase: 4_SHADOW_OBSERVATION
-  goal: MEASURE_FALSE_POSITIVES_AND_DECIDE_WINDOW_BOUNDARY_POLICY
-  apply_allowed: NO_PENDING_APPLY
+  phase: 5_WINDOW_POLICY_EVALUATION
+  goal: COMPARE_BOUNDARY_SAFE_WINDOW_OPTIONS_WITH_PRIVACY_SAFE_LABELED_INPUTS
+  apply_allowed: NO_WINDOW_CHANGE_UNTIL_DECISION
 code_refs:
   data_terraform: infra/03-data/chat_signal.tf
   service_iam_terraform: infra/04-platform/app_data_access.tf
   worker_terraform: infra/08-chat-signal/worker.tf
   worker_runtime: infra/08-chat-signal/lambda/runtime/
   worker_tests: infra/08-chat-signal/lambda/tests/
+  shadow_observation: apps/chat-gateway/scripts/shadow-observe.mjs
   chat_gateway_publisher: apps/chat-gateway/src/chat-signal.ts
   chat_ingress_fork: apps/chat-gateway/src/chat-ingress.ts
 verification:
@@ -65,6 +67,16 @@ verification:
   post_apply_terraform_drift: PASS_NO_CHANGES_04_AND_08
   aws_sqs_iam_integration: PASS_SEND_AND_CONSUME
   eks_runtime_verification: IMAGE_READY_CONFIG_SHADOW
+  shadow_observation_websocket: PASS_24_MESSAGES_ALL_EXPECTED_FANOUT
+  shadow_observation_processing: PASS_24_STATUSES_ACCOUNTED
+  shadow_unrelated_filter: PASS_4_UNRELATED_NO_CANDIDATE
+  shadow_same_user_dedup: PASS_1_VOTE_3_DUPLICATE_NO_CANDIDATE
+  shadow_strong_threshold: PASS_MEDIUM_READ_PATH_4_MESSAGES_4_USERS
+  shadow_cooldown: PASS_ONE_CANDIDATE_VERSION_2_8_MESSAGES_8_USERS
+  shadow_boundary: CONFIRMED_FALSE_NEGATIVE_3_PLUS_1_NO_CANDIDATE
+  shadow_worker_runtime: PASS_13_INVOCATIONS_ERRORS_0_THROTTLES_0_MAX_CONCURRENCY_2
+  shadow_worker_duration: PASS_MIN_67_MS_MAX_288_MS
+  shadow_privacy: PASS_DDB_FORBIDDEN_KEYS_0_DDB_TEXT_0_LOG_TEXT_0
 ```
 
 `AWS_VERIFIED_APPLIED` means the dedicated SQS and DynamoDB exist in AWS and their 60-second
@@ -75,6 +87,9 @@ concurrency 2, and the live Chat Gateway ConfigMap has `CHAT_SIGNAL_MODE=shadow`
 `AWS_E2E_VERIFIED_AC_004_SAME_WINDOW` means four distinct weak signals placed in the same fixed
 15-second event-time window created exactly one Candidate. It does not mean boundary false
 negatives are resolved; see 5.1 and T-021.
+`AWS_E2E_PASS_WITH_KNOWN_BOUNDARY_FALSE_NEGATIVE` means the controlled Shadow matrix verified
+filtering, user deduplication, strong-signal creation, cooldown update, Queue drain, and privacy,
+while independently reproducing a boundary false negative without timeout or throttle.
 
 ## 0. Agent execution rules
 
@@ -260,6 +275,19 @@ the production default:
 
 Aligning synthetic messages to one window is valid for verifying the existing AC-004
 implementation, but it is not a production fix for this limitation.
+
+The controlled Shadow matrix reproduced the limitation without cold start or late drop. Three
+weak votes sent at window offset 13.200 seconds and one at offset 0.399 seconds produced adjacent
+window counts of 3 and 1 and no Candidate. All four events were processed normally. This proves
+the failure mode exists; it does not measure its production frequency or a real false-positive
+rate.
+
+Until `VERIFY-CHAT-WINDOW-001` is decided:
+
+- keep the current implementation in Shadow only;
+- do not connect Candidate output to Dify or an automatic action;
+- do not claim that the 15-second rule is a rolling-window guarantee;
+- use privacy-safe labeled synthetic inputs because raw production chat is not retained for replay.
 
 ## 6. Privacy and retention
 
