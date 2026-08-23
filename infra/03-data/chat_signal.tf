@@ -23,6 +23,12 @@ resource "aws_dynamodb_table" "chat_incident_state" {
   hash_key     = "pk"
   range_key    = "sk"
 
+  # Phase 2 Agent Entry Source Adapter는 새 Candidate INSERT만 비동기로 읽는다.
+  # KEYS_ONLY로는 privacy-safe Candidate payload를 만들 수 없고, NEW_AND_OLD_IMAGES는
+  # UPDATE의 이전 payload까지 불필요하게 복제하므로 NEW_IMAGE만 사용한다.
+  stream_enabled   = true
+  stream_view_type = "NEW_IMAGE"
+
   attribute {
     name = "pk"
     type = "S"

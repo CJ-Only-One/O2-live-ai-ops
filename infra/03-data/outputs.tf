@@ -86,6 +86,11 @@ output "chat_incident_table_arn" {
   value = aws_dynamodb_table.chat_incident_state.arn
 }
 
+output "chat_incident_table_stream_arn" {
+  description = "Chat Candidate INSERT Source Adapter가 읽는 NEW_IMAGE DynamoDB Stream"
+  value       = aws_dynamodb_table.chat_incident_state.stream_arn
+}
+
 output "rds_security_group_id" {
   value = aws_security_group.rds.id
 }
