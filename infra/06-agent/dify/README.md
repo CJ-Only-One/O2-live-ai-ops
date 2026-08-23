@@ -18,7 +18,13 @@ Dify 콘솔에 들어가지 않고도 워크플로가 무엇을 하는지 읽을
 
 | 파일 | 무엇 |
 |---|---|
-| `alert-triage.yml` | 알림 하나를 받아 원인을 추정한다. **현재 유일한 워크플로** |
+| `alert-triage.yml` | Datadog 알림 입력으로 내보낸 과거 workflow DSL |
+
+> **2026-08-23 runtime drift 확인:** Lambda API key가 가리키는 실제 게시 앱은 이 DSL보다
+> 새롭고 `behavior`, `custom_alert_json` 입력을 추가로 가진다. 이 파일을 현재 배포본의
+> 백업이라고 간주하지 않는다. 이 기존 앱은 새 Agent 진입점의 테스트 대상이 아니다.
+> `docs/agent-entrypoint.md`에 정의한 전용 테스트 앱을 새로 만들고 그 DSL을 별도 파일로
+> export한다. 기존 앱 DSL drift는 Datadog production migration 전에 정리한다(T-022, M-012).
 
 워크플로가 30초를 넘기면 빠른 층 / 깊은 층으로 쪼갠다. 그때 파일이
 `alert-triage-fast.yml`, `alert-triage-deep.yml` 로 늘어난다

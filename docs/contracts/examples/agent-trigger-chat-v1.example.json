@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "trigger_id": "trg_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+  "source": "CHAT_INCIDENT_CANDIDATE",
+  "source_schema": "chat.incident_candidate.v1",
+  "trigger_type": "USER_SYMPTOM_CLUSTER",
+  "idempotency_key": "chat:cand_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "occurred_at": "2026-08-23T00:00:16.000Z",
+  "trace_id": null,
+  "evidence": {
+    "candidate_id": "cand_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "candidate_type": "USER_PERCEIVED_LATENCY",
+    "broadcast_id": "bc_1042",
+    "suspected_surface": "READ_PATH",
+    "confidence": "MEDIUM",
+    "window_start": "2026-08-23T00:00:00.000Z",
+    "window_end": "2026-08-23T00:00:15.000Z",
+    "matched_messages": 4,
+    "unique_users": 4,
+    "strong_signal_count": 3,
+    "weak_signal_count": 1,
+    "matched_rule_ids": [
+      "generic_slow",
+      "read_loading_slow"
+    ],
+    "metric_status": "NOT_CHECKED",
+    "root_cause": "UNDETERMINED",
+    "requires_metric_corroboration": true
+  },
+  "guardrails": {
+    "analysis_mode": "READ_ONLY",
+    "automatic_remediation_allowed": false,
+    "must_preserve_uncertainty": true,
+    "raw_chat_included": false
+  }
+}

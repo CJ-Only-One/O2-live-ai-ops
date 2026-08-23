@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "trigger_id": "trg_01ARZ3NDEKTSV4RRFFQ69G5FAX",
+  "source": "DATADOG_MONITOR",
+  "source_schema": "datadog.alert.v1",
+  "trigger_type": "MONITOR_ALERT",
+  "idempotency_key": "datadog:cycle_example_001:Triggered",
+  "occurred_at": "2026-08-23T00:00:16.000Z",
+  "trace_id": null,
+  "evidence": {
+    "event_id": "evt_example_001",
+    "cycle_key": "cycle_example_001",
+    "monitor_id": "monitor_example",
+    "transition": "Triggered",
+    "priority": "P2",
+    "env": "dev",
+    "service": "api",
+    "alert_title": "Read latency monitor triggered",
+    "alert_body": "Synthetic contract example without production content.",
+    "alert_query": "example_metric > example_threshold",
+    "host": "",
+    "tags": "env:dev,service:api",
+    "link": ""
+  },
+  "guardrails": {
+    "analysis_mode": "READ_ONLY",
+    "automatic_remediation_allowed": false,
+    "must_preserve_uncertainty": true,
+    "raw_chat_included": false
+  }
+}
