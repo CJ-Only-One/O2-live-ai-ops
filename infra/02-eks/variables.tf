@@ -131,3 +131,18 @@ variable "control_plane_log_retention_days" {
   type    = number
   default = 7
 }
+
+variable "enable_karpenter" {
+  description = <<-EOT
+    Karpenter 용 IAM·SQS·EventBridge 를 만든다. Helm 설치는 04-platform 이 한다.
+
+    **4차 안전망이지 주력이 아니다.** 노드 확보에 최소 26초(2026-08-21 실측) +
+    이미지 pull 이 걸리는데 방송 시작 스파이크는 30초 안에 끝난다. 주력은 큐시트
+    기반 사전 확장이고(D-041), Karpenter 는 예상 밖 Pending Pod 와 노드 장애를 받는다.
+
+    끄면 IAM 역할과 큐가 지워진다. Helm 릴리스를 먼저 내린 뒤 끌 것 —
+    순서를 바꾸면 컨트롤러가 권한을 잃은 채로 남아 노드를 정리하지 못한다.
+  EOT
+  type        = bool
+  default     = false
+}

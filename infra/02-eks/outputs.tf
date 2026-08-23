@@ -37,3 +37,24 @@ output "lbc_helm_command" {
       --set vpcId=${local.vpc_id}
   EOT
 }
+
+output "karpenter_role_arn" {
+  description = "Karpenter 컨트롤러 IRSA 역할. 04-platform 이 ServiceAccount 에 붙인다."
+  value       = try(aws_iam_role.karpenter[0].arn, null)
+}
+
+output "karpenter_node_role_name" {
+  description = <<-EOT
+    Karpenter 가 띄운 노드가 쓸 역할 이름. EC2NodeClass 의 `role` 에 넣는다.
+
+    관리형 노드그룹과 같은 역할을 재사용한다 — 이미 EKS 접근 항목에 등록돼 있어
+    새 노드가 바로 조인한다. 따로 만들면 access entry 등록을 잊고 노드가
+    NotReady 로 남는다.
+  EOT
+  value       = aws_iam_role.node.name
+}
+
+output "karpenter_interruption_queue" {
+  description = "중단 알림 큐 이름. Helm 값 settings.interruptionQueue 에 넣는다."
+  value       = try(aws_sqs_queue.karpenter_interruption[0].name, null)
+}
