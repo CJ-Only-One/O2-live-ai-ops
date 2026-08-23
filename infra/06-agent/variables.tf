@@ -158,6 +158,45 @@ variable "alert_relay_max_concurrency" {
   default     = 5
 }
 
+# ── Agent 공통 진입점 ────────────────────────────────────────────
+
+variable "agent_entry_secret_name" {
+  description = <<-EOT
+    전용 Agent Entry contract-test Dify 앱의 API key를 보관한 Secrets Manager 이름.
+
+    SecretString은 Terraform으로 만들거나 읽지 않는다. 값은 다음 key 하나를 가진다:
+
+      dify-api-key  전용 테스트 앱의 Service API key
+
+    Phase 1B Worker는 이 이름만 참조하고 AGENT_ENTRY_EXECUTION_ENABLED=false라
+    자동으로 값을 사용하지 않는다.
+  EOT
+  type        = string
+  default     = "o2/dev/dify-agent-entry-contract-test"
+}
+
+variable "agent_entry_worker_max_concurrency" {
+  description = "전용 Dify 테스트 앱을 보호하는 Generic Worker 예약 동시성 상한"
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.agent_entry_worker_max_concurrency >= 2 && var.agent_entry_worker_max_concurrency <= 10
+    error_message = "Lambda SQS scaling 하한과 운영 안전 범위를 고려해 2 이상 10 이하로 둔다."
+  }
+}
+
+variable "agent_entry_idempotency_ttl_seconds" {
+  description = "성공·실패 멱등성 상태 보존 기간. DLQ 14일보다 길어 replay 중 중복 호출을 막는다."
+  type        = number
+  default     = 2592000 # 30일
+
+  validation {
+    condition     = var.agent_entry_idempotency_ttl_seconds >= 1209600
+    error_message = "DLQ 최대 보존 기간 14일 이상이어야 한다."
+  }
+}
+
 # ── Slack 승인 중계 Lambda ───────────────────────────────────────
 
 variable "slack_approval_secret_name" {

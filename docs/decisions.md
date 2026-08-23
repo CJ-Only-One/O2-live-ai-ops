@@ -3073,6 +3073,13 @@ Shadow E2E, Datadog dual-run 순서로 전환한다.
 않고 `data.status=succeeded`를 확인하며, 같은 `idempotency_key`는 LLM을 다시 실행하지
 않는다.
 
+Phase 1B transport는 SQS event source mapping과 Worker 실행 플래그를 모두 비활성으로
+고정한다. 멱등 ledger는 외부 Dify 호출 전에 `IN_PROGRESS`를 조건부 획득하고 성공 뒤
+`SUCCEEDED`로 확정한다. `SUCCEEDED`, `IN_PROGRESS`, `FAILED` 상태는 자동으로 재획득하지
+않는다. 특히 네트워크 단절처럼 요청이 Dify에 도달했는지 알 수 없는 실패에서 자동
+재호출하면 동일 Agent 실행을 두 번 만들 수 있으므로 fail-closed한다. 운영자가 Dify
+실행 이력과 ledger를 확인한 뒤에만 DLQ 메시지를 재투입한다.
+
 구현 원본:
 
 - 기계 판독 Schema: `docs/contracts/agent-trigger-v1.schema.json`

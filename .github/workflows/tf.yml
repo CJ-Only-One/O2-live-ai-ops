@@ -113,3 +113,7 @@ jobs:
 
       - name: 문법 검사
         run: terraform validate -no-color
+
+      - name: Agent Entry Worker 단위 테스트
+        if: matrix.stack == '06-agent'
+        run: python3 -m unittest lambda/test_agent_entry_worker.py

@@ -53,6 +53,59 @@ apply 순서에서 이 스택은 `02-eks` 뒤, `04-platform` 앞이다 —
 01-network → 02-eks → (03-data ∥ 06-agent) → 04-platform
 ```
 
+## Agent 공통 진입점 Phase 1B
+
+`agent_entry_transport.tf`은 Chat과 Datadog이 공통 `agent.trigger.v1` envelope로 들어오는
+전송 기반만 만든다.
+
+```text
+Agent Trigger SQS -> disabled event source -> Generic Worker -> private Dify
+          |
+          +-> DLQ
+
+Generic Worker -> DynamoDB idempotency ledger
+```
+
+Phase 1B에는 실행 게이트가 두 개 있다.
+
+| 게이트 | 값 |
+|---|---|
+| SQS event source mapping | `enabled=false` |
+| Worker 환경변수 | `AGENT_ENTRY_EXECUTION_ENABLED=false` |
+
+따라서 Terraform apply만으로 Dify 호출이 생기지 않는다. Worker는 queue body를
+`agent.trigger.v1`로 검증하고, 실행이 활성화된 미래 Phase에서만 DynamoDB lease 획득 후
+전용 테스트 앱을 호출한다. 같은 `idempotency_key`의 `SUCCEEDED` 항목은 다시 호출하지
+않는다. `IN_PROGRESS`·`FAILED`도 자동으로 Dify를 재호출하지 않고 SQS redelivery를
+DLQ까지 진행시킨다. 외부 호출은 성공했는데 ledger 확정만 실패한 애매한 구간에서 LLM을
+두 번 실행하지 않기 위한 fail-closed 정책이다. 운영자가 Dify 실행 여부를 확인한 뒤에만
+ledger를 정리하고 재투입한다.
+
+전용 API key는 `o2/dev/dify-agent-entry-contract-test` Secrets Manager secret에서 실행
+시점에만 읽는다. 값은 Terraform state, 코드, 로그에 남기지 않는다.
+최종 `custom_alert_json` 직렬화 결과가 게시 입력 상한 30,000자를 넘으면 secret 조회,
+ledger 획득, Dify 호출 전에 거부한다.
+
+현재 `06-agent` 전체 plan에는 Phase 1B와 무관하게 먼저 병합된 기존 Lambda 코드 변경이
+함께 잡힌다. 이 변경을 검토하지 않은 상태에서 전체 stack을 apply하지 않는다. Phase 1B
+대상 plan이 `14 add, 0 change, 0 destroy`인지 확인하거나 기존 Lambda 변경을 별도
+적용해 전체 plan을 정리한 뒤 진행한다. 상세 근거는 `docs/agent-entrypoint.md` 6.2에 있다.
+
+Phase 1B apply 후 다음을 확인한다.
+
+```bash
+terraform output -raw agent_entry_event_source_enabled
+aws lambda get-event-source-mapping --uuid <mapping-uuid> \
+  --query '{State:State,LastProcessingResult:LastProcessingResult}' \
+  --region ap-northeast-2
+aws sqs get-queue-attributes --queue-url "$(terraform output -raw agent_entry_queue_url)" \
+  --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
+  --region ap-northeast-2
+```
+
+성공 조건은 event source가 `Disabled`, Queue/DLQ가 비어 있고 새 Dify workflow run이
+0건인 것이다. Phase 3 전에는 event source나 실행 플래그를 켜지 않는다.
+
 ### 1. 버전 고정
 
 ```bash
