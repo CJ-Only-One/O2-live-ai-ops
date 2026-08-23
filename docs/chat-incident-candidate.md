@@ -1,7 +1,7 @@
 # Chat Incident Candidate — canonical implementation spec
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 4 Shadow active; observation matrix passed; fixed-window boundary limitation reproduced
+> **Status:** Phase 4 Shadow active; window review deferred; Agent Entry Phase 0 contract complete
 > **Updated:** 2026-08-23
 > **Decision:** `decisions.md` D-047
 > **Wire contracts:** `contracts.md` 5.6-5.7
@@ -19,11 +19,15 @@ implementation_state:
   chat_gateway_publisher: AWS_VERIFIED_SHADOW_ACTIVE
   candidate_logic: AWS_E2E_VERIFIED_AC_004_SAME_WINDOW
   shadow_observation: AWS_E2E_PASS_WITH_KNOWN_BOUNDARY_FALSE_NEGATIVE
+  agent_entry_contract: COMPLETE_NOT_DEPLOYED
   deployed_feature: true
 next_action:
+  phase: AGENT_ENTRY_PHASE_1
+  goal: ADD_DISABLED_COMMON_QUEUE_IDEMPOTENCY_LEDGER_AND_GENERIC_WORKER
+  apply_allowed: NO_AGENT_SOURCE_CONNECTED_IN_PHASE_1
+deferred:
   phase: 5_WINDOW_POLICY_EVALUATION
-  goal: COMPARE_BOUNDARY_SAFE_WINDOW_OPTIONS_WITH_PRIVACY_SAFE_LABELED_INPUTS
-  apply_allowed: NO_WINDOW_CHANGE_UNTIL_DECISION
+  reason: AGENT_ENTRYPOINT_IS_CURRENT_PRIORITY
 code_refs:
   data_terraform: infra/03-data/chat_signal.tf
   service_iam_terraform: infra/04-platform/app_data_access.tf
@@ -174,7 +178,7 @@ The two branches are independent.
 | service-specific SQS IAM | applied; Chat Gateway and Order Worker use dedicated Pod Identity roles |
 | Chat Gateway SQS publisher | `shadow` active; external send and fanout verified after Pod restart |
 | Incident Candidate creation | AC-004 same-window AWS E2E passed; fixed-window boundary limitation remains (T-021) |
-| Datadog Pull and Dify handoff | out of scope / not implemented |
+| Datadog Pull and Dify handoff | common contract designed in `agent-entrypoint.md`; runtime not implemented |
 
 Do not report a Terraform validation, image build, or document merge as a deployed feature.
 
@@ -386,11 +390,15 @@ creation within `15s window + 5s late allowance = 20s`.
 
 ## 11. Future handoff boundary
 
-Future flow, not part of this implementation:
+Future flow, not part of the Candidate implementation:
 
 ```text
 Incident Candidate -> adapter -> Dify -> read-only Datadog Pull -> Bedrock analysis
 ```
+
+The adapter and Agent entry contract are defined in
+[`agent-entrypoint.md`](agent-entrypoint.md) and `contracts.md` 5.8. No runtime handoff is
+deployed yet.
 
 Candidate generation MUST NOT wait for a Datadog monitor or metrics query. Later investigation
 SHOULD query timeseries around `window_start/window_end`; monitor status alone can lag user signal.
@@ -408,7 +416,8 @@ traffic from automation. Client-generated session identifiers are insufficient e
 | 2 | Chat Gateway publisher behind `off/shadow` flag | tests pass; SQS failure cannot fail chat |
 | 3 | deterministic classification and aggregation | `AC-001` through `AC-010` pass |
 | 4 | deploy Shadow Mode | CI, image, manifest, EKS, and external chat verified separately |
-| 5 | replay and threshold review | evidence recorded before default changes |
-| later | Datadog Pull and Dify handoff | separate contract and approval |
+| 5 | replay and threshold review | deferred while Agent entrypoint is the current priority; evidence required before default changes |
+| Agent Entry 0 | common contract and runtime baseline | complete; no runtime or AWS change |
+| Agent Entry 1+ | disabled transport, Chat adapter, Dify Shadow | tracked in `agent-entrypoint.md` |
 
 No phase may be described as deployed until its exit gate is satisfied.

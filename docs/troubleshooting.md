@@ -37,6 +37,7 @@
 | T-019 | Worker Lambda가 타임아웃 나는데 Dify 쪽은 매번 성공으로 남는다 | `urllib.request.urlopen timeout=55`, `workflow_runs`, Hot Path·Runbook Lookup, Slack 승인 |
 | T-020 | 채팅은 전달되는데 Incident Candidate가 생성되지 않는다 | Chat Signal Worker 5초 timeout, 예약 동시성 1, SQS in-flight, `LATE_EVENT_DROPPED` |
 | T-021 | timeout은 없어졌는데 15초 안의 네 채팅으로 Candidate가 안 생긴다 | tumbling window 경계, epoch 정렬, 3+1 분리, rolling window 오해 |
+| T-022 | 저장소의 Dify 입력 계약과 실제 게시 앱이 다르다 | DSL 미내보내기, `/v1/info`, `/v1/parameters`, `custom_alert_json`, API key 앱 매핑 |
 
 ---
 
@@ -1175,3 +1176,40 @@ T-020의 timeout 재발이 아니라 window 의미 자체의 독립된 한계다
 AC 단위 테스트 timestamp가 모두 같은 고정 window 안에 있었고, "within 15s"라는 표현도
 rolling 의미로 읽힐 수 있었다. Lambda runtime 문제를 먼저 고친 뒤 timeout 없이 다시
 외부 E2E를 수행했기 때문에 두 번째 독립 원인이 드러났다.
+
+---
+
+## T-022. 저장소의 Dify 입력 계약과 실제 게시 앱이 다르다
+
+**증상**
+
+저장소 `infra/06-agent/dify/README.md`와 DSL에는 `alert_title` 등 Datadog용 변수 8개와
+유일한 workflow만 적혀 있다. 실제 Lambda API key로 `/v1/info`와 `/v1/parameters`를
+조회하면 다른 게시 앱이 선택되고 `behavior`, `custom_alert_json`을 포함한 입력 10개가
+나온다. 앱 목록에도 여러 workflow와 agent가 존재한다.
+
+**원인**
+
+Dify Studio에서 게시 workflow를 변경한 뒤 DSL을 저장소로 다시 export하지 않았다.
+Terraform은 Dify 앱과 workflow를 관리하지 않으므로 EC2 Postgres의 배포 상태와 Git의
+DSL이 자동으로 맞춰지지 않는다. Lambda API key가 어떤 앱을 가리키는지도 저장소의 앱
+이름만으로는 알 수 없다.
+
+**해결**
+
+런타임 확인은 Lambda가 쓰는 API key로 다음 세 가지를 함께 본다.
+
+1. `/v1/info`에서 실제 앱 이름과 mode를 확인한다.
+2. `/v1/parameters`에서 게시 앱의 입력 변수 이름·타입·필수 여부를 확인한다.
+3. Dify Postgres에서 해당 앱의 `workflow_id`가 가리키는 게시 graph가 필요한 변수를
+   실제로 참조하는지 확인한다.
+
+그 뒤 게시 앱에서 DSL을 다시 export하고 저장소 README의 입력 계약을 함께 갱신한다.
+API key나 workflow graph 원문은 로그와 문서에 남기지 않는다. DSL 동기화 전에는 저장소
+파일을 현재 배포 상태라고 보고 새 호출 경로를 활성화하지 않는다.
+
+**왜 늦게 찾았나**
+
+Dify는 모르는 입력 키를 조용히 무시하고, workflow 내부 실패도 HTTP 200으로 응답할 수
+있다(T-011, T-012). 저장소 DSL만 읽으면 계약이 맞아 보이고, API key로 실제 앱을 조회해
+게시 graph까지 대조해야 drift가 드러난다.

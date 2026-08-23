@@ -64,6 +64,7 @@
 | D-047 | 채팅 분석은 Chat Gateway에서 SQS로 직접 분기한다 | Valkey 팬아웃 전용, Lambda, DynamoDB, 60초 원문, Incident Candidate |
 | D-048 | Chat Signal Worker는 독립 `08-chat-signal` 스택에 둔다 | EKS 비결합, state 분리, 비활성 trigger, fail-safe skeleton |
 | D-049 | Phase 4 Shadow는 생산자와 소비자를 독립 스위치로 제어한다 | enable_event_source, chat_signal_mode, 순차 활성화, 즉시 롤백 |
+| D-050 | Agent 앞에서 source별 JSON을 공통 envelope로 정규화한다 | agent.trigger.v1, discriminator, custom_alert_json, idempotency, read-only |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3029,3 +3030,46 @@ Phase 4 Shadow에서는 다음 두 스위치를 독립적으로 둔다.
 이 결정은 D-048의 스택 분리와 최소 IAM 원칙을 유지하며, Phase 1B의 하드코딩된 비활성
 게이트만 운영 가능한 변수형 게이트로 대체한다. Datadog Pull, Dify·Bedrock 호출,
 자동 조치는 여전히 범위 밖이다.
+
+---
+
+## D-050. Agent 앞에서 source별 JSON을 공통 envelope로 정규화한다
+
+Datadog 알림과 Chat Incident Candidate는 의미가 다르다. 전자는 모니터 임계치 초과이고,
+후자는 아직 메트릭으로 확인하지 않은 사용자 체감 증거다. 둘의 원본 스키마를 하나로
+강제로 합치면 Chat 값을 빈 `alert_title`·`alert_query`에 끼워 넣거나 Dify가 필드 유무로
+source를 추측하게 된다.
+
+따라서 Source Adapter 앞에서는 `datadog.alert.v1`과
+`chat.incident_candidate.v1`을 유지하고, Agent Trigger Queue부터만
+`agent.trigger.v1` 공통 envelope를 사용한다.
+
+```text
+Datadog alert --------> Datadog Source Adapter --+
+                                                   +-> agent.trigger.v1 -> Agent Trigger SQS
+Chat Candidate INSERT -> Chat Source Adapter -----+
+```
+
+공통 envelope의 `source`가 discriminator다. 식별·event time·멱등 키·guardrail은
+공통 필드이고, 실제 증거는 source별 `evidence`가 소유한다. Chat evidence에는 원문,
+사용자 키, 원문 해시가 없고 `root_cause=UNDETERMINED`를 유지한다.
+
+초기 Chat 정책은 Candidate INSERT 한 번만 호출한다. Candidate 생성 Worker에서 Dify를
+직접 호출하지 않고 DynamoDB Stream 뒤 Adapter로 분리한다. Dify 장애나 장시간 실행이
+60초 원문 Queue와 Candidate 생성을 막지 않게 하기 위해서다.
+
+Agent Worker는 envelope를 Dify의 `custom_alert_json`으로 전달한다. 2026-08-23 실환경의
+게시 앱에서 이 변수가 optional paragraph로 노출되고 graph에서 참조되는 것을 확인했다.
+다만 저장소 DSL은 배포본보다 오래됐고 기존 Worker DLQ도 비어 있지 않으므로, 현재
+Datadog 경로를 즉시 교체하지 않는다. 비활성 공통 Worker, Chat Shadow E2E, Datadog
+dual-run 순서로 전환한다.
+
+현재 권한 경계는 `READ_ONLY`이고 자동 조치는 금지한다. Dify HTTP 200만으로 성공 처리하지
+않고 `data.status=succeeded`를 확인하며, 같은 `idempotency_key`는 LLM을 다시 실행하지
+않는다.
+
+구현 원본:
+
+- 기계 판독 Schema: `docs/contracts/agent-trigger-v1.schema.json`
+- 필드와 예시: `docs/contracts.md` 5.8
+- 단계·실패 격리·완료 게이트: `docs/agent-entrypoint.md`

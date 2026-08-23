@@ -24,6 +24,7 @@
 | M-009 | 읽기 경로 포화점 (api 파드) | replicas·워커 수 변경 · 인스턴스 변경 · 캐시 TTL 변경 |
 | M-010 | 채팅 팬아웃 한계 (chat-gateway) | 틱 주기·`MAX_PER_TICK` 변경 · 직렬화 방식 변경 · replicas 변경 |
 | M-011 | Chat Signal 외부 WebSocket E2E | Worker timeout·동시성·batch·Queue visibility 변경 |
+| M-012 | Agent 공통 진입점 도입 전 Dify runtime baseline | 게시 workflow·모델·Worker·DLQ 정책 변경 |
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
 그 절의 표에 **행을 추가**한다. 조건이 다르면 값도 다르므로 조건을 꼭 적는다.
@@ -633,3 +634,32 @@ plan은 모두 `No changes`였다.
 
 **다시 재야 할 때** — Worker timeout·예약 동시성·event source 최대 동시성·batch 크기,
 Queue visibility, DynamoDB 처리 구조를 바꿀 때.
+
+---
+
+## M-012. Agent 공통 진입점 도입 전 Dify runtime baseline
+
+**조건 (2026-08-23)** — 신규 Chat Candidate handoff를 설계하기 전에 현재
+`o2-dify-ingress -> o2-dify-worker -> private EC2 Dify` 경로를 read-only로 확인했다.
+CloudWatch Lambda 조회와 Dify Postgres 조회는 실행 시점과 집계 기준이 달라 서로 같은
+표본으로 1:1 비교하지 않는다.
+
+| 구간 | 실측·확인값 |
+|---|---|
+| Dify 배포 | 1.16.1, EC2 running, SSM Online |
+| 컨테이너 | API·DB·Redis·sandbox 등 15개 모두 Up; healthcheck가 있는 API·DB·Redis·sandbox는 healthy |
+| Lambda 최근 24시간 | Ingress 9 invocations, errors 0; Worker 23 invocations, errors 8, throttles 0 |
+| Worker 로그 분류 | `dify ok` 15건; traceback 8건 — Bedrock validation 계열 4, workflow timeout 2, 기타 workflow failure 2 |
+| Dify DB 최근 24시간 | 대상 게시 앱 workflow run succeeded 17, failed 6 |
+| O2 DLQ | visible 14, in-flight 0, retention 14일 |
+| 알람 | O2 DLQ not-empty는 ALARM; Worker error·backlog 알람은 확인 시점 OK |
+| 실제 API key 대상 앱 | `O2 Agentic AIOps — Source-Aligned Mock v4`, workflow mode |
+| 게시 입력 | 10개; `custom_alert_json` optional paragraph, 최대 30,000자 |
+| 게시 graph | `custom_alert_json` 참조 확인 |
+
+이 baseline은 새 Chat 호출이 실패했다는 측정이 아니다. Chat handoff는 아직 없다. 기존
+Datadog Agent 경로가 성공과 실패를 모두 갖고 있고 DLQ가 비어 있지 않으므로, 새 source를
+곧바로 같은 Worker에 연결해서는 안 된다는 활성화 전 상태 증거다.
+
+**다시 재야 할 때** — 게시 workflow 또는 Bedrock 모델을 바꿀 때, 기존 DLQ를 분류·재처리한
+뒤, Generic Agent Worker의 timeout·동시성·재시도 정책을 정할 때.
