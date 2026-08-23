@@ -1,8 +1,8 @@
 # Chat Incident Candidate — canonical implementation spec
 
 > **Audience:** coding agents and reviewers
-> **Status:** approved design, Phase 3 implemented and locally verified, source disabled, not deployed
-> **Updated:** 2026-08-22
+> **Status:** approved design, Phase 4 data resources deployed, producer and consumer activation pending
+> **Updated:** 2026-08-23
 > **Decision:** `decisions.md` D-047
 > **Wire contracts:** `contracts.md` 5.6-5.7
 
@@ -12,17 +12,17 @@ types, and enums. D-047 is normative for the reason behind the design.
 ```yaml
 implementation_state:
   canonical_docs: COMPLETE
-  data_terraform: CODE_VALIDATED_NOT_APPLIED
-  service_iam_terraform: CODE_VALIDATED_NOT_APPLIED
-  lambda_processor: CODE_VALIDATED_NOT_APPLIED
-  event_source_mapping: CODE_VALIDATED_DISABLED_NOT_APPLIED
-  chat_gateway_publisher: CODE_VALIDATED_DEFAULT_OFF_NOT_DEPLOYED
-  candidate_logic: CODE_VALIDATED_NOT_APPLIED
+  data_terraform: AWS_VERIFIED_APPLIED
+  service_iam_terraform: PLAN_REVIEWED_NOT_APPLIED
+  lambda_processor: PLAN_REVIEWED_NOT_APPLIED
+  event_source_mapping: PLAN_REVIEWED_ENABLED_NOT_APPLIED
+  chat_gateway_publisher: IMAGE_RUNNING_CONFIG_OFF
+  candidate_logic: CODE_VALIDATED_NOT_AWS_INTEGRATED
   deployed_feature: false
 next_action:
-  phase: 3_REVIEW
-  goal: MERGE_PHASE_2_THEN_REVIEW_AND_MERGE_PHASE_3
-  apply_allowed: false
+  phase: 4
+  goal: MERGE_PHASE_4_THEN_APPLY_CONSUMER_AND_PRODUCER
+  apply_allowed: AFTER_PHASE_4_CHANGE_MERGED
 code_refs:
   data_terraform: infra/03-data/chat_signal.tf
   service_iam_terraform: infra/04-platform/app_data_access.tf
@@ -41,16 +41,24 @@ verification:
   worker_terraform_validate: PASS
   acceptance_cases_local: PASS_AC_001_THROUGH_AC_010
   platform_terraform_validate: PASS
+  chat_gateway_main_image_build: PASS
+  chat_gateway_gitops_tag_update: PASS
+  chat_signal_sqs_and_dynamodb_apply: PASS_2_ADD_0_CHANGE_0_DESTROY
+  chat_signal_sqs_retention_sse_empty: PASS
+  chat_incident_dynamodb_ttl: PASS
+  worker_terraform_plan: PASS_5_ADD_0_CHANGE_0_DESTROY
+  platform_terraform_plan: REVIEW_7_ADD_3_CHANGE_1_DESTROY
+  platform_scaling_diff: NONE
   aws_sqs_iam_integration: NOT_RUN
-  eks_runtime_verification: NOT_RUN
+  eks_runtime_verification: IMAGE_READY_2_OF_2_CONFIG_OFF
 ```
 
-`CODE_VALIDATED_NOT_APPLIED` means `terraform fmt` and `terraform validate` succeeded locally. It
-MUST NOT be interpreted as an AWS resource, deployment, or runtime verification.
-`CODE_VALIDATED_DISABLED_NOT_APPLIED` means the event source is hard-coded disabled and was not
-created in AWS.
-`CODE_VALIDATED_DEFAULT_OFF_NOT_DEPLOYED` means unit tests and TypeScript build passed while the
-runtime mode remains fail-safe `off`; it does not mean an image or Pod was deployed.
+`AWS_VERIFIED_APPLIED` means the dedicated SQS and DynamoDB exist in AWS and their 60-second
+retention, managed SSE, empty backlog, and TTL were read back after apply.
+`PLAN_REVIEWED_NOT_APPLIED` and `PLAN_REVIEWED_ENABLED_NOT_APPLIED` are desired changes only.
+They MUST NOT be interpreted as a Lambda, IAM role, or event source mapping in AWS.
+`IMAGE_RUNNING_CONFIG_OFF` means two ready Chat Gateway replicas run the Phase 3 image, while the
+live ConfigMap contains none of the three Chat Signal keys. The publisher therefore remains off.
 
 ## 0. Agent execution rules
 
@@ -123,18 +131,18 @@ The two branches are independent.
 
 ## 3. Implementation status boundary
 
-| Component | Status on 2026-08-22 |
+| Component | Status on 2026-08-23 |
 |---|---|
 | Chat Gateway WebSocket ingress | implemented |
 | Valkey Pub/Sub fanout | implemented and previously live-verified |
 | `chat.send` Kinesis telemetry | implemented; separate from this feature |
-| dedicated Chat Signal SQS | Terraform code validated; not applied |
-| Chat Signal Lambda | deterministic classifier/aggregator code validated; not applied |
-| SQS event source mapping | Terraform code validated; hard-disabled; not applied |
-| DynamoDB aggregation state | Terraform code validated; not applied |
-| service-specific SQS IAM | Terraform code validated; not applied |
-| Chat Gateway SQS publisher | code locally verified; default `off`; not deployed |
-| Incident Candidate creation | code locally validated; not applied or AWS-integrated |
+| dedicated Chat Signal SQS | applied; 60-second retention, managed SSE, empty backlog verified |
+| Chat Signal Lambda | plan reviewed: create; not applied |
+| SQS event source mapping | plan reviewed: enabled create; not applied |
+| DynamoDB aggregation state | applied; `expires_at` TTL enabled |
+| service-specific SQS IAM | plan reviewed with existing service-role migration; not applied |
+| Chat Gateway SQS publisher | Phase 3 image ready on 2/2 replicas; live ConfigMap has no Chat Signal keys, so off |
+| Incident Candidate creation | code locally validated; AWS end-to-end integration not run |
 | Datadog Pull and Dify handoff | out of scope / not implemented |
 
 Do not report a Terraform validation, image build, or document merge as a deployed feature.

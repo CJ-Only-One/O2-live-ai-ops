@@ -100,7 +100,7 @@ resource "aws_lambda_function" "worker" {
   environment {
     variables = {
       CHAT_INCIDENT_TABLE_NAME = local.chat_incident_table_name
-      WORKER_MODE              = "PHASE3_READY_SOURCE_DISABLED"
+      WORKER_MODE              = var.enable_event_source ? "SHADOW" : "SOURCE_DISABLED"
     }
   }
 
@@ -111,9 +111,9 @@ resource "aws_lambda_event_source_mapping" "chat_signal" {
   event_source_arn = local.chat_signal_queue_arn
   function_name    = aws_lambda_function.worker.arn
 
-  # Phase 1B 안전 게이트. 변수로 우회하지 않는다. 실제 처리기와 AC-001~010이
-  # 준비된 뒤 별도 변경에서만 true로 바꾼다.
-  enabled = false
+  # 기본값은 false다. Phase 4 tfvars에서만 true로 켜며, 긴급 중단은 이 값을
+  # false로 되돌려 apply한다. Queue 원문 보존은 켜져 있어도 최대 60초다.
+  enabled = var.enable_event_source
 
   batch_size                         = 10
   maximum_batching_window_in_seconds = 0

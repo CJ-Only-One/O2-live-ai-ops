@@ -37,3 +37,14 @@ variable "datastore_state_key" {
   type        = string
   default     = "datastore/terraform.tfstate"
 }
+
+variable "enable_event_source" {
+  description = <<-EOT
+    Chat Signal SQS가 Lambda Worker를 호출하게 한다.
+
+    false가 fail-safe 기본값이다. true는 Phase 3 AC-001~010 통과, 03-data 리소스
+    적용, Chat Gateway 이미지 배포를 확인한 Shadow Mode에서만 사용한다.
+  EOT
+  type        = bool
+  default     = false
+}

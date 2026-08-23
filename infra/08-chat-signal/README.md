@@ -3,14 +3,18 @@
 Chat Signal SQS를 소비할 Lambda 실행 계층이다. `03-data`의 remote state에서 전용
 SQS와 Candidate DynamoDB를 참조하며, EKS·Dify와 독립적으로 유지한다(D-048).
 
-## Phase 3 상태
+2026-08-23 현재 `03-data`의 SQS·DynamoDB는 적용 및 속성 검증을 마쳤다. 이 스택은
+`5 add, 0 change, 0 destroy` plan까지 검토했고, Phase 4 변경 병합 후 적용한다.
+
+## Phase 4 Shadow 준비 상태
 
 | 항목 | 상태 |
 |---|---|
-| Lambda와 실행 IAM | 코드 존재, 미적용 |
-| SQS event source mapping | 코드 존재, `enabled = false`, 미적용 |
-| 결정론적 분류·15초 집계 | 구현 및 로컬 테스트 통과, 미적용 |
-| Candidate 처리 로직 | 구현 및 로컬 테스트 통과, 미적용 |
+| Lambda와 실행 IAM | `5 add, 0 change, 0 destroy` plan 검토, 미적용 |
+| SQS event source mapping | plan상 `enabled=true`, 미적용 |
+| 결정론적 분류·15초 집계 | 구현 및 로컬 테스트 통과, AWS 통합 확인 필요 |
+| Candidate 처리 로직 | 구현 및 로컬 테스트 통과, AWS 통합 확인 필요 |
+| 전용 SQS·DynamoDB | 적용 완료; 보존 60초·SSE·빈 backlog·TTL 검증 |
 | Datadog·Dify·Bedrock 호출 | 권한·코드 모두 없음 |
 | 원문 로그·DynamoDB·Candidate 저장 | 없음, 테스트로 검증 |
 
@@ -62,9 +66,28 @@ terraform validate
 이 검증은 DynamoDB Local이나 실제 AWS SQS-DynamoDB 통합 테스트가 아니다. 실제 AWS
 동작은 Phase 4 Shadow 배포 전 별도 확인이 필요하다.
 
-## 적용 금지
+## Phase 4 적용 순서
 
-Phase 3의 완료 조건은 코드와 로컬 계약 검증까지다. 이 스택을 아직 `apply`하지
-않으며 event source mapping은 계속 `enabled = false`로 고정한다. Phase 4는 Phase 2와
-Phase 3 리뷰·병합 후 별도 승인으로 Shadow 배포하고, 실제 SQS IAM·DynamoDB 조건부
-쓰기·Candidate 생성·외부 WebSocket fail-open을 각각 검증한다.
+적용 순서를 바꾸지 않는다.
+
+1. `03-data` plan에서 Chat Signal SQS·DynamoDB 외 기존 데이터 리소스 변경이 없는지 본다. **완료**
+2. `03-data`를 적용하고 Queue 보존 60초·SSE·DynamoDB TTL을 확인한다. **완료**
+3. `08-chat-signal` plan/apply로 Lambda와 event source mapping을 만든다.
+4. `04-platform`은 Karpenter·KEDA 및 기존 IAM 변경과 섞이지 않는지 plan으로 먼저 분리 확인한다.
+5. Chat Gateway IAM·ConfigMap을 반영하고 `CHAT_SIGNAL_MODE=shadow`로 Pod를 재시작한다.
+6. 외부 WebSocket에서 AC 시나리오를 보내 SQS 소비·Candidate·원문 비기록을 확인한다.
+
+Phase 4에서도 Datadog·Dify·Bedrock 호출과 자동 조치는 금지다.
+
+2026-08-23 plan에서 Karpenter·KEDA 변경은 0건이었다. 다만 이전에 병합되고 미적용된
+서비스별 IAM 분리가 함께 잡혀 `7 add, 3 change, 1 destroy`다. destroy 1건은 기존 공유
+SQS inline policy를 제거하는 변경이며, Chat Gateway·Order Worker Pod Identity 역할
+전환도 포함한다. 따라서 이 plan은 Phase 4 PR 병합 후 다시 생성하고 그대로 재검토한다.
+
+## 롤백 순서
+
+1. `CHAT_SIGNAL_MODE=off`를 반영하고 Chat Gateway를 재시작해 신규 원문 전송을 먼저 멈춘다.
+2. `enable_event_source=false`를 적용해 Worker 소비를 멈춘다.
+3. SQS·DynamoDB·Lambda 리소스는 조사 증거와 Terraform state를 위해 유지한다.
+
+리소스 삭제를 롤백으로 사용하지 않는다. Queue 원문은 최대 60초 뒤 자동 소멸한다.
