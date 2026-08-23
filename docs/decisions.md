@@ -66,6 +66,7 @@
 | D-049 | Phase 4 Shadow는 생산자와 소비자를 독립 스위치로 제어한다 | enable_event_source, chat_signal_mode, 순차 활성화, 즉시 롤백 |
 | D-050 | Agent 앞에서 source별 JSON을 공통 envelope로 정규화한다 | agent.trigger.v1, discriminator, custom_alert_json, idempotency, read-only |
 | D-051 | Karpenter·KEDA 는 안전망이지 주력이 아니다 | D-037 조건 충족, NodePool 을 좁힌 이유, IAM 태그 조건, ScaledObject 는 배포 저장소 |
+| D-052 | 파이프라인 생존은 합성 카나리로 감시한다 | 실패를 삼키는 설계, `logs.enabled=false`, 트래픽 의존 no-data 의 한계, `service:o2-canary` |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3192,3 +3193,72 @@ $0.014. 시간 값은 M-008 에 있다.
 
 **설치와 검증을 같은 작업으로 묶는다.** 스파이크가 처음 오는 날 시도하면 그때가
 장애다.
+
+---
+
+## D-052. 파이프라인 생존은 합성 카나리로 감시한다
+
+세 시나리오가 전부 `o2.warm.*` 위에 서 있는데, **그 지표가 끊겼을 때 알려주는
+것이 하나도 없었다.** 05-datadog 에 `aws.lambda.*`·`aws.kinesis.*` 를 쓰는
+Monitor 가 없고, 비즈니스 Monitor 는 지표가 안 와도 그냥 조용하다.
+
+### 왜 조용한가 — 삼키도록 만들어져 있다
+
+| 지점 | 실패하면 | 어디로 |
+|---|---|---|
+| SDK `emit._send()` | `except Exception` | stderr |
+| chat-gateway `send()` | `.catch()` | console.error |
+| 집계기 `datadog.submit()` | `return False` | stderr |
+
+**각각은 옳은 선택이다.** 이벤트 발행 실패가 주문이나 채팅을 막으면 안 된다.
+그런데 `04-platform` 의 `logs.enabled = false` 라 저 stderr 가 Datadog 에
+오지 않는다. 결과적으로 **경로 전체가 조용히 죽을 수 있다.**
+
+### 실제 트래픽에 no-data 를 걸면 꺼진다
+
+가장 먼저 떠오르는 안은 `o2.warm.event_count` 에 `notify_no_data` 를 거는
+것이다. **그건 이미 해봤고 꺼졌다.** `order_latency_p95` 가 그것이었고,
+08-19~08-21 사흘 동안 No Data 와 Recovered 를 7번 왕복한 끝에 `false` 로
+바뀌었다(`05-datadog/monitor.tf` 주석).
+
+이유는 환경이 간헐적이기 때문이다. M-014 실측에서 48시간 중 42시간이 6시간당
+5건 수준이었고 나머지가 6시간에 164,581건이었다. **"트래픽이 없다" 와
+"파이프라인이 죽었다" 가 같은 모양이다.**
+
+고칠 수 없는 알람은 결국 꺼진다. D-014 가 Trivy HIGH 를 차단하지 않기로 한
+것, D-023 이 드리프트를 PR 게이트로 승격하지 않은 것과 같은 판단이다.
+
+### 그래서 신호를 스스로 만든다
+
+1분마다 합성 이벤트를 `stream-business` 에 하나 넣는다. 그것이
+`o2.warm.rps{service:o2-canary}` 로 나오면 **인입 → 이벤트 소스 매핑 →
+집계 → 윈도우 계산 → Datadog 전송** 이 전부 살아 있다는 뜻이다.
+
+트래픽 유무와 무관하므로 no-data 가 곧 장애다. 오탐이 없으니 꺼지지 않는다.
+
+### 구간별 지표를 대신하지는 않는다
+
+카나리는 **끊겼다** 만 말한다. **어디가** 끊겼는지는 `aws.lambda.iterator_age`
+·`errors` 가 말한다. 둘 다 필요하고 순서는 카나리가 먼저다 — 어디가 문제인지는
+끊긴 걸 안 다음의 질문이다.
+
+구간별 Monitor 를 기본 비활성으로 둔 것은 **Datadog AWS 통합이 그 네임스페이스를
+실제로 수집하는지 확인하지 못했기** 때문이다(CloudWatch 원본에는 있는 것을
+M-014 에서 확인했다). `enable_queue_backlog_monitor` 와 같은 처리다.
+
+### 대가 — 합성 레코드가 남는다
+
+`service:o2-canary` 로 격리되지만 흔적이 두 곳에 남는다.
+
+- DynamoDB 윈도우 아이템 (TTL 로 만료)
+- **S3 데이터 레이크** — Firehose 가 같은 스트림을 읽으므로 그대로 적재된다.
+  Athena 에서 `service <> 'o2-canary'` 로 뺀다
+
+에이전트 조회에서도 빼야 한다. 명세 8절의 "주입은 Agent 가 읽는 저장소에
+흔적을 남기지 않는다" 와 맞물리는 지점이라 **서비스 이름 하나로 걸러지도록**
+전용 이름을 썼다. 경로를 증명하려면 그 경로로 무언가를 보내는 수밖에 없고,
+그 대가는 필터 하나다.
+
+이벤트 이름 `canary.ping` 은 계약에 없는 이름이라 `event_rate` 태그로 안
+펼쳐지고, 비즈니스 이벤트로 세어져 `rps`·`event_count` 에만 잡힌다.
+**생존 확인에 필요한 것만 남기고 나머지 지표는 건드리지 않는다.**
