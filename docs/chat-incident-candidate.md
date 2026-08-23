@@ -22,9 +22,9 @@ implementation_state:
   agent_entry_contract: COMPLETE_NOT_DEPLOYED
   deployed_feature: true
 next_action:
-  phase: AGENT_ENTRY_PHASE_1
-  goal: ADD_DISABLED_COMMON_QUEUE_IDEMPOTENCY_LEDGER_AND_GENERIC_WORKER
-  apply_allowed: NO_AGENT_SOURCE_CONNECTED_IN_PHASE_1
+  phase: AGENT_ENTRY_PHASE_1A
+  goal: CREATE_ISOLATED_DIFY_CONTRACT_TEST_WORKFLOW_AND_EXPORT_DSL
+  apply_allowed: NO_PRODUCTION_SOURCE_OR_EXISTING_TEAM_APP_CONNECTION
 deferred:
   phase: 5_WINDOW_POLICY_EVALUATION
   reason: AGENT_ENTRYPOINT_IS_CURRENT_PRIORITY
@@ -418,6 +418,6 @@ traffic from automation. Client-generated session identifiers are insufficient e
 | 4 | deploy Shadow Mode | CI, image, manifest, EKS, and external chat verified separately |
 | 5 | replay and threshold review | deferred while Agent entrypoint is the current priority; evidence required before default changes |
 | Agent Entry 0 | common contract and runtime baseline | complete; no runtime or AWS change |
-| Agent Entry 1+ | disabled transport, Chat adapter, Dify Shadow | tracked in `agent-entrypoint.md` |
+| Agent Entry 1A+ | isolated Dify contract test, disabled transport, Chat adapter, Dify Shadow | tracked in `agent-entrypoint.md` |
 
 No phase may be described as deployed until its exit gate is satisfied.

@@ -3065,8 +3065,8 @@ Agent Worker는 envelope를 Dify의 `custom_alert_json`으로 전달한다. 2026
 
 저장소의 기존 DSL은 배포본보다 오래됐고 기존 Worker DLQ도 비어 있지 않다. 두 문제는
 전용 테스트 앱 실험과 격리하고, 기존 Datadog 경로를 공통 진입점으로 옮기는 시점에
-해결한다. 비활성 공통 Worker, 전용 테스트 앱 Chat Shadow E2E, Datadog dual-run 순서로
-전환한다.
+해결한다. 전용 테스트 앱의 Code-only 계약 검증, 비활성 공통 Worker, 테스트 앱 Chat
+Shadow E2E, Datadog dual-run 순서로 전환한다.
 
 현재 권한 경계는 `READ_ONLY`이고 자동 조치는 금지한다. Dify HTTP 200만으로 성공 처리하지
 않고 `data.status=succeeded`를 확인하며, 같은 `idempotency_key`는 LLM을 다시 실행하지

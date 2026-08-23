@@ -216,15 +216,18 @@ idempotency duplicate, DLQ depth다. 로그에는 Chat 원문이 애초에 들�
 | Phase | 변경 | 완료 게이트 |
 |---|---|---|
 | 0 | 실환경 baseline, 공통 Schema, 결정 기록 | 문서 index, JSON Schema validation, source별 machine-readable 예시와 불변조건 일치 |
-| 1 | Agent Trigger SQS/DLQ, idempotency ledger, Generic Worker를 비활성 상태로 생성 | Terraform fmt/validate, event source disabled, Dify 호출 0 |
+| 1A | 전용 Dify contract-test 앱 생성 | 기존 앱/API key 미사용, `custom_alert_json` required, Code-only 결정론적 응답, 두 source 예시 직접 호출 통과, DSL export |
+| 1B | Agent Trigger SQS/DLQ, idempotency ledger, Generic Worker를 비활성 상태로 생성 | Terraform fmt/validate, event source disabled, 자동 Dify 호출 0, 테스트 앱 secret만 참조 |
 | 2 | Chat Candidate INSERT Source Adapter와 계약 테스트 | synthetic Candidate가 정확히 한 envelope 생성, 원문/사용자 키 0, 중복 Agent 호출 0 |
-| 3 | 전용 테스트 workflow로 Dify Shadow E2E | 기존 앱/API key 미사용, DSL export, contract-only smoke 후 LLM 추가, 장애 시 Queue/DLQ 격리 |
+| 3 | 전용 테스트 workflow로 Dify Shadow E2E | contract-only Queue E2E 후 Bedrock 추가, 장애 시 Queue/DLQ 격리, 기존 앱 영향 0 |
 | 4 | 기존 DLQ·DSL drift 정리 후 Datadog Source Adapter dual-run | legacy/new 결과 비교, Recovered 의미 보존, rollback 확인 |
 | 5 | 운영 hardening | backlog·error·DLQ 알람, replay runbook, concurrency·timeout 실측 근거 |
 
-Phase 1과 2는 Dify를 호출하지 않는 상태로 진행할 수 있다. Phase 3은 전용 테스트 앱과
-합성 입력만으로 진행하므로 기존 O2 Worker DLQ와 팀 workflow drift를 건드리지 않는다.
-두 문제의 정리는 기존 Datadog 경로를 공통 진입점으로 옮기는 Phase 4의 선행 조건이다.
+Phase 1A는 전용 테스트 앱 API를 사람이 직접 호출해 계약만 확인하고, 자동 source는
+연결하지 않는다. Phase 1B와 2는 Dify event source를 비활성 상태로 구현한다. Phase 3은
+전용 테스트 앱과 합성 입력만으로 Queue E2E를 진행하므로 기존 O2 Worker DLQ와 팀
+workflow drift를 건드리지 않는다. 두 문제의 정리는 기존 Datadog 경로를 공통 진입점으로
+옮기는 Phase 4의 선행 조건이다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 
