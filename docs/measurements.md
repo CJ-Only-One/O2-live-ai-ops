@@ -564,7 +564,48 @@ Queue visibility 30초·원문 보존 60초.
 | DynamoDB | 전체 상태 7건, Candidate 0건, 원문 속성 0건 |
 
 팬아웃은 성공했지만 Candidate 경로는 실패했다. timeout 10초, 예약 동시성 2,
-event source 최대 동시성 2로 수정한 뒤 같은 조건을 새 broadcast ID로 재측정한다.
+event source 최대 동시성 2로 수정한 뒤 같은 조건을 새 broadcast ID로 재측정했다.
+
+**조건 (2026-08-23, 수정 후 cold E2E)** — 외부 ALB `/ws`, `bc_1043`, 서로 다른
+합성 사용자 4명, 약한 지연 신호 4건. Worker timeout 10초, 예약 동시성 2,
+event source 최대 동시성 2. 합성 메시지는 고정 15초 window 경계를 걸쳐 전송됐다.
+
+| 구간 | 실측 |
+|---|---|
+| WebSocket 연결 | 4/4 성공 |
+| 클라이언트 수신 chat items | 16건 — 4건 × 4연결 |
+| cold Lambda invocations | 5,369ms, 5,866ms; timeout 없음 |
+| 처리 결과 | `BELOW_THRESHOLD` 1건, `LATE_EVENT_DROPPED` 3건 |
+| Candidate | 0건 |
+| E2E 직후 Queue | visible 0, in-flight 0 |
+| DynamoDB 원문 속성 | 0건 |
+
+런타임 수정은 timeout을 제거했지만, epoch 기준 15초 tumbling window 경계에서 증거가
+3건과 1건으로 갈렸다. 실제 15초 이내에 모인 네 메시지가 서로 다른 고정 window에
+들어갈 수 있는 미탐 조건이다(T-021).
+
+**조건 (2026-08-23, 수정 후 same-window E2E)** — 외부 ALB `/ws`, `bc_1044`, 서로
+다른 합성 사용자 4명, 약한 지연 신호 4건. window 시작 후 offset 2초에 전송을 시작해
+네 메시지를 같은 고정 15초 window에 배치했다. 나머지 Worker 조건은 위와 같다.
+
+| 구간 | 실측 |
+|---|---|
+| WebSocket 연결 | 4/4 성공 |
+| 클라이언트 수신 chat items | 16건 — 4건 × 4연결 |
+| warm Lambda invocations | 221ms, 721ms |
+| Candidate | 1건 — `USER_PERCEIVED_LATENCY`, `LOW`, `UNKNOWN` |
+| Candidate 증거 | matched messages 4, unique users 4, strong 0, weak 4, rule `generic_slow` |
+| Candidate 경계 | `metric_status=NOT_CHECKED`, `root_cause=UNDETERMINED`, `agent_handoff_status=NOT_CONFIGURED` |
+| Candidate 개인정보 | `raw_chat_included=false` |
+| CloudWatch 08:10-08:12Z | `Errors=0`, `Throttles=0`, `ConcurrentExecutions max=2` |
+| E2E 직후 Queue | visible 0, in-flight 0 |
+| DynamoDB | 전체 상태 24건, 원문 속성 0건 |
+| CloudWatch 원문 검색 | `느리네` 0건 |
+
+이 결과는 현재 구현의 AC-004 same-window 경로가 실제 AWS에서 동작함을 검증한다.
+임의의 rolling 15초에 대한 보장은 아니며, window 정책 변경은 Shadow replay 근거 후
+결정한다(`VERIFY-CHAT-WINDOW-001`). 적용 후 `04-platform`과 `08-chat-signal` Terraform
+plan은 모두 `No changes`였다.
 
 **다시 재야 할 때** — Worker timeout·예약 동시성·event source 최대 동시성·batch 크기,
 Queue visibility, DynamoDB 처리 구조를 바꿀 때.

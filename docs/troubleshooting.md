@@ -36,6 +36,7 @@
 | T-018 | 과거 사례가 늘 비는데 워크플로는 성공으로 끝난다 | `s3vectors:GetVectors`, `returnMetadata`, 의도한 조용한 실패, 웜 컨테이너가 옛 자격증명을 든다 |
 | T-019 | Worker Lambda가 타임아웃 나는데 Dify 쪽은 매번 성공으로 남는다 | `urllib.request.urlopen timeout=55`, `workflow_runs`, Hot Path·Runbook Lookup, Slack 승인 |
 | T-020 | 채팅은 전달되는데 Incident Candidate가 생성되지 않는다 | Chat Signal Worker 5초 timeout, 예약 동시성 1, SQS in-flight, `LATE_EVENT_DROPPED` |
+| T-021 | timeout은 없어졌는데 15초 안의 네 채팅으로 Candidate가 안 생긴다 | tumbling window 경계, epoch 정렬, 3+1 분리, rolling window 오해 |
 
 ---
 
@@ -1120,9 +1121,51 @@ in-flight 메시지가 늦어지는 경로를 닫는다. Queue visibility 30초�
 수정 배포 후에는 새 broadcast ID로 같은 외부 WebSocket 4사용자 시나리오를 다시 실행해
 Candidate 1건, Queue visible/in-flight 0, Lambda timeout 0, 원문 속성 0을 모두 확인한다.
 
+수정 적용 후 cold invocation은 5,369ms와 5,866ms에 정상 종료돼 timeout이 재발하지
+않았다. 이어 같은 고정 15초 window에 네 메시지를 넣은 `bc_1044`에서 Candidate 1건,
+Queue visible/in-flight 0, 원문 속성 0을 확인했다. 해당 성공 구간의 CloudWatch 값은
+`Errors=0`, `Throttles=0`, `ConcurrentExecutions max=2`였다(M-011).
+
 **왜 늦게 찾았나**
 
 로컬 AC 테스트는 결정론적 분류·DynamoDB 조건부 쓰기·중복 처리를 검증했지만 Lambda
 cold start와 SQS poller가 batch를 선점하는 동작은 포함하지 않았다. Terraform validate와
 unit test가 모두 통과해 처리 용량도 검증된 것처럼 보였다. visible backlog만 봤다면 0이라
 정상으로 오판했을 것이고, not-visible과 CloudWatch `REPORT`를 함께 봐야 원인이 보였다.
+
+---
+
+## T-021. timeout은 없어졌는데 15초 안의 네 채팅으로 Candidate가 안 생긴다
+
+**증상**
+
+T-020 수정 후 외부 WebSocket으로 서로 다른 네 사용자의 약한 신호를 보냈다. 네 연결과
+16건의 팬아웃은 모두 성공했고 Worker도 5,369ms와 5,866ms에 정상 종료됐지만 Candidate는
+0건이었다. 처리 결과는 `BELOW_THRESHOLD` 1건과 `LATE_EVENT_DROPPED` 3건이었다.
+
+**원인**
+
+문서의 "15초 안"을 첫 메시지부터 세는 rolling window로 읽었지만, 구현은 Unix epoch에
+정렬된 15초 tumbling window를 사용한다. 네 메시지가 실제로 서로 15초 이내여도 고정
+경계를 걸치면 이전 window 3건과 다음 window 1건으로 분리된다. cold processing이 끝났을
+때 이전 window는 5초 late allowance도 지나 세 건이 late로 폐기됐다.
+
+**현재 처리와 미결정 사항**
+
+기존 구현 검증을 위해 window 시작 후 offset 2초에 새 `bc_1044` 시나리오를 보냈다.
+네 메시지가 같은 window에 들어가자 `LOW/UNKNOWN` Candidate 1건이 생성됐고, matched
+messages 4와 unique users 4가 확인됐다. 이것은 AC-004 구현 검증이지 운영 미탐의 해결이
+아니다.
+
+운영 정책은 `VERIFY-CHAT-WINDOW-001`로 남긴다. Shadow replay에서 경계 미탐률과 비용을
+측정한 뒤 다음 중 하나를 결정한다.
+
+1. 현재 tumbling window를 유지하고 경계 미탐을 허용한다.
+2. 중첩 window를 추가하고 Candidate 멱등성과 쓰기 비용을 함께 제한한다.
+3. sliding window로 상태와 Candidate 계약을 다시 설계한다.
+
+**왜 늦게 찾았나**
+
+AC 단위 테스트 timestamp가 모두 같은 고정 window 안에 있었고, "within 15s"라는 표현도
+rolling 의미로 읽힐 수 있었다. Lambda runtime 문제를 먼저 고친 뒤 timeout 없이 다시
+외부 E2E를 수행했기 때문에 두 번째 독립 원인이 드러났다.

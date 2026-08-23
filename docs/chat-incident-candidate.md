@@ -1,7 +1,7 @@
 # Chat Incident Candidate — canonical implementation spec
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 4 first E2E failed on Worker runtime limits; producer and consumer rolled back off
+> **Status:** Phase 4 Shadow active; same-window Candidate E2E verified; fixed-window boundary limitation open
 > **Updated:** 2026-08-23
 > **Decision:** `decisions.md` D-047
 > **Wire contracts:** `contracts.md` 5.6-5.7
@@ -14,15 +14,15 @@ implementation_state:
   canonical_docs: COMPLETE
   data_terraform: AWS_VERIFIED_APPLIED
   service_iam_terraform: AWS_VERIFIED_APPLIED
-  lambda_processor: AWS_DEPLOYED_SOURCE_DISABLED_FIX_PENDING
-  event_source_mapping: AWS_DISABLED_AFTER_FAILED_E2E
-  chat_gateway_publisher: IMAGE_RUNNING_CONFIG_OFF_AFTER_ROLLBACK
-  candidate_logic: E2E_FAILED_TIMEOUT_NO_CANDIDATE
-  deployed_feature: false
+  lambda_processor: AWS_VERIFIED_SHADOW_ACTIVE
+  event_source_mapping: AWS_VERIFIED_ENABLED
+  chat_gateway_publisher: AWS_VERIFIED_SHADOW_ACTIVE
+  candidate_logic: AWS_E2E_VERIFIED_AC_004_SAME_WINDOW
+  deployed_feature: true
 next_action:
-  phase: 4
-  goal: MERGE_RUNTIME_FIX_THEN_REENABLE_AND_REPEAT_E2E
-  apply_allowed: AFTER_RUNTIME_FIX_MERGED_AND_PLAN_REVIEWED
+  phase: 4_SHADOW_OBSERVATION
+  goal: MEASURE_FALSE_POSITIVES_AND_DECIDE_WINDOW_BOUNDARY_POLICY
+  apply_allowed: NO_PENDING_APPLY
 code_refs:
   data_terraform: infra/03-data/chat_signal.tf
   service_iam_terraform: infra/04-platform/app_data_access.tf
@@ -53,20 +53,28 @@ verification:
   external_websocket_fanout: PASS_4_CONNECTIONS_16_ITEMS
   first_shadow_candidate_e2e: FAIL_LAMBDA_TIMEOUT_AND_LATE_DROP
   runtime_fix_terraform_plan: PASS_0_ADD_2_CHANGE_0_DESTROY
+  runtime_fix_apply: PASS_0_ADD_2_CHANGE_0_DESTROY
+  producer_reenable_apply: PASS_0_ADD_1_CHANGE_0_DESTROY
+  post_fix_cold_e2e: PASS_NO_TIMEOUT_BUT_WINDOW_SPLIT_NO_CANDIDATE
+  aligned_candidate_e2e: PASS_AC_004
+  candidate_contract: PASS_LOW_UNKNOWN_4_MESSAGES_4_USERS_NO_RAW_CHAT
+  worker_success_interval: PASS_ERRORS_0_THROTTLES_0_CONCURRENCY_MAX_2
+  queue_after_e2e: PASS_VISIBLE_0_IN_FLIGHT_0
   raw_chat_persistence_check: PASS_ZERO_RAW_ATTRIBUTES
-  rollback_producer_consumer: PASS_OFF_AND_DISABLED
+  raw_chat_cloudwatch_filter: PASS_ZERO_MATCHES
+  post_apply_terraform_drift: PASS_NO_CHANGES_04_AND_08
   aws_sqs_iam_integration: PASS_SEND_AND_CONSUME
-  eks_runtime_verification: IMAGE_READY_CONFIG_OFF_AFTER_ROLLBACK
+  eks_runtime_verification: IMAGE_READY_CONFIG_SHADOW
 ```
 
 `AWS_VERIFIED_APPLIED` means the dedicated SQS and DynamoDB exist in AWS and their 60-second
 retention, managed SSE, empty backlog, and TTL were read back after apply.
-`AWS_DEPLOYED_SOURCE_DISABLED_FIX_PENDING` means the Lambda and IAM exist, but processing is
-intentionally stopped until the runtime-limit fix is merged and applied.
-`AWS_DISABLED_AFTER_FAILED_E2E` means the event source mapping exists and was explicitly disabled
-after the failed first Shadow E2E. It MUST NOT be reported as active processing.
-`IMAGE_RUNNING_CONFIG_OFF_AFTER_ROLLBACK` means the Chat Signal keys exist, but the live ConfigMap
-has `CHAT_SIGNAL_MODE=off` and the restarted Chat Gateway does not publish to SQS.
+`AWS_VERIFIED_SHADOW_ACTIVE` means the Lambda is Active with timeout 10 seconds and reserved
+concurrency 2, and the live Chat Gateway ConfigMap has `CHAT_SIGNAL_MODE=shadow` after restart.
+`AWS_VERIFIED_ENABLED` means the SQS event source mapping is Enabled with maximum concurrency 2.
+`AWS_E2E_VERIFIED_AC_004_SAME_WINDOW` means four distinct weak signals placed in the same fixed
+15-second event-time window created exactly one Candidate. It does not mean boundary false
+negatives are resolved; see 5.1 and T-021.
 
 ## 0. Agent execution rules
 
@@ -145,12 +153,12 @@ The two branches are independent.
 | Valkey Pub/Sub fanout | implemented and previously live-verified |
 | `chat.send` Kinesis telemetry | implemented; separate from this feature |
 | dedicated Chat Signal SQS | applied; 60-second retention, managed SSE, empty backlog verified |
-| Chat Signal Lambda | applied, then source-disabled after 5-second timeout in first E2E; fix pending |
-| SQS event source mapping | applied and consumed messages, then disabled by rollback |
+| Chat Signal Lambda | active; timeout 10s, reserved concurrency 2; post-fix E2E verified |
+| SQS event source mapping | enabled; maximum concurrency 2; Queue drained after E2E |
 | DynamoDB aggregation state | applied; `expires_at` TTL enabled |
 | service-specific SQS IAM | applied; Chat Gateway and Order Worker use dedicated Pod Identity roles |
-| Chat Gateway SQS publisher | external send and fanout verified; ConfigMap returned to `off` after failed E2E |
-| Incident Candidate creation | first AWS E2E failed: Candidate 0 due timeout and late drop; T-020 fix pending |
+| Chat Gateway SQS publisher | `shadow` active; external send and fanout verified after Pod restart |
+| Incident Candidate creation | AC-004 same-window AWS E2E passed; fixed-window boundary limitation remains (T-021) |
 | Datadog Pull and Dify handoff | out of scope / not implemented |
 
 Do not report a Terraform validation, image build, or document merge as a deployed feature.
@@ -232,6 +240,26 @@ Threshold changes require replay evidence. Compare at least:
 | sensitive | 10s | 3 | 3 |
 | approved initial | 15s | 4 | 3 |
 | conservative | 20s | 5 | 4 |
+
+### 5.1 Known fixed-window boundary limitation
+
+The current processor uses epoch-aligned 15-second tumbling windows. It does not implement an
+arbitrary rolling 15-second interval, overlapping windows, or a true sliding window.
+
+Therefore, four qualifying messages that occur within 15 seconds of each other can be split across
+a fixed boundary, for example three votes in one window and one vote in the next. Neither window
+then satisfies rule B. The post-fix `bc_1043` E2E reproduced this case without a Lambda timeout:
+one message remained below threshold and three were dropped as late after cold processing.
+
+`VERIFY-CHAT-WINDOW-001`: use Shadow replay evidence to choose one of the following before changing
+the production default:
+
+1. retain fixed tumbling windows and accept/measure boundary false negatives;
+2. add bounded overlapping windows with explicit idempotency and cost limits;
+3. implement a true sliding window with a revised state and Candidate contract.
+
+Aligning synthetic messages to one window is valid for verifying the existing AC-004
+implementation, but it is not a production fix for this limitation.
 
 ## 6. Privacy and retention
 
@@ -319,8 +347,8 @@ creation within `15s window + 5s late allowance = 20s`.
 |---|---|---|
 | `AC-001` | unrelated chat only | no Candidate |
 | `AC-002` | one user repeats `느려요` | no Candidate |
-| `AC-003` | 3 strong users and 1 weak user within 15s | one `READ_PATH` Candidate |
-| `AC-004` | 4 distinct weak users within 15s | one `LOW/UNKNOWN` Candidate |
+| `AC-003` | 3 strong users and 1 weak user in the same 15s event-time window | one `READ_PATH` Candidate |
+| `AC-004` | 4 distinct weak users in the same 15s event-time window | one `LOW/UNKNOWN` Candidate |
 | `AC-005` | delivery/presenter/pacing slowness | no Candidate |
 | `AC-006` | duplicate SQS delivery | counts increase once |
 | `AC-007` | same evidence during cooldown | existing Candidate updated, no new Candidate |
