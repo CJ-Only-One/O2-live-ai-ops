@@ -1,7 +1,7 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 1A complete; Phase 1B infrastructure not implemented
+> **Status:** Phase 1A complete; Phase 1B implemented in Terraform, not applied
 > **Updated:** 2026-08-23
 > **Decision:** `decisions.md` D-050
 > **Wire contract:** `contracts.md` 5.8 and `contracts/agent-trigger-v1.schema.json`
@@ -10,9 +10,10 @@
 implementation_state:
   runtime_baseline_verified: COMPLETE
   common_contract: COMPLETE
-  agent_trigger_queue: NOT_IMPLEMENTED
+  agent_trigger_queue: IMPLEMENTED_NOT_APPLIED
   chat_candidate_adapter: NOT_IMPLEMENTED
-  generic_dify_worker: NOT_IMPLEMENTED
+  generic_dify_worker: IMPLEMENTED_NOT_APPLIED
+  idempotency_ledger: IMPLEMENTED_NOT_APPLIED
   dedicated_test_workflow: PUBLISHED_CODE_ONLY
   dedicated_test_workflow_ui_contract_tests: PASS
   dedicated_test_workflow_service_api_tests: PASS
@@ -22,7 +23,8 @@ implementation_state:
   datadog_migration: NOT_STARTED
   production_agent_handoff: DISABLED
 activation_blockers:
-  - GENERIC_ENTRY_WORKER_AND_IDEMPOTENCY_LEDGER_NOT_IMPLEMENTED
+  - PHASE_1B_TERRAFORM_NOT_APPLIED
+  - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
 production_migration_blockers:
   - EXISTING_O2_DIFY_DLQ_NOT_EMPTY
   - DEPLOYED_TEAM_WORKFLOW_DSL_NOT_EXPORTED_TO_REPOSITORY
@@ -165,6 +167,7 @@ Chat Source Adapter는 Candidate DynamoDB Stream의 **새 Candidate INSERT만** 
 | `INV-AGENT-ENTRY-007` | Dify 장애가 채팅 전송과 Candidate 생성을 실패시키면 안 된다. |
 | `INV-AGENT-ENTRY-008` | 같은 `idempotency_key`는 LLM을 두 번 실행하지 않는다. |
 | `INV-AGENT-ENTRY-009` | Trigger Queue와 DLQ는 서버 측 암호화하고 Source Adapter와 Worker에만 최소 권한을 준다. |
+| `INV-AGENT-ENTRY-010` | Dify에 보낼 최종 직렬화 문자열이 게시 입력 상한 30,000자를 넘으면 외부 호출과 ledger 획득 전에 거부한다. |
 
 Chat 예시는 `contracts.md` 5.8에 있다. `evidence`는 Candidate 계약의 허용 필드만 복사하며
 `raw_chat_included`는 evidence가 아니라 공통 `guardrails`에서 항상 `false`로 강제한다.
@@ -202,8 +205,9 @@ compact JSON string으로 직렬화해 다음처럼 보낸다.
 | Candidate Stream/Adapter 실패 | Stream 재시도; Candidate와 채팅 경로는 이미 성공 상태 유지 |
 | Agent Trigger SQS 중복 | idempotency ledger에서 같은 key를 성공/진행 상태로 차단 |
 | Schema 불일치 | Dify 호출 금지, sanitized error code, DLQ |
-| Dify HTTP/네트워크 실패 | bounded retry 후 DLQ |
-| Dify HTTP 200 + workflow failed | 실패로 간주, bounded retry 후 DLQ |
+| Dify 호출 시작 전 Secret 조회 실패 | ledger를 잡지 않고 SQS가 제한 횟수 재전달 |
+| Dify HTTP/네트워크 실패 | 호출 도달 여부가 불명확하므로 ledger를 `FAILED`로 닫고 자동 재호출 금지; DLQ에서 운영 확인 |
+| Dify HTTP 200 + workflow failed | 실패로 간주하고 ledger를 `FAILED`로 닫아 자동 재호출 금지; DLQ에서 운영 확인 |
 | Dify 장시간 지연 | Queue backlog로 흡수; Chat Worker를 점유하지 않음 |
 | Agent 결과 저장 실패 | 성공한 LLM을 무조건 재실행하지 않도록 invocation 상태를 분리 |
 
@@ -254,6 +258,34 @@ source/schema 불일치는 Dify HTTP 응답 본문의 `data.status=failed`와
 
 따라서 Phase 1A 완료 게이트는 충족했다. 다음 구현 범위는 Phase 1B이며, 자동 source는
 여전히 연결하지 않는다.
+
+### 6.2 Phase 1B 현재 체크포인트
+
+2026-08-23에 `infra/06-agent/agent_entry_transport.tf`과 Generic Worker를 구현했다.
+구성은 SSE가 적용된 Agent Trigger SQS/DLQ, `PAY_PER_REQUEST` DynamoDB 멱등 ledger,
+private Dify에 연결 가능한 VPC Lambda, Queue age·DLQ·Lambda Error 알람이다. Worker IAM은
+전용 테스트 앱 secret 읽기, 전용 Queue 소비, 전용 ledger 읽기·갱신으로 제한했다.
+
+자동 실행은 다음 두 게이트로 차단했다.
+
+1. SQS event source mapping을 `enabled=false`로 생성한다.
+2. Worker 환경변수 `AGENT_ENTRY_EXECUTION_ENABLED=false`를 코드에 고정한다.
+
+Worker 단위 테스트는 Chat·Datadog 정상 envelope, source/schema 불일치, Chat 원문 필드
+거부, Dify 입력 크기 상한, 비활성 게이트, SQS partial batch failure, 성공 중복, Dify
+실패, 기존 `FAILED` ledger의 자동 재획득 금지를 검증한다. `terraform fmt`,
+`terraform validate`, Python 단위 테스트는 통과했다.
+
+전체 `06-agent` plan은 Phase 1B의 신규 리소스 14개 외에 기존 Lambda 3개의
+`source_code_hash` 변경과 연관 IAM policy 재평가를 함께 표시했다. state 해시와 현재
+저장소 archive 해시를 비교한 결과, 공유 source를 쓰는 다른 Lambda는 이미 현재 해시인
+반면 이 3개만 이전 해시였다. 즉 Phase 1B 코드가 기존 Lambda를 수정한 것이 아니라,
+앞서 병합되고 일부 함수에만 적용된 기존 변경이 같은 stack plan에 섞인 상태다.
+
+따라서 전체 stack apply는 아직 허용하지 않는다. Phase 1B 대상만 지정한 plan에서
+`14 add, 0 change, 0 destroy`를 다시 확인하거나 기존 Lambda 변경을 별도 검토·적용한 뒤
+전체 plan이 깨끗해져야 한다. 이 검증과 실제 AWS resource 확인 전에는 Phase 1B를
+`DEPLOYED`로 표기하지 않는다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 
