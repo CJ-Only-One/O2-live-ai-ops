@@ -4,7 +4,7 @@ Chat Signal SQS를 소비하고 privacy-safe Candidate를 공통 Agent 진입 �
 Lambda 실행 계층이다. `03-data`의 remote state에서 전용 SQS·Candidate DynamoDB·Stream을
 참조하며, EKS·Dify와 독립적으로 유지한다(D-048, D-050).
 
-## Agent Entry Phase 2 — 구현됨, 미적용
+## Agent Entry Phase 2 — 배포됨, 실행 비활성
 
 ```text
 Candidate DynamoDB NEW_IMAGE Stream
@@ -32,6 +32,11 @@ Datadog·Dify·Bedrock·Candidate table write 권한은 없다.
 적용은 `03-data` Stream 활성화 후 `08-chat-signal` 순서로만 한다. Stream output이 remote
 state에 생기기 전에는 Adapter plan을 만들 수 없다. 세부 gate와 검증 상태는
 `docs/agent-entrypoint.md` 6.3을 따른다.
+
+2026-08-23 순차 적용 결과 `03-data`는 `0 add, 1 change, 0 destroy`, 이 스택은
+`8 add, 0 change, 0 destroy`였고, 적용 후 두 stack 모두 `No changes`다. Adapter event
+source와 실행 플래그는 모두 비활성이고, Agent Trigger Queue·Adapter DLQ·Adapter 로그
+스트림은 모두 0이다. Phase 3 합성 Shadow E2E 전까지 이 상태를 유지한다.
 
 2026-08-23 현재 `03-data`의 SQS·DynamoDB와 이 스택의 Lambda·IAM은 적용됐다.
 최초 외부 E2E는 Worker 5초 timeout과 SQS in-flight 지연으로 Candidate를 만들지 못했고,

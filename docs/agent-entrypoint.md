@@ -1,7 +1,7 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 1B deployed disabled; Phase 2 implemented, not applied
+> **Status:** Phase 1B and Phase 2 deployed with execution gates disabled
 > **Updated:** 2026-08-23
 > **Decision:** `decisions.md` D-050
 > **Wire contract:** `contracts.md` 5.8 and `contracts/agent-trigger-v1.schema.json`
@@ -11,7 +11,7 @@ implementation_state:
   runtime_baseline_verified: COMPLETE
   common_contract: COMPLETE
   agent_trigger_queue: DEPLOYED_EMPTY
-  chat_candidate_adapter: IMPLEMENTED_NOT_APPLIED
+  chat_candidate_adapter: DEPLOYED_EXECUTION_DISABLED
   generic_dify_worker: DEPLOYED_EXECUTION_DISABLED
   idempotency_ledger: DEPLOYED_EMPTY
   dedicated_test_workflow: PUBLISHED_CODE_ONLY
@@ -23,7 +23,6 @@ implementation_state:
   datadog_migration: NOT_STARTED
   production_agent_handoff: DISABLED
 activation_blockers:
-  - PHASE_2_TERRAFORM_NOT_APPLIED
   - PHASE_3_SHADOW_E2E_EXECUTION_GATES_DISABLED
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
@@ -307,7 +306,7 @@ apply 후 실환경 확인 결과는 다음과 같다.
 Phase 1B는 `DEPLOYED_EXECUTION_DISABLED`다. 기존 리소스 4개 plan 변경은 여전히 별도
 검토 대상이며, 이후에도 전체 `06-agent` apply에 섞어 실행하지 않는다.
 
-### 6.3 Phase 2 현재 체크포인트
+### 6.3 Phase 2 실환경 적용 결과
 
 Candidate DynamoDB의 `NEW_IMAGE` Stream과 `08-chat-signal` 소유 Chat Source Adapter를
 구현했다. Candidate 생성 Worker가 Agent Queue를 직접 호출하지 않으므로 Candidate 저장과
@@ -337,16 +336,27 @@ Phase 1B Worker ledger가 같은 Agent 실행을 차단한다.
 활성화 이전 Candidate 제외, 사용자 키 거부, 비활성 게이트, Queue 실패 partial retry다.
 Python 컴파일, Terraform fmt·validate도 통과했다.
 
-변경 전 `03-data`와 `08-chat-signal` plan은 모두 `No changes`였다. 구현 후 `03-data`
-plan은 Candidate table의 Stream만 켜는 `0 add, 1 change, 0 destroy`다. `08-chat-signal`
-plan은 이 output이 실제 remote state에 생긴 뒤에만 생성할 수 있으므로 적용 순서는 반드시
-다음과 같다.
+2026-08-23 병합된 `main`에서 순차 적용했다. `03-data` 저장 plan은 Candidate table의
+Stream만 켜는 `0 add, 1 change, 0 destroy`였고, 적용 후 table `ACTIVE`, Stream
+`NEW_IMAGE`를 확인했다. 이어 생성한 `08-chat-signal` 저장 plan은 Source Adapter 계층만
+추가하는 `8 add, 0 change, 0 destroy`였다.
 
-1. 병합 후 최신 `main`에서 두 stack plan을 다시 확인한다.
-2. `03-data` 저장 plan으로 Stream만 apply하고 ACTIVE·NEW_IMAGE·Stream ARN을 확인한다.
-3. `08-chat-signal` plan을 처음 생성해 Adapter 외 변경이 없는지 확인한다.
-4. Adapter event source와 실행 플래그가 모두 `false`일 때만 저장 plan을 apply한다.
-5. Queue/DLQ/로그/Dify 신규 실행이 모두 0인지 확인하고 Phase 2에서 중단한다.
+적용 후 실환경 확인 결과는 다음과 같다.
+
+| 검증 항목 | 결과 |
+|---|---|
+| `03-data`, `08-chat-signal` 전체 plan | 둘 다 `No changes` |
+| Adapter Lambda | `Active`, update `Successful`, Python 3.13 |
+| Adapter event source | `Disabled`, processed record 0 |
+| Adapter 실행 플래그 | `false` |
+| 과거 Candidate 차단 | epoch `4102444800` 유지 |
+| Agent Trigger Queue | visible, in-flight, delayed 모두 0 |
+| Adapter DLQ | visible, in-flight, delayed 모두 0 |
+| Adapter 실행 흔적 | CloudWatch Log Stream 0개 |
+| 공통 Agent Worker | Lambda `Active`, 실행 플래그 `false`, event source `Disabled` |
+
+따라서 Phase 2 상태는 `DEPLOYED_EXECUTION_DISABLED`다. Agent/Dify 호출 경로는 열리지
+않았으며, Phase 3 합성 Shadow E2E 전에는 어떤 실행 게이트도 변경하지 않는다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 
