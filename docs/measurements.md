@@ -25,6 +25,7 @@
 | M-010 | 채팅 팬아웃 한계 (chat-gateway) | 틱 주기·`MAX_PER_TICK` 변경 · 직렬화 방식 변경 · replicas 변경 |
 | M-011 | Chat Signal 외부 WebSocket E2E | Worker timeout·동시성·batch·Queue visibility 변경 |
 | M-012 | Agent 공통 진입점 도입 전 Dify runtime baseline | 게시 workflow·모델·Worker·DLQ 정책 변경 |
+| M-013 | 전용 Agent entry contract workflow UI 검증 | DSL·입력 계약·Code 검증 로직 변경 |
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
 그 절의 표에 **행을 추가**한다. 조건이 다르면 값도 다르므로 조건을 꼭 적는다.
@@ -733,3 +734,39 @@ Datadog Agent 경로가 성공과 실패를 모두 갖고 있고 DLQ가 비어 �
 
 **다시 재야 할 때** — 게시 workflow 또는 Bedrock 모델을 바꿀 때, 기존 DLQ를 분류·재처리한
 뒤, Generic Agent Worker의 timeout·동시성·재시도 정책을 정할 때.
+
+---
+
+## M-013. 전용 Agent entry contract workflow UI 검증
+
+**조건 (2026-08-23)** — 기존 팀 앱과 분리한 `O2 Agent Entry Contract Test v1`을 Dify
+1.16.1에 생성했다. Start는 `custom_alert_json` required paragraph 하나이고, Code와
+Output만 사용했다. 자동 source, Bedrock, Datadog Pull, 조치 권한은 연결하지 않았다.
+
+| 입력 | 결과 |
+|---|---|
+| `agent-trigger-chat-v1.example.json` | `ACCEPTED`, source와 source schema 일치 |
+| `agent-trigger-datadog-v1.example.json` | `ACCEPTED`, source와 source schema 일치 |
+| Chat source + Datadog source schema | `CONTRACT_REJECTED:SOURCE_SCHEMA` |
+| LLM 사용량 | 세 실행 모두 0 Tokens |
+| 기존 팀 앱 변경 | 없음 |
+
+**Service API 직접 검증 (2026-08-23)** — 테스트 앱 전용 API key를 Secrets Manager에
+저장하고 SSM local port forwarding을 통해 blocking 호출했다. Dify 문서 화면의 base URL은
+`http://localhost/v1`이지만, Mac 호출에서는 터널 포트를 붙인 localhost URL을 사용했다.
+
+| 항목 | 결과 |
+|---|---|
+| 게시 `/parameters` | `custom_alert_json`, paragraph, required, max length 30,000 |
+| Chat `/workflows/run` | `data.status=succeeded`, 0.166256초, 3 steps, 0 tokens |
+| Datadog `/workflows/run` | `data.status=succeeded`, 0.151124초, 3 steps, 0 tokens |
+| source/schema 불일치 | `data.status=failed`, 0.121813초, 2 steps, 0 tokens |
+| 실패 code | `CONTRACT_REJECTED:SOURCE_SCHEMA` |
+
+입력의 표시 label은 게시 API에서 중복 문자열로 보였지만 API 매핑에 사용하는 variable은
+정확히 `custom_alert_json`이었다. label은 실행 계약이 아니며 canonical DSL에서는 단일
+label로 정규화했다. 호출 후 평문 임시 파일과 테스트용 터널은 제거했고, 사용자가 열어 둔
+localhost 터널은 종료하지 않았다.
+
+**다시 재야 할 때** — Start 변수, 최대 길이, Code 검증 필드, output 형태, Dify 버전을
+바꿀 때.
