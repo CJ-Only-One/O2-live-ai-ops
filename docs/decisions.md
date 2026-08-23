@@ -58,6 +58,14 @@
 | D-041 | 큐시트로 미리 늘리되 AI가 스케일러가 되지는 않는다 | 큐시트, CapacityPlan, 결정론적 실행, HPA·KEDA 보정, Karpenter 안전망, Dify 제외 |
 | D-042 | `o2-hot-api` 는 `AWS_IAM`(SigV4)이다 | D-031 후속, 멤버 계정은 SCP/RCP 조회 불가, `aws_lambda_permission`, Dify SigV4 미확인 |
 | D-043 | Dify 는 SigV4 를 못 한다 — 서명을 프록시로 분리한다 | `ApiProviderAuthType`, `hot-proxy`, squid allowlist, `internal: true`, IMDS |
+| D-044 | 인시던트 이력은 S3 Vectors 에 둔다 | 번들 weaviate 유실, DynamoDB 는 유사검색 불가, 임베딩 1회, 공유 zip, MTTR |
+| D-045 | 검증 전에는 원인을 말하지 않는다 | `outcome.state` 다섯 값, 복구≠해결, 추측 세탁, 통제 어휘, Recovered 를 Worker 로 |
+| D-046 | Runbook 조회도 D-043 과 같은 이유로 Lambda 릴레이를 쓴다 | `aws_iam_role.dify` 죽은 권한, SigV4, Function URL, x-api-key |
+| D-047 | 채팅 분석은 Chat Gateway에서 SQS로 직접 분기한다 | Valkey 팬아웃 전용, Lambda, DynamoDB, 60초 원문, Incident Candidate |
+| D-048 | Chat Signal Worker는 독립 `08-chat-signal` 스택에 둔다 | EKS 비결합, state 분리, 비활성 trigger, fail-safe skeleton |
+| D-049 | Phase 4 Shadow는 생산자와 소비자를 독립 스위치로 제어한다 | enable_event_source, chat_signal_mode, 순차 활성화, 즉시 롤백 |
+| D-050 | Agent 앞에서 source별 JSON을 공통 envelope로 정규화한다 | agent.trigger.v1, discriminator, custom_alert_json, idempotency, read-only |
+| D-051 | Karpenter·KEDA 는 안전망이지 주력이 아니다 | D-037 조건 충족, NodePool 을 좁힌 이유, IAM 태그 조건, ScaledObject 는 배포 저장소 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -2605,3 +2613,582 @@ Dify 스튜디오에서 Custom Tool 을 만들어 워크플로에 넣는 일은 
 "Dify 가 SigV4 를 지원하는가" 는 검색으로는 확실해지지 않았다 —
 버전마다 다르고, 플러그인·Bedrock 노드 같은 다른 통합과 섞여 나온다.
 돌고 있는 컨테이너에서 enum 하나를 읽는 편이 빠르고 정확했다.
+
+---
+
+## D-044. 인시던트 이력은 S3 Vectors 에 둔다
+
+에이전트가 알림을 분석하고 나면 그 판단이 **어디에도 남지 않았다.**
+`lambda/worker.py` 가 Dify 결과를 받고 `return {"ok": True}` 로 끝나 CloudWatch
+로그에만 있었다. "이미 해결한 인시던트와 비슷한가" 를 판정하려면 쌓아야 한다.
+
+### 후보 셋
+
+| 후보 | 왜 아닌가 / 왜인가 |
+|---|---|
+| DynamoDB | **유사도 검색이 없다.** "키가 정확히 이것" 은 되지만 "비슷한 것" 을 못 찾는다. 스캔해서 애플리케이션에서 코사인을 도는 것은 저장소를 잘못 고른 것이다 |
+| Dify 번들 weaviate | 이미 EC2 에서 돌고 있어 **신규 인프라가 0** 이다. 그런데 루트 볼륨에만 있고 `delete_on_termination = true` 다 — D-028 의 "인스턴스 교체 = 워크플로 전멸" 이 그대로 적용된다 |
+| **S3 Vectors** | **채택.** EC2 밖이라 인스턴스 유실과 무관하다. 2025년 12월 GA, 서울 리전 가능, aws provider 6.x 에 리소스가 있다 |
+
+번들 weaviate 도 S3 에 원본을 두면 재색인으로 복구할 수 있다. 다만 그 복구
+절차를 사람이 기억하고 있어야 하고, **잊혀진 복구 절차는 없는 것과 같다.**
+회의에서 EC2 유실 대비를 이유로 S3 Vectors 로 정했다.
+
+이 규모(월 약 5,000건)에서 OpenSearch 는 월 수십 달러, S3 Vectors 는 월 1달러
+미만이다. 벡터 저장소를 세우는 문턱 자체가 낮아진 것이 선택을 갈랐다.
+
+### 검색을 Dify 가 아니라 Lambda 에서 한다
+
+Dify 에는 S3 Vectors 커넥터가 없다. 붙이려면 임베딩·검색 Lambda 를 만들어
+External Knowledge API 규격으로 노출해야 한다 — 부품이 둘 는다.
+
+그런데 검색을 **Worker Lambda 안에서** 끝내면 그 둘이 전부 사라진다.
+
+```
+알림 → 임베딩(Bedrock) → S3 Vectors 검색 → past_cases 로 Dify 실행 → 저장
+```
+
+Dify 쪽 변경은 시작 노드에 텍스트 변수 하나(`past_cases`)를 늘리는 것뿐이고,
+**Dify 는 벡터의 존재를 모른다.** 지식 검색 노드도 외부 지식 API 도 없다.
+커넥터가 없다는 제약이 오히려 부품을 줄였다.
+
+### 임베딩은 알림당 한 번
+
+검색용 벡터와 저장용 벡터를 같은 것으로 쓴다. Dify 의 판단문을 저장 쪽에만
+합쳐서 임베딩하고 싶어지는데, 하면 안 된다 — 검색은 "들어온 알림" 대 "과거
+알림" 비교이고, 한쪽에만 판단문이 붙으면 두 텍스트의 성격이 달라져 유사도가
+흐려진다. 판단 결과는 메타데이터와 S3 원본에만 넣는다.
+
+정확도를 위한 선택인데 호출 수와 코드가 같이 절반이 됐다.
+
+### 거리 임계값은 눈금이지 상수가 아니다
+
+`MAX_DISTANCE = 0.35` 는 근거 있는 값이 아니다. 느슨하면 상관없는 사례가
+프롬프트에 들어가 LLM 이 거기 끌려가고(`architecture.md` 7.4 "오판의 재학습"),
+빡빡하면 재발을 놓친다. **놓치는 쪽이 잘못 엮는 쪽보다 싸므로** 보수적으로
+시작하고, 실제 알림으로 재서 맞춘다.
+
+같은 이유로 `human_verified` 필터는 지금 걸지 않는다. 검증 표시를 아무도 안
+한 상태에서 걸면 결과가 늘 0건이고, **기능이 죽은 것을 눈치채기 어렵다.**
+그때까지의 방어선은 프롬프트의 "과거 사례는 참고이지 정답이 아니다" 한 줄이다.
+
+### 이력 기록은 두 파이프라인 중 하나에서만 켠다
+
+`lambda_o2.tf` 의 두 번째 파이프라인이 **같은 zip 을 공유한다.** 그래서
+이력 관련 환경변수를 `os.environ["..."]` 로 읽으면 그쪽이 import 에서
+KeyError 로 죽는다 — 알림 경로 하나가 통째로 사라지는 사고다. `.get()` 으로
+읽고, 변수가 없으면 이력만 꺼진 채 중계는 돈다.
+
+O2 쪽을 켤 때 **환경변수만 복사해 붙이면 안 된다.** 두 파이프라인이 같은
+Datadog 모니터를 받으면 `cycle_key` 가 같아서 서로의 인시던트를 덮어쓴다.
+키에 파이프라인 구분을 먼저 넣는다.
+
+### 실패해도 알림을 잃지 않는다
+
+이력은 **보조 기능이다.** 두 지점 모두 예외를 밖으로 내보내지 않는다.
+
+| 어디 | 실패하면 | 왜 |
+|---|---|---|
+| 검색 (Dify 호출 전) | `past_cases` 만 비우고 진행 | 과거 사례 하나 때문에 알림 분석 전체를 잃는 것은 손해다 |
+| 저장 (Dify 호출 후) | 로그만 남기고 성공 반환 | 여기서 예외를 던지면 이미 성공한 Dify 를 재시도가 다시 부른다. LLM 비용이 두 배가 되고 인시던트가 중복된다 |
+| 복구 시각 기록 (Ingress) | 로그만 남기고 200 | 200 을 못 주면 Datadog 이 알림을 재전송한다. **지표 결손이 알림 파이프라인 교란보다 싸다** |
+
+`worker.py` 상단의 "실패는 반드시 예외로 알려야 한다" 는 **Dify 호출에만**
+해당한다. 그 문장을 이력 코드에 확대 적용하면 위 표가 전부 뒤집힌다.
+
+### MTTR 이 여기서 나온다
+
+Datadog 은 한 장애에 `Triggered` 와 `Recovered` 를 두 번 보내고 `cycle_key` 가
+둘을 묶는다. 기존 `ingress.py` 는 `Recovered` 를 즉시 버렸는데 — **분석이
+필요 없는 것과 시각이 필요 없는 것은 다르다.** 시각만 `resolutions/` 에
+남긴다. 두 파일의 차가 MTTR 이고, 에이전트 도입 전후 비교가 이 프로젝트의
+평가 지표다.
+
+### 남은 것
+
+- `outcome.resolved` · `mttr_sec` · `root_cause_label` 이 비어 있다.
+  `incidents/` 와 `resolutions/` 를 짝짓는 재색인 스크립트가 한 번에 채운다
+- Athena. 원본이 `dt=` 로 파티션되어 있어 Glue 테이블만 얹으면 되지만
+  건수가 적어 아직 필요 없다
+
+---
+
+## D-045. 검증 전에는 원인을 말하지 않는다
+
+D-044 로 이력은 쌓이는데 `outcome` 이 통째로 비어 있었다. 알림이 왔다는 사실과
+에이전트의 추측만 있고 **"그래서 진짜 뭐였고 어떻게 끝났는가" 가 없었다.**
+
+이걸 채우면서 갈린 지점이 넷이다.
+
+### 1. 에이전트 추측을 검색 코퍼스에 넣지 않는다
+
+넣던 것을 뺐다. 저장할 때 벡터 메타데이터의 `summary` 가 이랬다.
+
+```
+[Triggered] 주문 생성 진행 중 → 1) 재발 — 과거 사례와 원인이 같은...
+```
+
+**Dify 가 추측한 원인이 그대로 들어가 있다.** 다음 알림에서 이것이 "과거 사례" 로
+다시 읽히면 추측이 한 바퀴 돌아 사실이 된다. `architecture.md` 7.4 "오판의
+재학습" 이 경고한 경로가 정확히 이것이다.
+
+처음에는 프롬프트에 "과거 사례는 참고이지 정답이 아니다" 를 넣어 막았다.
+**약한 방어다 — 규칙은 무시될 수 있다.** 데이터에서 빼면 무시할 수 없다.
+
+| 상태 | 요약에 들어가는 것 |
+|---|---|
+| 미검증 | **사실만.** 제목 + 어떻게 끝났나 + 걸린 시간 |
+| 검증됨 | 원인까지 (`root_cause_label`) |
+
+```
+[미검증] 주문 생성 큐 적체 · 12분 뒤 자동복구
+[확인됨] 주문 생성 큐 적체 · db_lock_contention · 사람이 조치 · 23분
+```
+
+미검증 사례도 충분히 쓸모 있다. **"전에도 왔고 12분 뒤 저절로 돌아갔다" 는
+100% 사실이고, 재발 판정에 필요한 정보가 그것이다.** 원인을 말할 자격이
+검증 뒤에 생길 뿐이다.
+
+부수 효과로 요약이 600자에서 60자가 됐다. 3건이면 1,800자가 180자다.
+
+추측 전문은 S3 원본의 `agent.hypothesis` 에 남는다. **지우는 것이 아니라
+검색 코퍼스에서 빼는 것이고**, 사람이 검증할 때 그것을 읽는다.
+
+### 2. `resolved` 를 버리고 `state` 다섯 값을 쓴다
+
+`architecture.md` 7.3 은 `resolved: true/false` 다. **boolean 으로는 "복구는
+됐지만 고친 건 아니다" 를 표현할 수 없다.**
+
+Datadog `Recovered` 는 "지표가 임계 아래로 돌아왔다" 일 뿐이고, 아래 넷이 전부
+같은 신호로 온다.
+
+- 진짜 고쳐졌다
+- 저절로 돌아왔다
+- 방송이 끝나 부하가 사라졌다
+- 모니터를 껐거나 조건을 바꿨다
+
+전부 `resolved: true` 로 적으면 **발표의 MTTR 이 거짓이 된다** — "에이전트
+도입 후 MTTR 감소" 인데 실제로는 저절로 돌아온 것들의 평균이다.
+
+| 값 | 뜻 | 누가 |
+|---|---|---|
+| `unresolved` | 복구 신호가 아직 없다 (**시작값**) | 자동 |
+| `auto_recovered` | 지표는 돌아왔다. 아무도 안 고쳤다 | 자동 |
+| `human_fixed` | 사람이 조치 | 사람 |
+| `agent_fixed` | 에이전트가 런북 실행 | (실행기 생긴 뒤) |
+| `false_alarm` | 오탐 | 사람 |
+
+★ **자동 경로는 절대 `human_fixed` 를 쓰지 않는다.** 지금 에이전트는
+`action_taken = "none"` 이다. 분석만 하고 아무것도 고치지 않는다.
+
+시작값을 `unresolved` 로 둔 것도 의도다. **사실이고**(아직 안 끝났다), Recovered 가
+영영 안 오면 그대로 남으므로 **"24시간 뒤 미해결로 표시" 같은 청소 작업이
+필요 없어진다.** 안 해도 되는 일을 만들지 않았다.
+
+`schema_version` 을 `1.1` 로 올렸다.
+
+### 3. 원인 라벨은 통제 어휘다 (`labels.txt`)
+
+자유 텍스트면 같은 원인이 "커넥션 풀 고갈" / "connection pool 문제" / "DB 커넥션
+부족" 으로 갈린다. 그러면 **"이 원인이 N번 재발" 을 셀 수 없고**, 그 숫자가
+없으면 런북을 무엇부터 쓸지 정할 근거가 없다.
+
+라벨 하나가 런북 하나에 대응한다 (`runbooks/<label>.md`). 목록은 노션의
+`공유_장애시나리오_v2.md` 와 실제로 겪은 `troubleshooting.md` 항목에서 뽑았다.
+
+`other` 를 반드시 둔다. 없으면 사람이 억지로 비슷한 라벨을 고르고 집계가
+거짓말이 된다. `other` 가 쌓이는 것 자체가 새 라벨 신호다.
+
+**검증은 사람이 한다** (`scripts/verify.py`). 복구 시점에 Dify 를 한 번 더 부르는
+방법도 있었지만 그건 추측을 한 번 더 하는 것이지 검증이 아니다.
+
+### 4. Recovered 를 Ingress 가 아니라 Worker 가 처리한다
+
+Ingress 는 Recovered 를 버리고 있었다. 할 일이 생겼으므로 넘긴다 —
+**분석은 여전히 안 한다.** Dify 를 부르지 않으므로 LLM 비용도 워커 점유도 없다.
+
+Ingress 에서 직접 처리하지 않는 이유는 그것이 VPC 밖의 가벼운 문지기여야 하기
+때문이다(623ms, M-002). S3 읽기와 벡터 갱신은 무겁고, Ingress 가 늦어지면
+Datadog 이 기다린다.
+
+**임베딩을 다시 하지 않는다.** 저장할 때 메타데이터에 `s3_key` 를 넣어 뒀고
+`GetVectors` 가 벡터값까지 돌려주므로 `cycle_key` 하나로 원본과 벡터를 모두
+찾는다. 가장 비싼 구간(약 1.4초, M-002)을 통째로 건너뛴다.
+
+#### 예외 정책이 저장 경로와 정반대다
+
+| 어디 | 예외를 | 왜 |
+|---|---|---|
+| Triggered 저장 | **안 올린다** | Dify 가 이미 성공했다. 재시도하면 LLM 비용 두 배 + 인시던트 중복 |
+| Recovered 적재 | **올린다** | LLM 을 안 부르고 멱등하다. 재시도가 공짜라 막히면 알려야 한다 |
+
+**헷갈려서 통일하지 마라.** 비싼 쪽을 재시도하지 않고 싼 쪽만 재시도하는 것이
+이 배치의 요점이다.
+
+### 정한 눈금 셋
+
+- **`$DATE_POSIX` 단위를 가정하지 않는다.** 초인지 밀리초인지 문서로 확정되지
+  않아 값의 크기로 가른다. 틀리면 MTTR 이 1000배 어긋나는데 **그 숫자가
+  그럴듯해 보여서 아무도 눈치채지 못한다**
+- **flapping 은 첫 번째만 센다.** 이미 닫힌 건은 건너뛴다. 마지막 진동까지
+  포함하면 MTTR 이 부풀어 오른다
+- **런북 후보는 3회 반복.** 2회는 우연일 수 있다. 심각도가 높으면 1회로도 쓴다
+
+### 남은 연결 — 승인과 이력
+
+#102 의 Slack 승인 릴레이가 `slack_approvals` 에 `incident_id` 를 저장한다.
+이 이력의 `incident_id` 도 `cycle_key` 이므로 **두 시스템은 같은 키로 이어질
+수 있다.** `human_fixed` 를 사람이 손으로 표시하는 대신 승인 기록에서 끌어올 수
+있게 되는 지점이다.
+
+**다만 지금은 안 이어진다.** Dify 에 `cycle_key` 를 넘기지 않아서
+(`worker.py` 가 라우팅용으로 소비하고 끝낸다) 승인 Lambda 의 `incident_id` 가
+`"unknown"` 으로 떨어진다. 이으려면 Dify 입력 계약에 `cycle_key` 를 추가해야
+한다 — `dify/README.md` 1절의 네 곳을 같이 고치는 그 작업이다.
+
+## D-046. Runbook 조회도 D-043 과 같은 이유로 Lambda 릴레이를 쓴다
+
+Runbook 테이블(`runbook.tf`)의 첫 초안은 읽기 권한(`GetItem`·`Query`)을
+**`aws_iam_role.dify`(Dify EC2 인스턴스 역할)에 직접** 붙이는 모양이었다.
+Node 11 이 그 역할로 DynamoDB 를 바로 두드린다는 전제였다. **적용 전
+설계 검토에서 이 전제가 틀렸다는 게 드러났다.**
+
+### 왜 틀렸나
+
+D-043 이 이미 확인한 사실이 그대로 적용된다 — Dify 1.16.1 의 Custom
+Tool/HTTP 요청 노드가 쓸 수 있는 인증은 `NONE`·`API_KEY_HEADER`·
+`API_KEY_QUERY` 세 가지뿐이고, 어디에도 SigV4 서명 경로가 없다. DynamoDB
+API 는 SigV4 서명 없이는 호출 자체가 안 된다.
+
+즉 `aws_iam_role.dify` 에 `dynamodb:Query` 를 아무리 붙여봐야, **그 권한을
+실제로 행사할 방법이 Node 11 에 없다.** Node 11 은 그 역할의 자격증명을
+서명에 쓸 수 있는 도구가 아니라 평범한 HTTP 요청 노드이기 때문이다. IAM
+문서만 보면 문제가 없어 보이지만, 워크플로 쪽에서 절대 쓰이지 않는
+죽은 권한이 남는 것과 같다 — 그 자체로 사고는 아니지만, 다음 사람이
+"이미 권한이 있으니 Node 11 이 직접 조회한다"고 잘못 읽을 근거가 된다.
+
+### 그래서 무엇을 했나
+
+D-043 의 `hot-proxy` 와 같은 모양을, 이번에는 EC2 인스턴스 안 프록시가
+아니라 독립 Lambda 로 둔다(`runbook_lookup.tf`, `lambda/runbook_lookup.py`).
+
+```
+Dify (HTTP 요청 노드, x-api-key) ──▶ runbook_lookup Lambda ──Query──▶ DynamoDB
+```
+
+- Lambda 는 **자신의 실행 역할**로 `GetItem`·`Query` 만 갖는다
+  (`aws_iam_role.dify` 는 이 권한을 더 이상 갖지 않는다 — `runbook.tf` 에서
+  뺐다).
+- Dify → Lambda 구간은 Function URL(`authorization_type = NONE`) + 코드
+  내부 `x-api-key` 비교로 인증한다. `slack_approval.tf` 와 같은 모양이다.
+- `hot-proxy` 와 달리 **수동 SigV4 서명이 필요 없다.** 대상이 이미
+  AWS 서비스(DynamoDB)라서 Lambda 안에서 boto3 로 부르면 SDK 가 서명을
+  알아서 한다. `hot-proxy` 는 대상이 *다른* Function URL(`AWS_IAM`)이라
+  서명을 직접 만들어야 했던 것과 다르다 — 이번이 더 단순한 경우다.
+
+### slack_approval.tf 와 같은 모양이지만 이유는 다르다
+
+두 곳 다 "Lambda + Function URL + 코드 내부 헤더 검증" 이지만, 그 모양을
+쓰는 이유가 다르다.
+
+| | slack_approval.tf | runbook_lookup.tf |
+|---|---|---|
+| 문제 | Dify 의 동기 HTTP 노드와 Slack 의 비동기 콜백을 잇는다 | Dify 가 DynamoDB 를 직접 서명 호출할 수 없다 |
+| 이 파일이 없다면 | 버튼 클릭을 받을 방법이 없다 | Node 11 이 애초에 테이블에 못 닿는다 |
+| 근거 | (그 자체로 필요한 중계) | D-043 |
+
+같은 부품을 다른 이유로 재사용한 것이라, "왜 또 Lambda 를 두나" 라는
+질문이 나올 때 이 표를 본다.
+
+### 적용 전에 잡았다
+
+이 IAM 권한은 **한 번도 apply 된 적이 없다** — 설계 리뷰 중에 걸러졌다.
+사후 대응이 아니라 사전 발견이라는 점을 남긴다. `runbook_lookup.py` 의
+`x-api-key` 비교는 여기서 새로 `hmac.compare_digest` 로 썼다 (기존
+`slack_approval_request.py` 는 평범한 `!=` 비교이고, 이번 범위에서는
+손대지 않았다 — 둘 다 문제라기보다는 이 파일을 새로 쓰는 김에 상수 시간
+비교로 시작한 것뿐이다).
+
+---
+
+## D-047. 채팅 분석은 Valkey 구독이 아니라 Chat Gateway에서 SQS로 직접 분기한다
+
+D-016과 `architecture.md` D-15는 채팅 소비자가 WebSocket 브로드캐스트 하나뿐일 때
+결정했다. 이제 채팅을 사용자 체감 장애의 조기 신호로 쓰는 두 번째 소비 목적이
+생겼다. 과거 결정의 전제가 바뀌었다.
+
+### Valkey Pub/Sub에서 가져오지 않는다
+
+Pub/Sub은 구독자가 끊긴 동안의 메시지를 복구하지 못한다. 더 중요한 것은 기존
+Valkey가 실시간 팬아웃과 재고 판정에 쓰인다는 점이다. 분석 Worker의 backlog와
+재처리 요구를 같은 실패 영역에 넣지 않는다.
+
+```text
+Chat Gateway -> Valkey Pub/Sub -> WebSocket fanout
+Chat Gateway -> dedicated SQS -> Lambda -> DynamoDB -> Incident Candidate
+```
+
+Valkey는 여전히 실시간 팬아웃의 정답이다. D-15를 폐기하는 것이 아니라 적용 범위를
+팬아웃으로 좁힌다. 분석용 Collector가 Valkey를 구독하는 안은 운영 설계가 아니다.
+
+### Agent가 아니라 Candidate까지만 만든다
+
+채팅의 `느리다`는 말은 사용자 체감 증거이지 원인 증거가 아니다. 실제 사용자 증가와
+자동화 요청 증가는 조치가 반대지만 클라이언트 생성 세션 키로는 둘을 가를 수 없다.
+따라서 이번 경로는 `USER_PERCEIVED_LATENCY` Candidate를 만들고 다음으로 끝낸다.
+
+```text
+metric_status=NOT_CHECKED
+root_cause=UNDETERMINED
+agent_handoff_status=NOT_CONFIGURED
+```
+
+D-045의 원칙을 수집 단계부터 적용한 것이다. Datadog Pull과 Dify·Bedrock 호출은
+Candidate 이후의 별도 경로다.
+
+### Lambda와 DynamoDB를 쓴다
+
+PoC 트래픽을 아직 측정하지 않았고 상시 Worker Pod가 필요하지 않다. SQS 연동 Lambda가
+규칙 분류를 수행하고 DynamoDB가 멱등·시간창·고유 사용자·쿨다운을 소유한다. Dify는
+동시 집계 상태의 원본이 아니다.
+
+초기 임계치는 15초 안에 관련 메시지 4건, 고유 사용자 3명이다. 이것은 실측값이나
+SLO가 아니라 Shadow Mode 비교를 위한 가설이다. 근거와 변경 게이트는
+`chat-incident-candidate.md` 5·10절에 둔다.
+
+### 원문은 60초 뒤 사라진다
+
+분류하려면 Worker까지 원문이 필요하지만 저장 코퍼스로 만들지는 않는다. 원문은
+암호화된 SQS 메시지에만 있고 보존 기간은 60초다. 처리 후 즉시 삭제하며 로그,
+DynamoDB, Candidate, 원문 DLQ에는 넣지 않는다.
+
+그 결과 Worker가 60초 넘게 멈추면 분석 신호가 유실될 수 있다. 고객 트랜잭션이 아닌
+조기 탐지 보조 신호이므로 PoC에서는 재처리보다 개인정보 최소화를 우선한다.
+
+### 구현 원본
+
+- 처리 규칙과 완료 조건: `docs/chat-incident-candidate.md`
+- 입력·출력 스키마: `docs/contracts.md` 5.6·5.7
+- 기존 `chat.send` Kinesis 관측 이벤트: `docs/contracts.md` 5.3, 별도 경로
+
+---
+
+## D-048. Chat Signal Worker는 독립 `08-chat-signal` 스택에 둔다
+
+Chat Signal SQS와 Candidate DynamoDB는 `03-data`가 소유하지만, 메시지를 실행하는
+Lambda까지 데이터 스택에 넣으면 저장소 수명주기와 코드 배포 수명주기가 결합된다.
+`04-platform`에 넣으면 Lambda 변경이 EKS·Helm provider 상태에 의존한다.
+
+따라서 실행 리소스는 `08-chat-signal`로 분리하고 `03-data` remote state의 큐와
+테이블만 참조한다.
+
+```text
+03-data:        SQS + DynamoDB
+08-chat-signal: Lambda + execution IAM + SQS event source mapping
+```
+
+Phase 1B의 event source mapping은 변수로 켤 수 없고 코드에 `enabled = false`로
+고정한다. 실수로 Lambda를 직접 호출해도 골격 handler는 모든 SQS `messageId`를
+`batchItemFailures`로 반환한다. 따라서 Candidate 로직이 없는 상태에서 원문 메시지를
+성공 처리하거나 삭제하지 않는다.
+
+실행 역할은 다음 권한만 갖는다.
+
+- Chat Signal SQS의 `ReceiveMessage`, `DeleteMessage`, `GetQueueAttributes`
+- Candidate DynamoDB의 `GetItem`, `PutItem`, `UpdateItem`, `TransactWriteItems`
+- 전용 CloudWatch Log Group의 `CreateLogStream`, `PutLogEvents`
+
+골격은 SQS body를 파싱하거나 로그에 기록하지 않는다. Phase 3에서 실제 처리기를
+넣더라도 `ReportBatchItemFailures`, 본문 비기록, 조건부/트랜잭션 쓰기 계약은 유지한다.
+
+---
+
+## D-049. Phase 4 Shadow는 생산자와 소비자를 독립 스위치로 제어한다
+
+D-048의 `enabled = false` 하드코딩은 Candidate 처리기가 없던 Phase 1B에서 메시지
+삭제를 막기 위한 임시 안전 게이트였다. Phase 3의 AC-001부터 AC-010까지 통과했으므로
+Phase 4 Shadow에서는 다음 두 스위치를 독립적으로 둔다.
+
+| 경계 | 스위치 | `off` | `on` |
+|---|---|---|---|
+| SQS -> Worker | `08-chat-signal.enable_event_source` | Lambda가 SQS를 소비하지 않음 | Event source mapping 활성화 |
+| Chat Gateway -> SQS | `04-platform.chat_signal_mode` | 채팅을 SQS에 발행하지 않음 | `shadow` 발행 활성화 |
+
+활성화는 `03-data -> 08-chat-signal -> 04-platform -> Chat Gateway 재시작` 순서로 한다.
+소비자를 먼저 켜면 생산자가 꺼진 빈 큐에서 Worker를 검증할 수 있고, 잘못된 생산자가
+원문을 쌓기 전에 IAM·환경 변수·Lambda 상태를 확인할 수 있다.
+
+롤백은 반대로 생산자를 먼저 끈다. `chat_signal_mode=off` 적용 후 Chat Gateway를
+재시작하고, 그 다음 `enable_event_source=false`를 적용한다. SQS와 DynamoDB는 삭제하지
+않는다. 원문은 SQS 보존 정책에 따라 최대 60초 후 만료된다.
+
+`04-platform`은 Chat Signal 외에 Karpenter·KEDA와 서비스별 Pod Identity도 소유한다.
+따라서 Phase 4 적용 전에 Terraform plan에서 Chat Signal 대상 외 변경이 섞이지 않는지
+확인해야 한다. 2026-08-23 plan에서는 Karpenter·KEDA 차이는 없었지만, 이전에 병합되고
+미적용된 서비스별 IAM 분리가 함께 잡혔다. 이런 기존 변경을 Chat Signal 활성화라는
+이유만으로 검토 없이 전체 apply하지 않는다.
+
+이 결정은 D-048의 스택 분리와 최소 IAM 원칙을 유지하며, Phase 1B의 하드코딩된 비활성
+게이트만 운영 가능한 변수형 게이트로 대체한다. Datadog Pull, Dify·Bedrock 호출,
+자동 조치는 여전히 범위 밖이다.
+
+---
+
+## D-050. Agent 앞에서 source별 JSON을 공통 envelope로 정규화한다
+
+Datadog 알림과 Chat Incident Candidate는 의미가 다르다. 전자는 모니터 임계치 초과이고,
+후자는 아직 메트릭으로 확인하지 않은 사용자 체감 증거다. 둘의 원본 스키마를 하나로
+강제로 합치면 Chat 값을 빈 `alert_title`·`alert_query`에 끼워 넣거나 Dify가 필드 유무로
+source를 추측하게 된다.
+
+따라서 Source Adapter 앞에서는 `datadog.alert.v1`과
+`chat.incident_candidate.v1`을 유지하고, Agent Trigger Queue부터만
+`agent.trigger.v1` 공통 envelope를 사용한다.
+
+```text
+Datadog alert --------> Datadog Source Adapter --+
+                                                   +-> agent.trigger.v1 -> Agent Trigger SQS
+Chat Candidate INSERT -> Chat Source Adapter -----+
+```
+
+공통 envelope의 `source`가 discriminator다. 식별·event time·멱등 키·guardrail은
+공통 필드이고, 실제 증거는 source별 `evidence`가 소유한다. Chat evidence에는 원문,
+사용자 키, 원문 해시가 없고 `root_cause=UNDETERMINED`를 유지한다.
+
+초기 Chat 정책은 Candidate INSERT 한 번만 호출한다. Candidate 생성 Worker에서 Dify를
+직접 호출하지 않고 DynamoDB Stream 뒤 Adapter로 분리한다. Dify 장애나 장시간 실행이
+60초 원문 Queue와 Candidate 생성을 막지 않게 하기 위해서다.
+
+Agent Worker는 envelope를 Dify의 `custom_alert_json`으로 전달한다. 2026-08-23 실환경의
+게시 앱을 읽기 전용으로 조회해 이 입력 형태가 Dify 1.16.1에서 노출되고 graph에서 참조될
+수 있음을 확인했다. 그 앱은 팀원이 노드를 구성 중인 앱이므로 신규 진입점 대상으로 쓰지
+않는다. 전용 테스트 앱·전용 API key·export된 DSL로 contract-only smoke를 먼저 수행한다.
+
+저장소의 기존 DSL은 배포본보다 오래됐고 기존 Worker DLQ도 비어 있지 않다. 두 문제는
+전용 테스트 앱 실험과 격리하고, 기존 Datadog 경로를 공통 진입점으로 옮기는 시점에
+해결한다. 전용 테스트 앱의 Code-only 계약 검증, 비활성 공통 Worker, 테스트 앱 Chat
+Shadow E2E, Datadog dual-run 순서로 전환한다.
+
+현재 권한 경계는 `READ_ONLY`이고 자동 조치는 금지한다. Dify HTTP 200만으로 성공 처리하지
+않고 `data.status=succeeded`를 확인하며, 같은 `idempotency_key`는 LLM을 다시 실행하지
+않는다.
+
+Phase 1B transport는 SQS event source mapping과 Worker 실행 플래그를 모두 비활성으로
+고정한다. 멱등 ledger는 외부 Dify 호출 전에 `IN_PROGRESS`를 조건부 획득하고 성공 뒤
+`SUCCEEDED`로 확정한다. `SUCCEEDED`, `IN_PROGRESS`, `FAILED` 상태는 자동으로 재획득하지
+않는다. 특히 네트워크 단절처럼 요청이 Dify에 도달했는지 알 수 없는 실패에서 자동
+재호출하면 동일 Agent 실행을 두 번 만들 수 있으므로 fail-closed한다. 운영자가 Dify
+실행 이력과 ledger를 확인한 뒤에만 DLQ 메시지를 재투입한다.
+
+Phase 2 Chat Source Adapter는 Candidate 생성 Worker에 Agent Queue 전송을 추가하지 않고
+Candidate DynamoDB `NEW_IMAGE` Stream의 새 `CANDIDATE#* / META` INSERT만 읽는다. Adapter
+event source와 실행 플래그를 모두 비활성으로 배포하고, Phase 3 cutover 이전 Candidate는
+`NOT_BEFORE_EPOCH`으로 제외한다. Adapter는 Stream read·Agent Trigger SQS send·전용 DLQ·
+로그 외 권한을 갖지 않는다. Stream 재전달이 중복 envelope를 만들 수는 있지만 동일
+Candidate에서 항상 같은 `trigger_id`와 `idempotency_key`를 만들고 Phase 1B Worker
+ledger가 중복 Agent 실행을 차단한다.
+
+2026-08-23 Phase 2를 순차 적용했다. Candidate table Stream은 `NEW_IMAGE`이고 Adapter
+event source·실행 플래그는 모두 비활성이다. 적용 후 두 Terraform stack은 `No changes`,
+Agent Trigger Queue·Adapter DLQ·Adapter 실행 로그는 모두 0으로 확인했다. Phase 3 전까지
+Agent/Dify 호출은 열지 않는다.
+
+구현 원본:
+
+- 기계 판독 Schema: `docs/contracts/agent-trigger-v1.schema.json`
+- 필드와 예시: `docs/contracts.md` 5.8
+- 단계·실패 격리·완료 게이트: `docs/agent-entrypoint.md`
+
+---
+
+## D-051. Karpenter·KEDA 를 넣는다 — 안전망이지 주력이 아니다
+
+D-037 이 "스케일링 부품은 필요해질 때 넣는다" 로 미뤄 둔 것들이다. 그 결정을
+뒤집는 것이 아니라 **거기 걸어 둔 조건이 충족됐다.** 부하 테스트로 파드당 한계를
+재고 나서야(M-009 · M-010) 임계값을 추측이 아닌 값으로 걸 수 있게 됐다.
+
+### 둘 다 2차 보정이다
+
+| 계층 | 무엇 | 반응 시간 |
+|---|---|---|
+| 1차 (주력) | 큐시트 기반 사전 확장 (D-041) | 방송 시작 전 |
+| 2차 (보정) | HPA · KEDA | 43~63초 |
+| 4차 (최후) | Karpenter | 노드 Ready 39초 + ECR pull (M-008) |
+
+방송 시작 스파이크는 30초 안에 끝난다. **어느 쪽도 첫 스파이크를 못 받는다.**
+이 둘은 사전 확장이 빗나갔을 때, 예상보다 크거나 오래 지속되는 부하를 받는다.
+이 문장이 없으면 다음 사람이 Karpenter 를 스파이크 해결책으로 믿고 사전 확장을
+뺀다.
+
+### NodePool 을 넷으로 좁힌 이유
+
+후보는 `c6i`·`m6i` × `large`·`xlarge`, 온디맨드, amd64 다. 뺀 것마다 이유가 있다.
+
+| 뺀 것 | 왜 |
+|---|---|
+| `t3` 계열 | baseline 이 노드당 400m 인데 Datadog 에이전트가 294~397m 를 쓴다. 부하가 없어도 스로틀된다 (M-008) |
+| Spot | 회수당하면 WebSocket 이 끊긴다. 수천 명이 동시에 재연결하면 그것이 곧 장애다 (`architecture.md` 9.3) |
+| arm64 | ECR 이미지가 amd64 단일 아키다 |
+
+넷 중 **무엇을 띄울지는 Karpenter 가 정한다.** `weight` 도 우선순위도 걸지
+않았다 — Pending 파드를 bin-pack 해서 들어가는 것 중 제일 싼 것을 고른다. 앱
+파드 requests 가 두 자릿수 millicore 라 보통은 `c6i.large` 가, 메모리가 먼저
+차면 `m6i.large` 가 뜬다. 실측 근거는 M-008 에 있다.
+
+우선순위를 고정하지 않은 것이 의도다. 고정하면 메모리 바운드일 때 오히려 비싼
+쪽에 갇힌다.
+
+### 축소 정책은 WebSocket 때문에 느슨하다
+
+| 설정 | 값 | 왜 기본값이 아닌가 |
+|---|---|---|
+| `expireAfter` | `Never` | 기본 720h 는 30일마다 노드를 교체한다. 그 교체가 방송 중에 걸리면 파드가 재배치되고 연결이 끊긴다. AMI 갱신은 관리형 노드그룹 쪽에서 사람이 창을 잡고 한다 |
+| `consolidationPolicy` | `WhenEmpty` | `WhenEmptyOrUnderutilized` 는 방송 중에 노드를 합친다. 노는 노드는 돈 낭비지 장애가 아니다 |
+| `consolidateAfter` | `2h` | 방송 한 편보다 길게 줘서 중간에 잠깐 빈 것으로 반납하지 않게 한다. 다시 사면 노드 준비가 또 든다 |
+| `limits.cpu` | `8` | 비용 상한. 없으면 Pending 파드가 생기는 만큼 인스턴스가 계속 늘어난다. 개인 계정이라 반드시 건다 |
+
+D-041 이 축소를 "cooldown 동안 정상 범위를 확인한 뒤" 로 정했는데 Karpenter 는
+그 판단을 못 한다. 그래서 판단 대신 **시간**을 준 것이다.
+
+### IAM 을 태그 조건으로 좁혔다
+
+컨트롤러 IRSA 역할은 LBC 와 같은 패턴이다. 다만 노드 종료 권한에 태그 조건을
+걸어 **자기가 만든 노드만** 건드리게 했다. 없으면 관리형 노드그룹 노드까지
+종료할 수 있다. `PassRole` 도 노드 역할 하나로 못 박았다.
+
+노드 역할은 새로 만들지 않고 기존 `o2-eks-node-role` 을 재사용한다. 이미 EKS
+접근 항목에 `EC2_LINUX` 로 등록돼 있어 새 노드가 바로 조인한다.
+
+중단 알림 큐(SQS + EventBridge)는 없어도 돌지만 스팟 회수 통보(2분)를 못 받는다.
+지금 NodePool 이 온디맨드 전용이라 당장 쓰이지 않는데도 같이 만든 것은 SQS 비용이
+사실상 0 이고, 나중에 스팟을 열 때 이것부터 빠뜨리면 조용히 깨지기 때문이다.
+
+### KEDA 는 설치만 한다
+
+`ScaledObject` 를 넣으려면 두 가지가 먼저 있어야 한다.
+
+1. **파드당 안전 처리량 실측.** D-041 의 계산식에 들어가는 `safe_capacity_per_pod`
+   를 추정값으로 채우지 않는다. 주문 경로는 아직 부하 테스트를 안 했다 —
+   measurements.md 에 `api`(M-009)와 `chat-gateway`(M-010)만 있다
+2. **매니페스트에서 `replicas` 제거.** KEDA 가 scale 을 소유하는데 `replicas` 가
+   남아 있으면 KEDA 가 늘리고 Argo CD selfHeal 이 되돌리기를 무한 반복한다.
+   **에러가 안 나서 알아채기 늦다** (D-004)
+
+그리고 `ScaledObject` 는 애플리케이션 배포물이라 자리는 Argo CD 가 보는
+O2-live-deploy 쪽이다. 이 저장소는 컨트롤러 설치까지만 한다.
+
+### 넣고 나서 실제로 노드를 띄워 확인했다
+
+Helm 이 뜨고 `EC2NodeClass` 가 `READY=True` 인 것만으로는 **세 가지가 검증되지
+않는다.** 전부 노드를 실제로 띄울 때만 드러난다.
+
+- `RunInstances` 권한과 `PassRole` 태그 조건이 맞는지
+- 새 노드가 클러스터에 join 하는지 (EKS 접근 항목)
+- 종료 권한의 태그 조건이 **자기 노드는 지울 수 있을 만큼** 넓은지 — 좁게 걸었으니
+  반대로 못 지울 수 있다
+
+2026-08-23 에 `requests.cpu = 2` 짜리 `pause` 파드로 셋 다 확인했다. 소요 비용
+$0.014. 시간 값은 M-008 에 있다.
+
+**설치와 검증을 같은 작업으로 묶는다.** 스파이크가 처음 오는 날 시도하면 그때가
+장애다.

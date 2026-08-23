@@ -8,6 +8,8 @@
 > | WebSocket / 채팅 | 1 · 3 |
 > | 캐시·Valkey 키 | 4 |
 > | 이벤트 발행 | 5 |
+> | 채팅 분석 신호·Candidate | 3.8 · 5.6 · 5.7 |
+> | AI Agent 공통 진입점 | 5.8 · `contracts/agent-trigger-v1.schema.json` |
 
 애플리케이션을 만들기 전에 **서비스 사이에 오가는 것의 모양**을 먼저 고정한다.
 여기 적힌 것은 나중에 바꾸면 여러 서비스를 동시에 고쳐야 하는 항목들이다.
@@ -27,7 +29,9 @@
 | WebSocket 프레임 | 예 |
 | 캐시 키 이름과 타입 | 예 |
 | 발행하는 비즈니스 이벤트 | 예 (발행까지) |
-| 이벤트 수집·저장·분석 경로 | **아니오** — 백데이터 파트 소관 (D-015) |
+| 기존 비즈니스 이벤트의 후단 수집·저장·분석 경로 | **아니오** — 백데이터 파트 소관 (D-015) |
+| 채팅 신호 입력·Incident Candidate 생성 경로 | **예** — 이 문서 3.8·5.6·5.7 (D-047) |
+| Datadog·Chat Candidate → Agent 공통 진입 계약 | **예** — 이 문서 5.8 (D-050) |
 | 결제 게이트웨이 연동 | **아니오** — 범위 밖 |
 
 ---
@@ -329,11 +333,33 @@ Ingress의 `idle_timeout.timeout_seconds`도 함께 올린다. 하트비트 주�
 구조의 전부다.
 
 파드 간 트래픽은 인입량 × 파드 수라 Peak에서도 초당 수백 건이다.
-Kafka나 Streams가 낄 자리가 없다(`architecture.md` D-15 · 6.3).
+실시간 팬아웃에는 Kafka나 Streams가 낄 자리가 없다(`architecture.md` D-15 · 6.3).
+장애 분석은 이 Pub/Sub을 구독하지 않고 인입 지점에서 전용 SQS로 별도 분기한다(3.8).
 
 Pub/Sub은 at-most-once이므로 채팅 유실 가능성이 있다. **채팅은 유실을 감수한다.**
 반면 `product.update` / `stock.update`는 유실되면 화면이 낡은 채로 남으므로,
 로컬 캐시 TTL이 안전망을 겸한다(설계 문서 3.7).
+
+### 3.8 채팅 분석 분기
+
+형식·길이·Rate Limit을 통과한 채팅은 인입 지점에서 두 경로로 분기한다.
+
+```text
+accepted chat
+  ├─ Valkey Pub/Sub       실시간 팬아웃
+  └─ Chat Signal SQS      장애 신호 분석
+```
+
+- 분석 이벤트는 Valkey 구독자나 WebSocket 브로드캐스트 루프에서 만들지 않는다.
+- SQS 전송 실패는 채팅 수락과 Valkey 팬아웃을 실패시키지 않는 `fail-open`이다.
+- Chat Gateway는 분류·집계·Datadog·Agent 호출을 하지 않는다.
+- SQS 입력은 5.6을 따른다.
+- `CHAT_SIGNAL_MODE=off`는 AWS client를 호출하지 않는다. 알 수 없는 값도 `off`로 닫는다.
+- `CHAT_SIGNAL_MODE=shadow`만 전송하며 Valkey 팬아웃은 SQS Promise를 기다리지 않는다.
+- 백그라운드 요청은 `CHAT_SIGNAL_SEND_TIMEOUT_MS` 안에 중단한다. 초기 500ms는 실측
+  SLO가 아니라 요청 누적 방지 가드다.
+- 전송 실패 관측에는 오류 코드와 소요시간만 허용하며 원문과 예외 메시지는 금지한다.
+- 상세 처리 규칙은 [`chat-incident-candidate.md`](chat-incident-candidate.md)가 원본이다.
 
 ---
 
@@ -492,6 +518,150 @@ HTTP 홉이 추가된다. 이벤트 하나 때문에 할 일이 아니다.
 
 이것만 확인되면 발행 쪽은 막히지 않는다. 나머지 계약(발행 지점, 필드, 봉투)은
 5.3·5.4에서 전부 정해졌다.
+
+### 5.6 채팅 분석 입력 (`chat.signal.v1`)
+
+`chat.signal.v1`은 Kinesis의 `chat.send` 관측 이벤트와 다른 내부 SQS 계약이다.
+`chat.send`에는 원문이 없고, `chat.signal.v1`의 원문은 규칙 분류 후 폐기한다.
+
+```json
+{
+  "schema_version": "1.0",
+  "event_id": "01K...",
+  "event_ts": "2026-08-22T00:00:00.000Z",
+  "broadcast_id": "bc_1042",
+  "user_key": "u_0123456789abcdef",
+  "message": "상품 정보가 너무 느리게 떠요",
+  "trace_id": null
+}
+```
+
+| 필드 | 타입 | 계약 |
+|---|---|---|
+| `schema_version` | string | 초기값 `1.0` |
+| `event_id` | string | Chat Gateway가 생성한 ULID, SQS 멱등 키 |
+| `event_ts` | RFC 3339 string | UTC 이벤트 시간, receive time으로 대체 금지 |
+| `broadcast_id` | string | 1.2 형식, 집계 범위 |
+| `user_key` | string | 서버 측 HMAC 가명값, 원본 토큰 금지 |
+| `message` | string | 최대 200자, SQS 처리 외 저장 금지 |
+| `trace_id` | string 또는 null | 전송 추적용, 내용 식별자로 사용 금지 |
+
+추가 필드는 소비자가 무시할 수 있지만 위 필드의 이름·타입은 `schema_version`을 올리지
+않고 바꾸지 않는다.
+
+보존 계약:
+
+- 전용 SQS Standard Queue와 서버 측 암호화를 사용한다.
+- Queue message retention은 60초다.
+- 처리 성공 시 즉시 삭제한다.
+- 원문을 로그·Datadog·DynamoDB·Candidate·DLQ에 쓰지 않는다.
+- 메시지 해시도 신규 분석 상태와 Candidate에 저장하지 않는다.
+
+### 5.7 Incident Candidate (`chat.incident_candidate.v1`)
+
+```json
+{
+  "schema_version": "1.0",
+  "candidate_id": "cand_01K...",
+  "candidate_type": "USER_PERCEIVED_LATENCY",
+  "broadcast_id": "bc_1042",
+  "suspected_surface": "READ_PATH",
+  "confidence": "MEDIUM",
+  "window_start": "2026-08-22T00:00:00.000Z",
+  "window_end": "2026-08-22T00:00:15.000Z",
+  "matched_messages": 4,
+  "unique_users": 4,
+  "strong_signal_count": 3,
+  "weak_signal_count": 1,
+  "matched_rule_ids": ["read_loading_slow", "generic_slow"],
+  "metric_status": "NOT_CHECKED",
+  "root_cause": "UNDETERMINED",
+  "requires_metric_corroboration": true,
+  "raw_chat_included": false,
+  "agent_handoff_status": "NOT_CONFIGURED",
+  "created_at": "2026-08-22T00:00:16.000Z"
+}
+```
+
+허용값:
+
+| 필드 | 허용값 |
+|---|---|
+| `candidate_type` | PoC에서는 `USER_PERCEIVED_LATENCY`만 |
+| `suspected_surface` | `READ_PATH`, `PLAYBACK`, `CHAT`, `UNKNOWN` |
+| `confidence` | `MEDIUM`, `LOW` |
+| `metric_status` | 이번 범위에서는 `NOT_CHECKED`만 |
+| `root_cause` | 이번 범위에서는 `UNDETERMINED`만 |
+| `agent_handoff_status` | 이번 범위에서는 `NOT_CONFIGURED`만 |
+| `raw_chat_included` | 반드시 `false` |
+
+Candidate에는 원문, 원문 일부, 원문 해시, 자유 형식 원인 추측을 추가하지 않는다.
+처리 의미와 임계치는 [`chat-incident-candidate.md`](chat-incident-candidate.md)가 원본이다.
+
+### 5.8 AI Agent 공통 진입 (`agent.trigger.v1`)
+
+Datadog과 Chat Candidate의 source schema는 서로 달라도 된다. Source Adapter 이후
+Agent Trigger Queue부터는 이 공통 envelope를 사용한다. 기계 판독 원본은
+[`agent-trigger-v1.schema.json`](contracts/agent-trigger-v1.schema.json)이다.
+
+Chat Candidate 예시:
+
+```json
+{
+  "schema_version": "1.0",
+  "trigger_id": "trg_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+  "source": "CHAT_INCIDENT_CANDIDATE",
+  "source_schema": "chat.incident_candidate.v1",
+  "trigger_type": "USER_SYMPTOM_CLUSTER",
+  "idempotency_key": "chat:cand_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "occurred_at": "2026-08-23T00:00:16.000Z",
+  "trace_id": null,
+  "evidence": {
+    "candidate_id": "cand_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "candidate_type": "USER_PERCEIVED_LATENCY",
+    "broadcast_id": "bc_1042",
+    "suspected_surface": "READ_PATH",
+    "confidence": "MEDIUM",
+    "window_start": "2026-08-23T00:00:00.000Z",
+    "window_end": "2026-08-23T00:00:15.000Z",
+    "matched_messages": 4,
+    "unique_users": 4,
+    "strong_signal_count": 3,
+    "weak_signal_count": 1,
+    "matched_rule_ids": ["generic_slow", "read_loading_slow"],
+    "metric_status": "NOT_CHECKED",
+    "root_cause": "UNDETERMINED",
+    "requires_metric_corroboration": true
+  },
+  "guardrails": {
+    "analysis_mode": "READ_ONLY",
+    "automatic_remediation_allowed": false,
+    "must_preserve_uncertainty": true,
+    "raw_chat_included": false
+  }
+}
+```
+
+공통 필드:
+
+| 필드 | 계약 |
+|---|---|
+| `trigger_id` | Adapter가 생성하는 `trg_` + ULID, 전달 추적용 |
+| `source` | `DATADOG_MONITOR` 또는 `CHAT_INCIDENT_CANDIDATE` |
+| `source_schema` | source 원본 계약. `source`와 허용 조합을 Schema가 강제 |
+| `trigger_type` | `MONITOR_ALERT` 또는 `USER_SYMPTOM_CLUSTER` |
+| `idempotency_key` | Chat은 `chat:<candidate_id>`, Datadog은 `datadog:<cycle_key>:<transition>` |
+| `occurred_at` | source event time. Adapter 처리 시각으로 대체 금지 |
+| `trace_id` | 기존 trace가 없으면 `null`; 멱등 키로 사용 금지 |
+| `evidence` | source별 구조. Chat은 5.7 Candidate의 비원문 필드만 허용 |
+| `guardrails` | 현재 `READ_ONLY`, 자동 조치 금지, 불확실성 보존, Chat 원문 없음 |
+
+초기 Chat 호출은 새 Candidate INSERT 한 번만 허용한다. 쿨다운 중 Candidate update는
+Agent를 다시 호출하지 않는다. Agent Worker는 envelope 전체를 직렬화해 Dify의
+`custom_alert_json` 하나로 전달하며 Chat 데이터를 Datadog 필드로 변환하지 않는다.
+
+상세 처리 흐름, 실패 격리, Phase gate는
+[`agent-entrypoint.md`](agent-entrypoint.md)가 원본이다.
 
 ---
 

@@ -17,6 +17,9 @@ paths = [
 regexes = [
   # 플레이스홀더. 실제 값이 아니라는 것이 문자열 자체로 드러나는 형태만 허용한다.
   '''(?i)(example|placeholder|dummy|changeme|<[a-z_-]+>|xxx+)''',
+  # chat.signal 테스트에서 계약 형식(u_ + 16 hex)을 검증하는 고정 fixture다.
+  # 실제 HMAC 출력이나 자격증명이 아니며 이 정확한 값 하나만 예외로 둔다.
+  '''u_0123456789abcdef''',
   # AWS 계정번호는 ARN에 항상 들어가며 자격증명이 아니다.
   '''066107819912''',
 ]

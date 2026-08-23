@@ -192,14 +192,24 @@ variable "app_namespace" {
 
 variable "app_service_accounts" {
   description = <<-EOT
-    Pod Identity 를 걸 ServiceAccount 목록. 서비스 이름과 같게 둔다.
+    Pod Identity 를 걸 고정 ServiceAccount 목록. 서비스 이름과 같게 둔다.
 
     매니페스트의 serviceAccountName 이 여기 없는 이름을 가리키면 파드는 뜨지만
     AWS 자격증명이 없어 SQS 호출에서만 실패한다 — 기동은 성공하고 런타임에
-    깨지므로 알아채기 늦다. 서비스를 추가할 때 여기도 함께 늘릴 것.
+    깨지므로 알아채기 늦다. 역할 매핑은 app_data_access.tf 에서 서비스별로
+    명시하므로, 서비스를 추가할 때 변수만 늘리면 안 되고 역할·정책·매핑을
+    함께 추가해야 한다.
   EOT
   type        = list(string)
   default     = ["api", "order-worker", "chat-gateway"]
+
+  validation {
+    condition = (
+      length(var.app_service_accounts) == 3 &&
+      toset(var.app_service_accounts) == toset(["api", "order-worker", "chat-gateway"])
+    )
+    error_message = "app_service_accounts는 api, order-worker, chat-gateway 세 항목과 정확히 일치해야 한다. 서비스 추가 시 역할·정책·매핑도 함께 변경해야 한다."
+  }
 }
 
 variable "enable_app_events" {
@@ -231,6 +241,36 @@ variable "enable_chat_events" {
   EOT
   type        = bool
   default     = false
+}
+
+variable "chat_signal_mode" {
+  description = <<-EOT
+    Chat Gateway의 Incident Candidate SQS 분기 모드. 초기값은 off다.
+
+    shadow는 accepted chat 원문을 60초 보존 SQS에 전송하기 시작한다. Phase 3
+    처리기와 개인정보 검증 전에는 shadow로 바꾸지 않는다.
+  EOT
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "shadow"], var.chat_signal_mode)
+    error_message = "chat_signal_mode는 off 또는 shadow여야 한다."
+  }
+}
+
+variable "chat_signal_send_timeout_ms" {
+  description = <<-EOT
+    SQS 백그라운드 요청 누적을 막는 초기 timeout. 실측 SLO가 아니며 Shadow
+    Mode에서 성공률과 지연을 측정한 뒤 조정한다.
+  EOT
+  type        = number
+  default     = 500
+
+  validation {
+    condition     = var.chat_signal_send_timeout_ms >= 1 && var.chat_signal_send_timeout_ms <= 5000
+    error_message = "chat_signal_send_timeout_ms는 1-5000 범위여야 한다."
+  }
 }
 
 variable "events_stream_business" {
@@ -311,4 +351,78 @@ variable "enable_external_secrets" {
   EOT
   type        = bool
   default     = true
+}
+
+variable "enable_karpenter" {
+  description = <<-EOT
+    Karpenter 를 설치한다. `02-eks` 의 `enable_karpenter` 가 먼저 true 여야 한다 —
+    IAM 역할과 중단 알림 큐를 그쪽이 만든다.
+
+    끌 때는 여기를 먼저 false 로 하고 apply 한 뒤 02-eks 를 끈다. 순서를 바꾸면
+    컨트롤러가 권한을 잃은 채 남아 자기가 만든 노드를 정리하지 못한다.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "karpenter_chart_version" {
+  description = <<-EOT
+    Karpenter Helm 차트 버전. 1.x 는 CRD 그룹이 karpenter.sh/v1 이다.
+
+    **쿠버네티스 버전 상한이 컨트롤러 코드에 박혀 있다.** 차트 메타데이터의
+    kubeVersion 이 아니라서 helm 이 미리 걸러 주지 않는다. 맞지 않으면 설치는
+    성공하고 파드도 뜨는데 로그에만 이렇게 남는다.
+
+        karpenter is not compatible with kubernetes version (version=1.35)
+
+    1.8.1 을 1.35 클러스터에 올렸다가 이것을 만났다. 클러스터를 올릴 때는
+    Karpenter 도 같이 올려야 한다.
+  EOT
+  type        = string
+  default     = "1.10.0"
+}
+
+variable "karpenter_cpu_limit" {
+  description = <<-EOT
+    Karpenter 가 추가로 살 수 있는 총 vCPU. **비용 상한이다.**
+
+    이게 없으면 Pending 파드가 생기는 만큼 인스턴스가 계속 늘어난다. 개인
+    계정이므로 반드시 건다. 관리형 노드그룹 2대(c6i.large, 4 vCPU)와는 별개다.
+
+    기본 8 은 c6i.large 4대 또는 xlarge 2대에 해당한다. 시간당 약 $0.38.
+  EOT
+  type        = string
+  default     = "8"
+}
+
+variable "karpenter_memory_limit" {
+  description = "Karpenter 가 추가로 살 수 있는 총 메모리. cpu_limit 과 짝이다."
+  type        = string
+  default     = "32Gi"
+}
+
+variable "enable_keda" {
+  description = <<-EOT
+    KEDA 를 설치한다. 파드 셋(operator, metrics-apiserver, admission-webhooks)이 뜬다.
+
+    **2차 보정이지 주력이 아니다.** HPA 반응은 43~63초(architecture.md 9.1)인데
+    방송 시작 스파이크는 30초 안에 끝난다. 주력은 큐시트 기반 사전 확장이다(D-041).
+
+    설치만으로는 아무것도 스케일하지 않는다. ScaledObject 를 만들어야 동작하고,
+    그때 대상 Deployment 의 `replicas` 를 매니페스트에서 지워야 한다.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "keda_chart_version" {
+  description = "KEDA Helm 차트 버전."
+  type        = string
+  default     = "2.17.2"
+}
+
+variable "keda_namespace" {
+  description = "KEDA 네임스페이스. 차트 관례대로 전용 네임스페이스를 쓴다."
+  type        = string
+  default     = "keda"
 }

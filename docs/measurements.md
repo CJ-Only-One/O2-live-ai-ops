@@ -20,7 +20,12 @@
 | M-005 | Bedrock 모델 가용성 | 리전·계정 변경 · 모델 실패 시 |
 | M-006 | 외부 제약값 (잰 게 아니라 확인한 것) | 공급자 정책 변경 |
 | M-007 | 아직 안 잰 것 | — |
-| M-008 | EKS 노드 자원 사용률 (무부하) | 노드 등급·대수 변경 · 파드 추가 · 부하 시 |
+| M-008 | EKS 노드 자원 사용률 · 인스턴스 타입별 실측 | 노드 등급·대수 변경 · 파드 추가 |
+| M-009 | 읽기 경로 포화점 (api 파드) | replicas·워커 수 변경 · 인스턴스 변경 · 캐시 TTL 변경 |
+| M-010 | 채팅 팬아웃 한계 (chat-gateway) | 틱 주기·`MAX_PER_TICK` 변경 · 직렬화 방식 변경 · replicas 변경 |
+| M-011 | Chat Signal 외부 WebSocket E2E | Worker timeout·동시성·batch·Queue visibility 변경 |
+| M-012 | Agent 공통 진입점 도입 전 Dify runtime baseline | 게시 workflow·모델·Worker·DLQ 정책 변경 |
+| M-013 | 전용 Agent entry contract workflow UI 검증 | DSL·입력 계약·Code 검증 로직 변경 |
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
 그 절의 표에 **행을 추가**한다. 조건이 다르면 값도 다르므로 조건을 꼭 적는다.
@@ -39,16 +44,26 @@ Dify 가 스스로 보고하는 `data.elapsed_time`. 네트워크와 Lambda 오�
 | 2026-08-19 | LLM 1노드 · Nova Lite V1 · temp 0.7 · 변수 5개 | **2.477s** | 763 | 3 |
 | 2026-08-19 | 같은 구성 · temp 0.2 · 변수 7개 | **2.529s** | — | 3 |
 | 2026-08-19 | 같은 구성 (재측정) | **2.554s** | — | 3 |
+| 2026-08-22 | Hot Path·Runbook Lookup API 추가 후 · app-run(실제 트리거) · 승인 없음 | **39.8s*** | — | — |
 
 세 번 모두 2.5초 근처다. 변수를 둘 늘리고 temperature 를 낮춘 것은
 소요 시간에 영향이 없었다.
 
+\* `data.elapsed_time` 이 아니라 Dify Postgres `workflow_runs.finished_at -
+created_at` 값이다 (EC2 안에서 직접 조회). 같은 컬럼이 아니므로 위 세 줄과
+1:1로 비교하지 말 것.
+
 **해석** — 이 시간의 대부분은 Bedrock 응답 대기다. CPU 가 아니라 I/O 대기라서
 호스트를 키워도 이 값은 줄지 않는다 (M-004 참조).
 
-**다시 재야 할 때** — 노드를 추가할 때, 모델을 바꿀 때, 그리고 **Datadog 조회(pull)를
-붙일 때**. pull 은 HTTP 호출을 두세 번 더 만들므로 10~30초대가 될 것으로 본다.
-그 값이 나오면 M-002 · M-003 도 같이 무효가 된다.
+**Datadog 조회(pull) 붙인 뒤 실측** — 위에서 "10~30초대가 될 것" 이라 예상했던
+것보다 크게 늘었다. Hot Path·Runbook Lookup API 가 노드마다 추가 HTTP 호출을
+만들면서 39.8s 까지 나왔고, 다른 실행에서는 58s 까지 관측됐다 — 이 58s 값이
+Worker Lambda의 기존 55초 클라이언트 타임아웃을 근소하게 넘겨 타임아웃 오류를
+냈다 (`docs/troubleshooting.md` T-019).
+
+**다시 재야 할 때** — 노드를 추가할 때, 모델을 바꿀 때. 그 값이 나오면
+M-002 · M-003 도 같이 무효가 된다.
 
 ---
 
@@ -71,6 +86,34 @@ CloudWatch `REPORT` 줄의 `Duration`.
 |---|---|---|---|---|---|
 | 2026-08-19 | Ingress | VPC 밖 | **623ms** | 366ms | 93MB |
 | 2026-08-19 | Worker | VPC 안 | 5,109ms | 303ms | 90MB |
+| 2026-08-21 | Worker (이력, 검색 실패) | VPC 안 | 4,471ms | 240ms | **93MB** |
+| 2026-08-21 | Worker (이력, 검색 성공) | VPC 안 | 6,335ms | 305ms | **93MB** |
+
+### 이력 기능이 얹은 비용 (2026-08-21)
+
+같은 콜드 실행 안에서 `print` 시각 차로 구간을 갈랐다.
+
+| 구간 | 검색 실패 회차 | 검색 성공 회차 |
+|---|---|---|
+| 임베딩 + 벡터 검색 | 1,317ms | **1,379ms** |
+| Dify 왕복 | 518ms | 2,266ms |
+| S3 + S3 Vectors 저장 | 513ms | 537ms |
+
+검색이 실제로 3건을 돌려준 회차(`matched 3 of 3`)와 권한 오류로 즉시 끊긴
+회차의 차이가 **62ms 뿐이다.** 시간의 대부분은 S3 Vectors 질의가 아니라
+**Bedrock 임베딩 왕복**이라는 뜻이다. 검색을 최적화할 일이 생기면 벡터
+질의가 아니라 임베딩을 먼저 본다.
+
+Dify 왕복 편차(518ms vs 2,266ms)가 구간 중 가장 크다. 전체 Duration 비교가
+의미 없는 이유이고, 두 회차의 4,471ms / 6,335ms 차이는 대부분 여기서 나왔다.
+
+Duration 이 5,109ms 에서 4,471ms 로 **줄어든 것은 이력 덕이 아니다.**
+이 회차의 Dify 왕복이 0.166s 로 유난히 짧았다(테스트 알림). 두 값은
+Dify 쪽 편차가 커서 직접 비교하면 안 된다.
+
+**메모리는 90MB → 93MB, +3MB 다.** `bedrock-runtime`·`s3`·`s3vectors` 클라이언트
+셋을 더 만든 대가가 이만큼이다. 아래 "의존성을 추가하면 다시 봐야 한다" 에
+대한 답이고, 128MB 할당을 올릴 이유는 아직 없다.
 
 **해석**
 
@@ -179,6 +222,7 @@ AWS 가 프로필을 수시로 추가·정리하므로 이 표는 빨리 낡는�
 | 비동기 호출 재시도 최대 **6시간** | AWS | 대기열이 이만큼 버텨준다 |
 | SSM 세션 유휴 상한 **60분** / 절대 **6시간** | AWS | 터널이 끊기는 주기 |
 | t3.large CPU 크레딧 상한 **864** | AWS | M-004 의 "만점" 기준 |
+| Nova Lite 단가 (`ap-northeast-2`) 입력 **$0.0000355~0.000071 / 1K**, 출력 **$0.000142~0.000284 / 1K** | AWS Pricing API, 2026-08-21 | 현재 워크플로가 763토큰(M-001)이라 알림 하나에 0.005센트다. 8월 Bedrock 청구가 **$0.07** 인 이유. **모델을 Claude 로 바꾸면 자릿수가 뛴다** — 그때는 위의 "재시도 6배"와 가짜 알람 볼륨이 실제 비용이 된다 |
 
 **다시 확인해야 할 때** — 공급자가 정책을 바꿀 때. 특히 Datadog 재시도 조건은
 이 설계의 전제라, 바뀌면 구조를 다시 봐야 한다.
@@ -196,7 +240,7 @@ AWS 가 프로필을 수시로 추가·정리하므로 이 표는 빨리 낡는�
 | Worker 웜 실행 시간 | 지금 값(5,109ms)은 콜드 실행이라 정상 상태를 대표하지 않는다 | 연속 호출 후 REPORT 확인 |
 | DLQ 도달 실제 소요 | 설계상 약 3분이지만 확인 안 했다 | Dify 를 일부러 막고 이벤트 하나를 흘린다 |
 | 알람 발화까지 실제 소요 | "1분 안에 운다" 가 아직 주장이다 | 위와 같은 실험에서 SNS 수신 시각을 본다 |
-| **`chat-gateway` 파드당 WebSocket 연결 상한** | 부하 테스트 축소값 4,000(`architecture.md` 12.1)이 파드 몇 개에 나뉘어야 하는지의 근거가 된다. 지금은 근거가 없고, M-008 기준 파드를 늘릴 자리도 1칸뿐이다 | 연결 수를 단계적으로 올리며 `kubectl top pods` 로 파드 메모리를 본다. M-008 의 무부하값(42·45 MiB)이 절편이고 기울기가 연결당 비용이다 |
+| ~~`chat-gateway` 파드당 WebSocket 연결 상한~~ | **해결됨 (M-010)** — 연결당 약 11KB 이고, 2파드가 4,000 연결을 메모리 16% 로 받는다. 다만 상한은 연결 수가 아니라 **전달 아이템/s** 였다 | — |
 | ~~`api`·`order-worker` 가 무부하에서 1 vCPU 를 쓰는 이유~~ | **해결됨** — 이벤트 SDK 의 유휴 스핀이었다 (T-013, M-008). 수정 후 4m·1m | — |
 | CPU 크레딧 회복 실소요 | 빚 576 을 시간당 약 20 씩 갚는다는 계산으로 "하루쯤" 이라고 적어 뒀지만 재지 않았다. 부하 테스트를 언제 시작할 수 있는지가 여기서 정해진다 | `CPUCreditBalance` 와 `CPUSurplusCreditBalance` 를 하루 간격으로 조회한다 (조회 명령은 T-013) |
 
@@ -328,5 +372,401 @@ CPU 가 풀렸다고 부하 테스트 준비가 끝난 것은 아니다.
 선택지지만, **파드당 연결 상한을 모르는 채로 올리는 것은 근거 없는 증설이다.**
 프로모션 축소값 2,000 으로 먼저 재서 연결당 비용을 잡는 편이 순서에 맞다.
 
+### 인스턴스를 바꾸고 다시 잼 (2026-08-21)
+
+위 제안(`t3.medium` 승격)은 **틀렸다.** t3 는 크기를 올려도 baseline 이 vCPU 수에만
+걸려 있어(t3.medium 도 2 vCPU × 20% = 400m) CPU 여유가 그대로다. 메모리와 파드
+슬롯만 늘어난다. 실제로는 비버스터블로 가야 했다.
+
+| 날짜 | 항목 | t3.small | m6i.large | c6i.large |
+|---|---|---|---|---|
+| 2026-08-21 | 표기 메모리 | 2 GiB | 8 GiB | 4 GiB |
+| 2026-08-21 | capacity 메모리 | 1,908Mi | 7,778Mi | 3,814Mi |
+| 2026-08-21 | **allocatable 메모리** | 1,432Mi | 7,104Mi | **3,140Mi** |
+| 2026-08-21 | 오버헤드 차이 | 476Mi | 674Mi | 674Mi |
+| 2026-08-21 | **max_pods** | 11 | 29 | **29** |
+| 2026-08-21 | allocatable CPU | 1,930m (지속은 400m) | 1,930m | **1,930m** |
+| 2026-08-21 | 서울 온디맨드 2대 월 | $56(3대) | $170 | **$138** |
+
+**오버헤드 공식이 세 타입에서 모두 맞았다.** 이제 재보지 않고 계산으로 고른다.
+
+```
+오버헤드 = 255 + (11 × max_pods) + 100(eviction)
+t3.small  = 255 + 11×11 + 100 = 476   ← 관측값과 일치
+m6i.large = 255 + 11×29 + 100 = 674   ← 관측값과 일치
+c6i.large = 255 + 11×29 + 100 = 674   ← 관측값과 일치
+```
+
+`max_pods` 는 메모리가 아니라 ENI 구성이 정한다(`ENI 수 × (ENI당 IPv4 − 1) + 2`).
+m6i.large 와 c6i.large 는 둘 다 ENI 3 × IP 10 이라 29 로 같다.
+
+**유휴 사용량** (DaemonSet 포함, 부하 없음)
+
+| 날짜 | 타입 | 노드 | CPU | 메모리 |
+|---|---|---|---|---|
+| 2026-08-21 | m6i.large | 파드가 몰린 쪽 | 367~535m | 약 1,800Mi |
+| 2026-08-21 | m6i.large | 나머지 | 35~66m | 약 690Mi |
+| 2026-08-21 | c6i.large | 재분배 후 노드1 | 252m | 1,694Mi (53%) |
+| 2026-08-21 | c6i.large | 재분배 후 노드2 | 434m | 1,055Mi (33%) |
+
+CPU 의 대부분은 Datadog DaemonSet 이다 — 실측 **노드당 294~397m**. 40분간 5회
+측정에 감소 추세가 없어 초기화 값이 아니라 정상 상태다. **t3.small 의 baseline 이
+400m 이라 에이전트만으로 지속 한도를 거의 다 쓰던 것**이 t3 계열을 버린 이유다.
+
+### 노드그룹 교체 직후에는 파드가 한쪽으로 쏠린다
+
+교체하면 전 파드가 한꺼번에 Pending 이 됐다가 배치되는데, 그때 먼저 Ready 된
+노드로 쏠리고 **쿠버네티스는 나중에 뜬 노드로 재분배하지 않는다.**
+
+2026-08-21 c6i.large 교체 직후 노드1 에 24개 · 노드2 에 4개(DaemonSet 뿐)가 붙었고
+**Datadog DaemonSet 이 Pending 으로 남았다.**
+
+```
+노드1 allocatable 3,140Mi − 사용 2,956Mi = 184Mi 여유
+Datadog 요구                              256Mi   → 못 뜬다
+0/2 nodes are available: 1 Insufficient memory, 1 node(s) didn't satisfy NodeAffinity
+```
+
+총 requests 는 3,468Mi 로 2대 합계(6,280Mi)의 55% 라 **자리는 있는데 배치가 문제다.**
+`kubectl rollout restart deploy -n o2-dev` 로 옮기면 해소된다(노드1 이 꽉 차 있어
+새 파드가 노드2 로 간다). 해소 후 노드1 69% · 노드2 41%.
+
+m6i.large(7,104Mi)에서는 같은 쏠림이 나도 다 들어갔다. **4 GiB 는 이 워크로드의
+패킹 습성에 여유가 부족하다.** 매니페스트에 `topologySpreadConstraints`
+(`app.kubernetes.io/part-of: o2`, maxSkew 1, DoNotSchedule)를 넣어 배치 시점에
+갈리게 했다. 다만 **이미 떠 있는 파드는 옮기지 않으므로** 노드를 추가하거나
+교체한 뒤에는 여전히 `rollout restart` 가 필요하다.
+
+### Karpenter 노드 확보 시간 (2026-08-23)
+
+Karpenter 도입(D-037 재검토) 후 처음으로 실제 노드를 띄워 봤다. `pause` 파드에
+`requests.cpu = 2` 를 걸어 기존 노드에 안 들어가게 만든 뒤, `kubectl get nodeclaims`
+를 10초 간격으로 폴링했다.
+
+| 날짜 | 구간 | 시간 |
+|---|---|---|
+| 2026-08-23 | Pending 파드 → NodeClaim 생성 | 10초 미만 (첫 관측이 7초) |
+| 2026-08-23 | NodeClaim 생성 → 노드 등록 | 약 28초 |
+| 2026-08-23 | NodeClaim 생성 → **노드 Ready** | **약 39초** |
+
+조건 — `c6i.xlarge` · 온디맨드 · `ap-northeast-2c` · NodePool `default`.
+
+### 어떤 인스턴스가 뜨는지는 파드 requests 가 정한다
+
+이 테스트에서 `xlarge` 가 뜬 것은 **테스트 파드가 2 vCPU 를 요구했기 때문이지
+평소 동작이 아니다.** NodePool 은 후보만 넷으로 제한하고(c6i·m6i × large·xlarge,
+온디맨드, amd64) 그 안에서 고르는 것은 Karpenter 다 — `weight` 도 우선순위도
+걸려 있지 않다. Pending 파드를 bin-pack 해서 들어가는 후보를 추린 뒤 **제일 싼
+것**을 띄운다.
+
+DaemonSet 이 노드마다 먼저 차지하는 양 (requests 합, 2026-08-23):
+
+| 구성요소 | CPU | 메모리 |
+|---|---|---|
+| `aws-node` | 50m | — |
+| `kube-proxy` | 100m | — |
+| `datadog` | 150m | 320Mi |
+| **합계** | **300m** | **320Mi** |
+
+| 타입 | 시간당 | allocatable | DaemonSet 뺀 여유 |
+|---|---|---|---|
+| c6i.large | $0.096 | 1,930m / 3,140Mi | **1,630m** / 2,820Mi |
+| m6i.large | $0.118 | 1,930m / 7,104Mi | **1,630m** / 6,784Mi |
+| c6i.xlarge | $0.192 | 약 3,920m / 미측정 | — |
+| m6i.xlarge | $0.236 | 미측정 | — |
+
+`xlarge` 두 타입의 allocatable 은 안 쟀다. `max_pods` 가 ENI 구성이 정하는 값이라
+위 오버헤드 공식만으로는 확정할 수 없다.
+
+앱 파드 requests 는 두 자릿수 millicore 다 — `api` 100m/384Mi,
+`chat-gateway` 100m/192Mi, `order-worker` 50m/192Mi, `mediamtx` 100m/256Mi,
+`frontend` 10m/16Mi (2026-08-23). 그래서 실제 스케일아웃은 이렇게 갈린다.
+
+- 보통은 **c6i.large**. CPU 로는 16개, 메모리로는 7개(`api` 기준)가 들어간다
+- 메모리가 먼저 차면 **m6i.large**. `c6i.xlarge` 보다 싸면서 메모리가 2배다
+- 파드 하나가 1,630m 을 넘게 요구하면 **c6i.xlarge**. 이 테스트가 그 경우였다
+
+c6i 는 단가가 선형이라(large 2 vCPU $0.096, xlarge 4 vCPU $0.192) 큰 것이 와도
+vCPU당 가격은 같다. 커지는 것은 최소 구매 단위지 단가가 아니다.
+
+
+**앱 이미지 pull 은 이 값에 없다.** `pause` 이미지(수백 KB)를 썼다. 실제 앱
+파드가 붙으면 ECR pull 이 그만큼 더 붙으므로, 스파이크 대응 시간은 39초보다
+크다. 사전 확장이 주력이고 Karpenter 가 안전망인 이유가 이 숫자다(D-041).
+
+기존에 "노드 확보 최소 26초" 로 인용되던 값은 **이 문서에 근거가 없다.**
+관리형 노드그룹 교체 때 눈으로 본 값으로 보인다. 위 표를 쓴다.
+
+노드 반납은 `consolidationPolicy = WhenEmpty` · `consolidateAfter = 2h` 라
+재보지 않았다. `kubectl delete nodeclaim` 은 즉시 끝났다.
+
+비용 — 노드 수명 약 4.5분에 **$0.014** (`c6i.xlarge` 서울 온디맨드 시간당
+$0.192, `aws pricing` 조회값).
+
 **다시 재야 할 때** — 노드 등급이나 대수를 바꿀 때, 파드를 추가할 때,
-그리고 부하를 실제로 걸었을 때. 지금 값은 무부하 상태라 부하를 대표하지 않는다.
+그리고 부하를 실제로 걸었을 때. 무부하 값은 부하를 대표하지 않는다.
+부하 결과는 M-009 · M-010 에 있다.
+
+---
+
+## M-009. 읽기 경로 포화점 (api 파드)
+
+`GET /api/broadcasts/bc_1042` 하나만 60초씩 고정 도착률로 던졌다.
+`loadtest/read-path.js` · `loadtest/run.sh`.
+
+**조건 (2026-08-21)** — 노드 m6i.large × 2 / api replicas 1 (uvicorn 워커 1개) /
+k6 는 클러스터 밖(MacBook M5, 10코어)에서 ALB 경유. 응답 시간에 인터넷 왕복이 섞여 있다.
+
+| 날짜 | RATE | p95 | p99 | 실패% | api CPU | api MEM | 계약 판정 |
+|---|---|---|---|---|---|---|---|
+| 2026-08-21 | 10 | 100ms | 261ms | 0.00 | 33m | 116Mi | 통과 |
+| 2026-08-21 | 25 | 158ms | 229ms | 0.00 | 64m | 119Mi | 통과 |
+| 2026-08-21 | 50 | 93ms | 106ms | 0.00 | 114m | 119Mi | 통과 |
+| 2026-08-21 | 100 | 99ms | 119ms | 0.00 | 226m | 126Mi | 통과 |
+| 2026-08-21 | 200 | 127ms | 181ms | 0.00 | 433m | 136Mi | 통과 |
+| 2026-08-21 | **300** | **314ms** | **573ms** | 0.04 | **664m** | 215Mi | **통과** |
+| 2026-08-21 | 400 | **1,352ms** | 1,772ms | 0.10 | **919m** | 216Mi | **p95 초과** |
+
+계약 기준은 `p95 < 800ms · p99 < 2,000ms · 실패 < 1%` (architecture.md 12.1).
+
+**해석 — 파드당 상한은 300 RPS 이고, 병목은 CPU 총량이 아니라 프로세스 하나다.**
+
+`api CPU / RPS` 가 2.17 → 2.21 → 2.30 으로 거의 일정한데 **919m 에서 천장을 쳤다.**
+1,000m = 1 vCPU 이고 노드는 1,930m 이므로 **나머지 1 vCPU 는 끝까지 놀았다.**
+원인은 `apps/api/Dockerfile` 의 진입점에 `--workers` 가 없어 uvicorn 이 워커 1개로
+도는 것이다. **인스턴스를 키워도 이 숫자는 안 변한다. replicas 를 늘려야 한다.**
+
+**데이터 계층은 무죄다.** 같은 구간에서 Valkey `EngineCPUUtilization` 이 1.3% 를
+넘지 않았고 **캐시 미스가 27,522건 중 1건**이었다. 로컬 1초 + Valkey 30초 2단 캐시가
+설계대로 흡수했고 스탬피드도 나지 않았다. Kinesis 쓰기 스로틀 0.
+
+**HPA 를 붙이기 전에 requests 를 고쳐야 한다.** 매니페스트의 `cpu: 100m` 은 300 RPS
+실측(664m)의 1/6 이다. 그대로 두면 `targetCPUUtilization` 이 600% 로 계산되어 즉시
+최대치로 튄다. 500m 수준이 현실적이다.
+
+**다시 재야 할 때** — `--workers` 나 replicas 를 바꿀 때, 인스턴스 타입을 바꿀 때,
+캐시 TTL(`LOCAL_TTL` · `VALKEY_TTL`)을 바꿀 때, 이벤트 발행을 끄거나 켤 때.
+
+> 첫 400 RPS 측정값(p95 3,514ms · 드롭 1,628)은 **버렸다.** `preAllocatedVUs` 를
+> 너무 낮게 잡아 k6 가 VU 상한에 먼저 막힌 값이었다. 위 표는 고친 뒤 다시 잰 것이다.
+
+---
+
+## M-010. 채팅 팬아웃 한계 (chat-gateway 파드)
+
+WebSocket 연결을 30초에 걸쳐 붙이고 5분 유지하며 채팅을 흘렸다.
+`loadtest/broadcast.js` · `loadtest/run.sh`.
+
+**조건 (2026-08-21)** — 노드 m6i.large × 2 / chat-gateway replicas 2, **서로 다른
+노드에 배치** / `CHAT_TICK_MS` 200 · `CHAT_MAX_PER_TICK` 50 / 발화자 수 = 채팅율 × 6
+(레이트 리밋 분당 20건의 절반) / k6 는 클러스터 밖.
+
+`아이템/s` = 시청자 × 채팅율. 채팅 한 건이 전 시청자에게 가므로 이것이 팬아웃 총량이다.
+CPU·MEM 은 **2파드 합계**다.
+
+| 날짜 | 시청자 | 채팅율 | 아이템/s | 프레임/s | 전파 p95 | 전파 p99 | cg CPU | cg MEM | 전달률 |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-08-21 | 500 | 10/s | 5,000 | 1,607 | 275ms | 508ms | 151m | 94Mi | 100.0% |
+| 2026-08-21 | 1,000 | 10/s | 10,000 | 3,941 | 250ms | 290ms | 206m | 98Mi | 99.9% |
+| 2026-08-21 | 2,000 | 10/s | 20,000 | 7,998 | 267ms | 308ms | 343m | 108Mi | 99.9% |
+| 2026-08-21 | **4,000** | 10/s | **40,000** | 14,370 | **1,286ms** | **2,105ms** | 559m | 126Mi | 99.9% |
+| 2026-08-21 | 4,000 | 2/s | 8,000 | 6,749 | 282ms | 343ms | 232m | 121Mi | 99.9% |
+| 2026-08-21 | **2,000** | 20/s | **40,000** | 7,850 | **479ms** | **1,240ms** | 467m | 111Mi | 100.0% |
+
+전 구간에서 **연결 실패 0 · 조기 종료 0 · 깨진 프레임 0** 이다. 무너질 때도 죽지 않고
+느려지기만 했다.
+
+**해석 1 — 지배 변수는 연결 수가 아니라 아이템/s 다.**
+
+8,000 과 20,000 에서는 시청자가 500이든 4,000이든 전파 p95 가 250~282ms 로 평평하다.
+**40,000 에서만 무너진다.** 연결 4,000개를 유지하는 것 자체는 사실상 공짜다.
+
+**해석 2 — 같은 아이템/s 에서 연결이 많을수록 더 나쁘다. 여기가 진짜 병목이다.**
+
+```
+2,000 연결 · 40,000 아이템/s  →  p95   479ms   (프레임  7,850 = 아이템 5개/프레임)
+4,000 연결 · 40,000 아이템/s  →  p95 1,286ms   (프레임 14,370 = 아이템 2.8개/프레임)
+```
+
+전달량이 같은데 **2.7배 느리다.** 차이는 프레임 개수뿐이고, 프레임 하나마다
+`JSON.stringify` 가 한 번 돈다. `apps/chat-gateway/src/main.ts` 의 틱 루프는 같은
+방송의 모든 연결에 **내용이 동일한 배치**를 보내면서도 연결마다 문자열을 새로 만든다.
+방송당 한 번만 만들어 재사용하면 직렬화 비용이 `O(연결 수)` → `O(1)` 이 된다.
+architecture.md 9.4-8 이 예고한 지점이다.
+
+**해석 3 — 메모리는 병목 근처도 안 갔다.**
+
+유휴 82Mi(2파드) 대비 4,000 연결에서 126Mi 이므로 **연결당 약 11KB** 다.
+파드 `limit: 384Mi` 의 16% 만 썼다. `CHAT_MAX_PER_TICK` 은 이 범위에서 한 번도
+발동하지 않았다 — 10 msg/s 면 200ms 창에 평균 2건이라 상한 50 에 닿지 않는다.
+그 값을 정하려면 채팅율 250/s 이상이 필요하다.
+
+**2파드 기준 안전선은 20,000 아이템/s 다.** 목표인 4,000명 × 10 msg/s = 40,000 은
+지금 코드로는 못 받는다. 직렬화 중복을 고치거나 파드를 4개로 늘려야 한다.
+
+**다시 재야 할 때** — `CHAT_TICK_MS` · `CHAT_MAX_PER_TICK` 을 바꿀 때, 직렬화 방식을
+고칠 때, replicas 를 바꿀 때, 채팅 이벤트 발행(`EMIT_CHAT_EVENTS`)을 끌 때.
+
+> `프레임/s` 가 예상보다 적으면 서버에서 밀린 것이다. 10 msg/s · 4,000 연결의
+> 이론값은 약 17,500 인데 실측이 14,370(82%)이었다. 반대로 2 msg/s 에서는
+> 이론 6,700 대 실측 6,749 로 오차 0.7% 였다. 이 차이가 밀린 양이다.
+
+---
+
+## M-011. Chat Signal 외부 WebSocket E2E
+
+**조건 (2026-08-23, 최초 Shadow 활성화)** — 외부 ALB `/ws`, `bc_1042`, 서로 다른
+합성 사용자 4명, 약한 지연 신호 4건 동시 전송. Chat Gateway 2 replicas,
+Worker Python 3.13 arm64 128MB, timeout 5초, 예약 동시성 1, SQS batch 10,
+Queue visibility 30초·원문 보존 60초.
+
+| 구간 | 실측 |
+|---|---|
+| WebSocket 연결 | 4/4 성공 |
+| 클라이언트 수신 chat items | 16건 — 4건 × 4연결 |
+| 첫 Lambda invocation | 5,000ms, timeout |
+| 다음 성공 invocation | 3,922ms, `BELOW_THRESHOLD` 2건 |
+| Lambda CloudWatch | `Errors=1`, `Throttles=2`, `ConcurrentExecutions max=1` |
+| 나머지 메시지 | `LATE_EVENT_DROPPED` 2건 |
+| E2E 직후 Queue | visible 0, not-visible 4 |
+| DynamoDB | 전체 상태 7건, Candidate 0건, 원문 속성 0건 |
+
+팬아웃은 성공했지만 Candidate 경로는 실패했다. timeout 10초, 예약 동시성 2,
+event source 최대 동시성 2로 수정한 뒤 같은 조건을 새 broadcast ID로 재측정했다.
+
+**조건 (2026-08-23, 수정 후 cold E2E)** — 외부 ALB `/ws`, `bc_1043`, 서로 다른
+합성 사용자 4명, 약한 지연 신호 4건. Worker timeout 10초, 예약 동시성 2,
+event source 최대 동시성 2. 합성 메시지는 고정 15초 window 경계를 걸쳐 전송됐다.
+
+| 구간 | 실측 |
+|---|---|
+| WebSocket 연결 | 4/4 성공 |
+| 클라이언트 수신 chat items | 16건 — 4건 × 4연결 |
+| cold Lambda invocations | 5,369ms, 5,866ms; timeout 없음 |
+| 처리 결과 | `BELOW_THRESHOLD` 1건, `LATE_EVENT_DROPPED` 3건 |
+| Candidate | 0건 |
+| E2E 직후 Queue | visible 0, in-flight 0 |
+| DynamoDB 원문 속성 | 0건 |
+
+런타임 수정은 timeout을 제거했지만, epoch 기준 15초 tumbling window 경계에서 증거가
+3건과 1건으로 갈렸다. 실제 15초 이내에 모인 네 메시지가 서로 다른 고정 window에
+들어갈 수 있는 미탐 조건이다(T-021).
+
+**조건 (2026-08-23, 수정 후 same-window E2E)** — 외부 ALB `/ws`, `bc_1044`, 서로
+다른 합성 사용자 4명, 약한 지연 신호 4건. window 시작 후 offset 2초에 전송을 시작해
+네 메시지를 같은 고정 15초 window에 배치했다. 나머지 Worker 조건은 위와 같다.
+
+| 구간 | 실측 |
+|---|---|
+| WebSocket 연결 | 4/4 성공 |
+| 클라이언트 수신 chat items | 16건 — 4건 × 4연결 |
+| warm Lambda invocations | 221ms, 721ms |
+| Candidate | 1건 — `USER_PERCEIVED_LATENCY`, `LOW`, `UNKNOWN` |
+| Candidate 증거 | matched messages 4, unique users 4, strong 0, weak 4, rule `generic_slow` |
+| Candidate 경계 | `metric_status=NOT_CHECKED`, `root_cause=UNDETERMINED`, `agent_handoff_status=NOT_CONFIGURED` |
+| Candidate 개인정보 | `raw_chat_included=false` |
+| CloudWatch 08:10-08:12Z | `Errors=0`, `Throttles=0`, `ConcurrentExecutions max=2` |
+| E2E 직후 Queue | visible 0, in-flight 0 |
+| DynamoDB | 전체 상태 24건, 원문 속성 0건 |
+| CloudWatch 원문 검색 | `느리네` 0건 |
+
+이 결과는 현재 구현의 AC-004 same-window 경로가 실제 AWS에서 동작함을 검증한다.
+임의의 rolling 15초에 대한 보장은 아니며, window 정책 변경은 Shadow replay 근거 후
+결정한다(`VERIFY-CHAT-WINDOW-001`). 적용 후 `04-platform`과 `08-chat-signal` Terraform
+plan은 모두 `No changes`였다.
+
+**조건 (2026-08-23, Shadow 관찰 matrix)** — 외부 ALB `/ws`, 격리된 합성 broadcast
+5개, 합성 채팅 24건. 일반 채팅 제외, 동일 사용자 반복, strong 임계치, 고정 window
+경계 3+1, 다음 window 쿨다운 갱신을 한 suite에서 실행했다. Worker는 timeout 10초,
+예약 동시성 2, event source 최대 동시성 2였다.
+
+| 구간 | 실측 |
+|---|---|
+| WebSocket | 21/21 연결 성공, 기대 fanout item 84/84 수신 |
+| Worker 처리 | 24/24 상태 확인 — unrelated 4, below 14, duplicate-user 3, created 2, updated 1 |
+| 일반 채팅 | 4건 모두 `UNRELATED`, Candidate 0 |
+| 동일 사용자 반복 | window matched 1, unique 1, duplicate-user 3, Candidate 0 |
+| strong 임계치 | `MEDIUM/READ_PATH`, matched 4, unique 4, strong 3, weak 1 |
+| 고정 경계 | offset 13.200초의 3건과 다음 window offset 0.399초의 1건으로 분리, Candidate 0 |
+| 쿨다운 | Candidate 1건 유지, version 2, matched 8, unique 8 |
+| Lambda | 13 invocations, duration 67-288ms, `Errors=0`, `Throttles=0`, concurrency max 2 |
+| E2E 직후 Queue | visible 0, in-flight 0 |
+| 원문 비저장 | DynamoDB 전체 67건에서 금지 key 0·합성 원문 0, CloudWatch 합성 원문 0 |
+
+고정 경계 결과는 timeout이나 late drop 없이 정상 처리된 네 메시지만으로 3+1 미탐을
+재현했다. 따라서 현재 tumbling window는 Shadow로 유지한다. 이 합성 표본은 실패 모드의
+존재를 검증하지만 실제 채팅의 오탐률·미탐률을 추정하는 표본은 아니다. 원문을 보존하지
+않으므로 Phase 5 비교 입력은 운영 원문 replay가 아니라 개인정보가 없는 라벨 합성
+데이터로 구성해야 한다.
+
+**다시 재야 할 때** — Worker timeout·예약 동시성·event source 최대 동시성·batch 크기,
+Queue visibility, DynamoDB 처리 구조를 바꿀 때.
+
+---
+
+## M-012. Agent 공통 진입점 도입 전 Dify runtime baseline
+
+**조건 (2026-08-23)** — 신규 Chat Candidate handoff를 설계하기 전에 현재
+`o2-dify-ingress -> o2-dify-worker -> private EC2 Dify` 경로를 read-only로 확인했다.
+CloudWatch Lambda 조회와 Dify Postgres 조회는 실행 시점과 집계 기준이 달라 서로 같은
+표본으로 1:1 비교하지 않는다.
+
+| 구간 | 실측·확인값 |
+|---|---|
+| Dify 배포 | 1.16.1, EC2 running, SSM Online |
+| 컨테이너 | API·DB·Redis·sandbox 등 15개 모두 Up; healthcheck가 있는 API·DB·Redis·sandbox는 healthy |
+| Lambda 최근 24시간 | Ingress 9 invocations, errors 0; Worker 23 invocations, errors 8, throttles 0 |
+| Worker 로그 분류 | `dify ok` 15건; traceback 8건 — Bedrock validation 계열 4, workflow timeout 2, 기타 workflow failure 2 |
+| Dify DB 최근 24시간 | 대상 게시 앱 workflow run succeeded 17, failed 6 |
+| O2 DLQ | visible 14, in-flight 0, retention 14일 |
+| 알람 | O2 DLQ not-empty는 ALARM; Worker error·backlog 알람은 확인 시점 OK |
+| 실제 API key 대상 앱 | `O2 Agentic AIOps — Source-Aligned Mock v4`, workflow mode |
+| 게시 입력 | 10개; `custom_alert_json` optional paragraph, 최대 30,000자 |
+| 게시 graph | `custom_alert_json` 참조 확인 |
+
+위 게시 앱 조회는 Dify 입력 기능을 확인하기 위한 baseline이다. 신규 Agent 진입점의
+테스트 대상이나 연결 대상으로 승인한 것이 아니다. 실제 Shadow E2E는 전용 테스트 앱,
+전용 API key, export된 별도 DSL을 사용한다(D-050).
+
+이 baseline은 새 Chat 호출이 실패했다는 측정이 아니다. Chat handoff는 아직 없다. 기존
+Datadog Agent 경로가 성공과 실패를 모두 갖고 있고 DLQ가 비어 있지 않으므로, 새 source를
+곧바로 같은 Worker에 연결해서는 안 된다는 활성화 전 상태 증거다.
+
+**다시 재야 할 때** — 게시 workflow 또는 Bedrock 모델을 바꿀 때, 기존 DLQ를 분류·재처리한
+뒤, Generic Agent Worker의 timeout·동시성·재시도 정책을 정할 때.
+
+---
+
+## M-013. 전용 Agent entry contract workflow UI 검증
+
+**조건 (2026-08-23)** — 기존 팀 앱과 분리한 `O2 Agent Entry Contract Test v1`을 Dify
+1.16.1에 생성했다. Start는 `custom_alert_json` required paragraph 하나이고, Code와
+Output만 사용했다. 자동 source, Bedrock, Datadog Pull, 조치 권한은 연결하지 않았다.
+
+| 입력 | 결과 |
+|---|---|
+| `agent-trigger-chat-v1.example.json` | `ACCEPTED`, source와 source schema 일치 |
+| `agent-trigger-datadog-v1.example.json` | `ACCEPTED`, source와 source schema 일치 |
+| Chat source + Datadog source schema | `CONTRACT_REJECTED:SOURCE_SCHEMA` |
+| LLM 사용량 | 세 실행 모두 0 Tokens |
+| 기존 팀 앱 변경 | 없음 |
+
+**Service API 직접 검증 (2026-08-23)** — 테스트 앱 전용 API key를 Secrets Manager에
+저장하고 SSM local port forwarding을 통해 blocking 호출했다. Dify 문서 화면의 base URL은
+`http://localhost/v1`이지만, Mac 호출에서는 터널 포트를 붙인 localhost URL을 사용했다.
+
+| 항목 | 결과 |
+|---|---|
+| 게시 `/parameters` | `custom_alert_json`, paragraph, required, max length 30,000 |
+| Chat `/workflows/run` | `data.status=succeeded`, 0.166256초, 3 steps, 0 tokens |
+| Datadog `/workflows/run` | `data.status=succeeded`, 0.151124초, 3 steps, 0 tokens |
+| source/schema 불일치 | `data.status=failed`, 0.121813초, 2 steps, 0 tokens |
+| 실패 code | `CONTRACT_REJECTED:SOURCE_SCHEMA` |
+
+입력의 표시 label은 게시 API에서 중복 문자열로 보였지만 API 매핑에 사용하는 variable은
+정확히 `custom_alert_json`이었다. label은 실행 계약이 아니며 canonical DSL에서는 단일
+label로 정규화했다. 호출 후 평문 임시 파일과 테스트용 터널은 제거했고, 사용자가 열어 둔
+localhost 터널은 종료하지 않았다.
+
+**다시 재야 할 때** — Start 변수, 최대 길이, Code 검증 필드, output 형태, Dify 버전을
+바꿀 때.

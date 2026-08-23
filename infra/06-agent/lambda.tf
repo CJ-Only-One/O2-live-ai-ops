@@ -71,6 +71,15 @@ data "aws_iam_policy_document" "alert_relay" {
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.alert_worker.arn]
   }
+
+  # 복구 알림의 시각만 남긴다 (MTTR 재료). incidents/ 는 Worker 것이므로
+  # 접두사를 갈라 준다 — Ingress 가 분석 결과를 덮어쓸 경로를 만들지 않는다.
+  statement {
+    sid       = "WriteResolutions"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.history.arn}/resolutions/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "alert_relay" {
@@ -118,6 +127,7 @@ resource "aws_lambda_function" "alert_relay" {
     variables = {
       ALERT_SECRET_NAME = var.alert_secret_name
       WORKER_FUNCTION   = aws_lambda_function.alert_worker.function_name
+      HISTORY_BUCKET    = aws_s3_bucket.history.bucket
     }
   }
 
@@ -167,6 +177,52 @@ data "aws_iam_policy_document" "alert_worker" {
     actions   = ["sqs:SendMessage"]
     resources = [aws_sqs_queue.alert_dlq.arn]
   }
+
+  # 알림 텍스트를 벡터로 바꾼다. 모델 하나로 좁힌다 — iam.tf 의 Dify 인스턴스
+  # 역할은 `*` 로 열려 있지만 그건 사람이 콘솔에서 모델을 고르기 때문이고,
+  # 여기는 코드가 부르는 모델이 하나로 정해져 있다.
+  #
+  # ★ 계정 번호가 없는 ARN 이다. 파운데이션 모델은 AWS 소유라 계정 자리가 빈다.
+  statement {
+    sid       = "EmbedAlertText"
+    effect    = "Allow"
+    actions   = ["bedrock:InvokeModel"]
+    resources = ["arn:aws:bedrock:${var.region}::foundation-model/${local.embed_model_id}"]
+  }
+
+  # ★ QueryVectors 하나로는 안 된다. GetVectors 도 있어야 한다 — 실측:
+  #
+  #     AccessDeniedException ... is not authorized to perform:
+  #     s3vectors:GetVectors on resource: .../index/incidents
+  #
+  #   `returnMetadata = true` 로 부르면 AWS 가 메타데이터를 돌려주면서
+  #   GetVectors 를 함께 검사한다. API 이름만 보고 권한을 맞추면 걸린다
+  #   (iam.tf 의 InvokeFunctionUrl/InvokeFunction 과 같은 모양이다).
+  #
+  #   더 나쁜 것은 **이 실패가 알림 분석을 멈추지 않는다는 점이다.** 검색만
+  #   조용히 비고 워크플로는 succeeded 로 끝난다. 로그를 봐야 보인다.
+  statement {
+    sid    = "SearchAndStoreVectors"
+    effect = "Allow"
+    actions = [
+      "s3vectors:QueryVectors",
+      "s3vectors:GetVectors",
+      "s3vectors:PutVectors",
+    ]
+    resources = [aws_s3vectors_index.incidents.index_arn]
+  }
+
+  # 읽기가 필요한 이유는 복구 적재다. Recovered 를 받으면 저장해 둔 원본을
+  # 읽어 outcome 을 채우고 다시 쓴다 (worker.py `_handle_recovery`).
+  statement {
+    sid    = "ReadWriteIncidents"
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+    ]
+    resources = ["${aws_s3_bucket.history.arn}/incidents/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "alert_worker" {
@@ -190,6 +246,11 @@ resource "aws_security_group" "alert_relay" {
   }
 }
 
+# ★ SG 이름의 "Egress to Dify only" 는 낡은 문구다. 규칙은 처음부터 전체
+#   허용이었고(Secrets Manager 가 NAT 로 나가야 했다), 이제 Bedrock·S3·
+#   S3 Vectors 도 같은 길로 나간다. **문구를 고치지 않는다** — 이 규칙의
+#   description 도 ForceNew 라, 정확한 설명 하나를 얻자고 규칙을 교체하는
+#   동안 이그레스가 잠깐 사라진다. 그 사이에 든 알림은 Dify 를 못 부른다.
 resource "aws_vpc_security_group_egress_rule" "alert_relay_all" {
   security_group_id = aws_security_group.alert_relay.id
   description       = "Dify call, Secrets Manager"
@@ -246,6 +307,11 @@ resource "aws_lambda_function" "alert_worker" {
       #   남아 연결 타임아웃을 디버깅한 적이 있다 — T-005. 포트는 80 이다.
       DIFY_URL          = "http://${aws_instance.dify.private_ip}/v1/workflows/run"
       ALERT_SECRET_NAME = var.alert_secret_name
+
+      HISTORY_BUCKET = aws_s3_bucket.history.bucket
+      VECTOR_BUCKET  = aws_s3vectors_vector_bucket.history.vector_bucket_name
+      VECTOR_INDEX   = aws_s3vectors_index.incidents.index_name
+      EMBED_MODEL_ID = local.embed_model_id
     }
   }
 

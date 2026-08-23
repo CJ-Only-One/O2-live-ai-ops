@@ -56,6 +56,38 @@ resource "aws_iam_role_policy" "app_kinesis" {
   }
 }
 
+# Pod Identity 역할을 서비스별로 분리했으므로 기존과 같이 세 생산자 모두가
+# Kinesis 이벤트를 보낼 수 있게 같은 최소 정책을 각 역할에 붙인다.
+resource "aws_iam_role_policy" "order_worker_kinesis" {
+  count = var.enable_app_events ? 1 : 0
+
+  name   = "event-streams"
+  role   = aws_iam_role.order_worker[0].id
+  policy = data.aws_iam_policy_document.app_kinesis[0].json
+
+  lifecycle {
+    precondition {
+      condition     = var.enable_app_data_wiring
+      error_message = "enable_app_events = true 이면 enable_app_data_wiring 도 true 여야 한다."
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "chat_gateway_kinesis" {
+  count = var.enable_app_events ? 1 : 0
+
+  name   = "event-streams"
+  role   = aws_iam_role.chat_gateway[0].id
+  policy = data.aws_iam_policy_document.app_kinesis[0].json
+
+  lifecycle {
+    precondition {
+      condition     = var.enable_app_data_wiring
+      error_message = "enable_app_events = true 이면 enable_app_data_wiring 도 true 여야 한다."
+    }
+  }
+}
+
 # ── 해싱 salt ─────────────────────────────────────────────────
 # SDK 는 user_key 를 그대로 싣지 않고 HMAC 으로 바꿔 담는다. 그 salt 다.
 #

@@ -15,7 +15,8 @@ infra/
   00-cicd/       GitHub OIDC, IAM 역할, ECR
   01-network/    VPC, 서브넷, 라우팅, NAT
   02-eks/        클러스터, 노드그룹, EKS 애드온
-  03-data/       RDS, Valkey, SQS (backend key는 `datastore/` · D-015, D-017)
+  03-data/       RDS, Valkey, 주문·Chat Signal SQS, Candidate DynamoDB
+                 (backend key는 `datastore/` · D-015, D-017, D-047)
   04-platform/   Argo CD, Load Balancer Controller, ESO, Datadog 에이전트,
                  클러스터 접근 권한과 앱 배선
   05-datadog/    Datadog 대시보드
@@ -23,6 +24,7 @@ infra/
   06-datastream/ Kinesis, Firehose, S3 레이크, Glue, DynamoDB, Lambda
                  에이전트가 쓰는 내부 데이터 시스템 (backend key는 `data/` · D-029)
   07-media/      MediaMTX, NLB, CloudFront — 영상 (미작성 · D-033)
+  08-chat-signal/ Chat Signal Lambda·실행 IAM — 트리거 비활성 골격 (D-048)
 apps/<service>/  Dockerfile + src
 loadtest/        부하 테스트 시나리오
 AGENTS.md        작업 시작 전에 읽을 것 — 규약과 함정, 문서 지도 (D-022)
@@ -30,6 +32,7 @@ docs/
   architecture.md  전체 설계 (부하 가정, 캐싱, 스케일링, 리스크)
   decisions.md   결정 기록
   contracts.md   인터페이스 계약 (REST, WebSocket, 캐시 키, 이벤트)
+  chat-incident-candidate.md  채팅 기반 Incident Candidate canonical spec
   schema.md      MySQL 테이블·Valkey 키·마이그레이션
 ```
 
@@ -46,6 +49,10 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 `03-data`와 `06-datastream`은 이름이 비슷하지만 다른 것이다. 앞은 서비스가
 읽고 쓰는 저장소, 뒤는 그 서비스를 관찰한 결과다. **state 키를 서로 바꿔 쓰면
 상대 리소스를 지운다** (D-015, D-029).
+
+`08-chat-signal`은 `03-data`의 Chat Signal SQS와 Candidate DynamoDB를 참조한다.
+따라서 `03-data` 이후에 적용하며, Phase 1B에서는 event source mapping을 코드에
+하드코딩해 비활성 상태로 둔다(D-048).
 
 배경과 근거는 [`docs/decisions.md`](docs/decisions.md)에 있다.
 

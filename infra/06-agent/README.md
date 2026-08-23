@@ -53,6 +53,62 @@ apply 순서에서 이 스택은 `02-eks` 뒤, `04-platform` 앞이다 —
 01-network → 02-eks → (03-data ∥ 06-agent) → 04-platform
 ```
 
+## Agent 공통 진입점 Phase 1B
+
+`agent_entry_transport.tf`은 Chat과 Datadog이 공통 `agent.trigger.v1` envelope로 들어오는
+전송 기반만 만든다.
+
+```text
+Agent Trigger SQS -> disabled event source -> Generic Worker -> private Dify
+          |
+          +-> DLQ
+
+Generic Worker -> DynamoDB idempotency ledger
+```
+
+Phase 1B에는 실행 게이트가 두 개 있다.
+
+| 게이트 | 값 |
+|---|---|
+| SQS event source mapping | `enabled=false` |
+| Worker 환경변수 | `AGENT_ENTRY_EXECUTION_ENABLED=false` |
+
+따라서 Terraform apply만으로 Dify 호출이 생기지 않는다. Worker는 queue body를
+`agent.trigger.v1`로 검증하고, 실행이 활성화된 미래 Phase에서만 DynamoDB lease 획득 후
+전용 테스트 앱을 호출한다. 같은 `idempotency_key`의 `SUCCEEDED` 항목은 다시 호출하지
+않는다. `IN_PROGRESS`·`FAILED`도 자동으로 Dify를 재호출하지 않고 SQS redelivery를
+DLQ까지 진행시킨다. 외부 호출은 성공했는데 ledger 확정만 실패한 애매한 구간에서 LLM을
+두 번 실행하지 않기 위한 fail-closed 정책이다. 운영자가 Dify 실행 여부를 확인한 뒤에만
+ledger를 정리하고 재투입한다.
+
+전용 API key는 `o2/dev/dify-agent-entry-contract-test` Secrets Manager secret에서 실행
+시점에만 읽는다. 값은 Terraform state, 코드, 로그에 남기지 않는다.
+최종 `custom_alert_json` 직렬화 결과가 게시 입력 상한 30,000자를 넘으면 secret 조회,
+ledger 획득, Dify 호출 전에 거부한다.
+
+현재 `06-agent` 전체 plan에는 Phase 1B와 무관하게 먼저 병합된 기존 Lambda 코드 변경이
+함께 잡힌다. 이 변경을 검토하지 않은 상태에서 전체 stack을 apply하지 않는다.
+2026-08-23에는 Phase 1B 대상 저장 plan이 `14 add, 0 change, 0 destroy`이고 두 실행
+게이트가 모두 `false`임을 확인한 뒤 한 번만 target apply했다. apply 후 Phase 1B 대상
+재-plan은 `No changes`, 전체 plan은 기존 변경만 `0 add, 4 change, 0 destroy`였다.
+상세 근거는 `docs/agent-entrypoint.md` 6.2에 있다.
+
+Phase 1B apply 후 다음을 확인한다.
+
+```bash
+terraform output -raw agent_entry_event_source_enabled
+aws lambda get-event-source-mapping --uuid <mapping-uuid> \
+  --query '{State:State,LastProcessingResult:LastProcessingResult}' \
+  --region ap-northeast-2
+aws sqs get-queue-attributes --queue-url "$(terraform output -raw agent_entry_queue_url)" \
+  --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
+  --region ap-northeast-2
+```
+
+성공 조건은 event source가 `Disabled`, Queue/DLQ가 비어 있고 새 Dify workflow run이
+0건인 것이다. 2026-08-23 실환경에서 이 조건을 모두 확인했다. Phase 3 전에는 event
+source나 실행 플래그를 켜지 않는다.
+
 ### 1. 버전 고정
 
 ```bash
@@ -183,6 +239,7 @@ Dify 콘솔은 **LLM API 키를 보관하고 sandbox 컨테이너로 임의 코�
 | `docker: permission denied` | 그룹 반영이 안 됐다. 세션을 다시 연다 |
 | 파드에서 Dify 호출이 타임아웃 | 노드 SG 가 아닌 곳에서 부른 것이다. 인그레스는 노드 SG 로만 열려 있다 |
 | plugin_daemon 이 계속 재시작 | 메모리 부족. `free -m` 확인 후 인스턴스 등급을 올린다 |
+| 로그에 `history search failed: UnknownServiceError` | Lambda 런타임의 boto3 가 `s3vectors` 를 모른다. 같은 줄에 boto3 버전이 찍힌다. 런타임을 올리거나(`python3.13`) zip 에 최신 boto3 를 넣는다. **알림 분석 자체는 계속 돈다** — 이력만 안 쌓인다 |
 
 ## 워크플로 소스
 
@@ -192,9 +249,184 @@ Dify 안에서 만든 워크플로는 Terraform 이 만들지 않는다. DSL 로
 알림을 여기까지 실어 나르는 Lambda 는 [`lambda.tf`](lambda.tf) 와
 [`lambda/ingress.py`](lambda/ingress.py) 와 [`lambda/worker.py`](lambda/worker.py) 에 있다.
 
+## 이력 저장소
+
+에이전트가 내린 판단을 쌓아, 다음 알림이 왔을 때 **"이미 해결한 인시던트와
+비슷한가"** 를 판정한다. 정의는 [`history.tf`](history.tf) 에 있다.
+
+| 무엇 | 어디 | 쓰임 |
+|---|---|---|
+| 원본 JSON | `o2-dev-dify-history-*` (S3) | 진실은 여기 하나뿐. 재색인·분석·MTTR |
+| 벡터 | `o2-dev-dify-history-vectors` / 인덱스 `incidents` (S3 Vectors) | 비슷한 인시던트 검색 |
+
+```
+s3://…-history/incidents/dt=2026-08-21/<cycle_key>.json   Triggered + Dify 판단
+s3://…-history/resolutions/<cycle_key>.json               Recovered 시각
+```
+
+### 왜 Dify 번들 weaviate 가 아닌가
+
+Dify 는 벡터 DB(weaviate)를 이미 컨테이너로 들고 있다. 그런데 그것은
+**루트 볼륨에만 있고 `delete_on_termination = true`** 라, 아래 "함정" 표의
+"인스턴스 교체 = 워크플로 전멸" 이 그대로 적용된다. 이력은 이 프로젝트의
+산출물이므로 EC2 밖에 둔다.
+
+S3 Vectors 는 2025년 12월 GA 이고 서울 리전에서 쓸 수 있다.
+이 규모(월 5,000건)에서 OpenSearch 대비 비용이 두 자릿수 배 싸다.
+
+### 흐름
+
+검색과 저장이 **전부 `lambda/worker.py` 안에서** 끝난다.
+
+```
+알림 → 임베딩 1회(Bedrock Titan) → S3 Vectors 검색 → past_cases 로 Dify 실행 → 저장
+```
+
+**Dify 는 벡터를 모른다.** 시작 노드에 텍스트 변수(`past_cases`)가 하나 는 것이
+전부다 — 지식 검색 노드도 외부 지식 API 도 없다.
+입력 계약은 [`dify/README.md`](dify/README.md) 1.1.1.
+
+검색용 벡터와 저장용 벡터가 같다. 그래서 Bedrock 호출이 알림당 한 번이다.
+이유는 `lambda/worker.py` 의 `_alert_text` 주석에 있다.
+
+### 켜져 있는 파이프라인은 하나뿐이다
+
+`lambda_o2.tf` 의 두 번째 파이프라인은 **같은 zip 을 공유하지만 이력은 꺼져 있다.**
+환경변수(`HISTORY_BUCKET` 등)가 없으면 그 기능만 꺼지고 중계는 정상으로 돈다.
+
+**환경변수만 복사해 붙이지 마라.** 두 파이프라인이 같은 Datadog 모니터를
+받으면 `cycle_key` 가 같아서 서로의 인시던트를 덮어쓴다. 켜려면 키에
+파이프라인 구분을 먼저 넣는다.
+
+### 무엇이 저장되나
+
+세 자리가 하는 일이 다르다. 섞으면 검색이 망가진다.
+
+| 자리 | 들어가는 것 | 왜 |
+|---|---|---|
+| **벡터** | 알림 텍스트만 | 검색 키. 들어오는 알림과 성격이 같아야 한다 |
+| **벡터 메타데이터** | 결과 요약 + 필터 키 | **프롬프트에 그대로 들어간다.** 작아야 한다 |
+| **S3 원본** | 전부 | 재색인·분석·검증 |
+
+`outcome` 은 이렇게 채워진다.
+
+| 필드 | 누가 | 언제 |
+|---|---|---|
+| `state` | 자동 | Triggered 에 `unresolved`, Recovered 에 `auto_recovered` |
+| `mttr_sec` | 자동 | Recovered 때 계산 |
+| `root_cause_label` | **사람** | `scripts/verify.py` |
+| `verified` | **사람** | 〃 |
+| `human_correction` | **사람** | 〃 |
+
+### 검증 전에는 원인을 말하지 않는다
+
+검색 결과로 프롬프트에 들어가는 문장이다.
+
+```
+[미검증] 주문 생성 큐 적체 · 12분 뒤 자동복구
+[확인됨] 주문 생성 큐 적체 · db_lock_contention · 사람이 조치 · 23분
+[오탐]   주문 생성 알림 · 오탐, 조치 없음
+```
+
+**미검증 사례는 사실만 말한다.** 에이전트 추측을 여기 넣으면 다음 알림에서
+그것이 "과거 사례" 로 다시 읽혀 추측이 사실로 승격된다.
+
+추측 전문은 S3 원본의 `agent.hypothesis` 에 그대로 남는다 — 지우는 것이 아니라
+검색 코퍼스에서 빼는 것이고, 사람이 검증할 때 그걸 읽는다. 근거는 D-045 와
+`docs/architecture.md` 7.4.
+
+### `state` 다섯 가지 — "복구" 는 "해결" 이 아니다
+
+Datadog `Recovered` 는 **"지표가 임계 아래로 돌아왔다"** 일 뿐이다. 진짜 고쳤는지,
+저절로 돌아왔는지, 방송이 끝나 부하가 사라졌는지, 모니터를 껐는지 구분하지 못한다.
+
+| 값 | 뜻 | 누가 |
+|---|---|---|
+| `unresolved` | 아직 복구 신호가 없다 (**시작값**) | 자동 |
+| `auto_recovered` | 지표는 돌아왔다. **아무도 안 고쳤다** | 자동 |
+| `human_fixed` | 사람이 조치해서 해결 | 사람 |
+| `agent_fixed` | 에이전트가 런북을 실행해 해결 | (런북 실행기 생긴 뒤) |
+| `false_alarm` | 오탐. 장애가 아니었다 | 사람 |
+
+★ **자동 기록은 절대 `human_fixed` 로 가지 않는다.** 지금 에이전트는
+`action_taken = "none"` 이다 — 분석만 하고 아무것도 고치지 않는다. 이걸
+해결로 적으면 발표의 MTTR 숫자가 거짓이 된다.
+
+### MTTR
+
+`cycle_key` 가 Triggered 와 Recovered 를 묶는다. 두 시각의 차다.
+
+```
+mttr_sec = recovered_at － occurred_at
+```
+
+★ Datadog `$DATE_POSIX` 가 초인지 밀리초인지 문서로 확정되지 않아 **값의 크기로
+가른다** (`worker.py` `_epoch_sec`). 단위를 틀리면 1000배 어긋나는데 그 숫자가
+그럴듯해 보여서 아무도 눈치채지 못한다.
+
+★ flapping — Recovered 가 여러 번 오면 **첫 번째만** 센다. 이미 닫힌 건은 건너뛴다.
+
+### 원인 라벨
+
+`labels.txt` 가 통제 어휘의 원본이다. 자유 텍스트를 안 쓰는 이유는 하나다 —
+같은 원인이 세 표현으로 갈리면 **"이 원인이 N번 재발" 을 셀 수 없고**, 그러면
+런북을 무엇부터 쓸지도 모른다. 라벨 하나가 런북 하나에 대응한다.
+
+### 도구
+
+```bash
+./scripts/verify.py         # 미검증 건에 사람이 원인을 확정한다
+./scripts/verify.py --list  # 목록만
+./scripts/label-report.py   # 라벨별 횟수 + 런북 유무
+```
+
+★ **`pip install` 이 필요 없다.** 두 스크립트는 셔뱅이 `uv run --script` 이고
+파일 안에 의존성이 선언돼 있다(PEP 723). `uv` 만 있으면 첫 실행에서 알아서
+받아 격리된 환경으로 돌린다 — 이 저장소에 venv 를 만들지 않는다.
+
+`botocore[crt]` 가 의존성에 들어 있는 이유는 **`aws login` 으로 받은 자격증명을
+읽으려면 그게 있어야 하기 때문이다.** 없으면 `MissingDependencyException` 이 난다.
+
+`uv` 가 없으면 `brew install uv`. 굳이 안 쓰겠다면 `python3 scripts/...` 로도
+돌지만 그때는 boto3 를 직접 깔아야 한다.
+
+버킷 이름은 `terraform output` 으로 읽는다. 스크립트에 적어 두지 않는다 —
+**출력은 `apply` 뒤에 생기므로 apply 전에는 안 돈다.**
+
+`label-report.py` 가 런북을 무엇부터 쓸지 알려준다. 같은 라벨이 3회 반복되면
+표시된다 (심각도가 높으면 1회로도 쓴다).
+
+★ 사람이 기억해서 돌리는 일로 두면 안 돌아간다. 회고 때 또는 주 1회 돌린다.
+
+### 실패했을 때 예외를 올리나 — 경로마다 다르다
+
+규칙이 아니라 결과로 정했다. **헷갈려서 통일하지 마라.**
+
+| 어디 | 실패하면 | 왜 |
+|---|---|---|
+| 과거 사례 검색 | 안 올린다 | 보조 정보 하나 때문에 알림 분석 전체를 잃을 수 없다 |
+| Triggered 저장 | **안 올린다** | Dify 가 이미 성공했다. 재시도하면 LLM 비용 두 배 + 중복 |
+| Recovered 적재 | **올린다** | LLM 을 안 부르고 멱등하다. 재시도가 공짜라 막히면 알려야 한다 |
+| 복구 시각 기록 (Ingress) | 안 올린다 | 200 을 못 주면 Datadog 이 알림을 재전송한다 |
+
+### 이력 쪽에서 아직 안 한 것
+
+- **검증 필터.** 지금은 사람이 검증하지 않은 판단도 검색된다.
+  `human_verified` 메타데이터는 붙어 있지만 항상 `false` 다. 지금 필터를
+  걸면 결과가 늘 0건이라 기능이 죽은 것을 눈치채기 어렵다.
+  사례가 쌓이면 `_search` 에 메타데이터 필터를 걸고, 그 전까지는
+  프롬프트의 "참고이지 정답이 아니다" 문장이 유일한 방어선이다
+  (근거: `docs/architecture.md` 7.4)
+- **런북.** 라벨은 정했는데 `runbooks/<label>.md` 가 아직 하나도 없다.
+  `label-report.py` 가 후보를 알려주면 사람이 쓴다. 그다음 Worker 가 라벨로
+  **정확 키 조회**해서 프롬프트에 넣는다 — 런북은 유사도 검색으로 찾으면 안 된다
+- **Athena.** 원본이 `dt=` 로 파티션되어 있어 Glue 테이블만 얹으면 되지만,
+  건수가 적어 아직 `aws s3 cp` 로 충분하다
+
 ## 아직 안 한 것
 
-- **EBS 스냅샷.** 개발 단계라 걸지 않았다. 워크플로 자체는 [`dify/`](dify/) 의 DSL 로 백업되지만
-  **지식베이스와 실행 이력은 루트 볼륨에만 있다.** 그것들이 자산이 되는 시점에 DLM 으로 건다
+- **EBS 스냅샷.** 개발 단계라 걸지 않았다. 워크플로 자체는 [`dify/`](dify/) 의 DSL 로 백업되고
+  **인시던트 이력은 S3 로 빠져나갔다.** 남은 것은 Dify 지식베이스와 워크플로 postgres 다.
+  그것들이 자산이 되는 시점에 DLM 으로 건다
 - **Datadog 계측.** EKS 밖이라 클러스터 에이전트가 안 잡는다. 필요해지면 호스트 에이전트를 따로 넣는다
 - **HA.** 단일 인스턴스다. 에이전트 운영 평면이므로 서비스 SLA 대상이 아니다

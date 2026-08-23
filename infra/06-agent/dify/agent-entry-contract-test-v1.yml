@@ -1,0 +1,298 @@
+app:
+  description: >-
+    agent.trigger.v1 transport contract validation only. No production source,
+    team workflow, Bedrock, or remediation.
+  icon: 🤖
+  icon_background: '#E4FBCC'
+  icon_type: emoji
+  mode: workflow
+  name: O2 Agent Entry Contract Test v1
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.7.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload: {}
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: agent-entry-start-source-agent-entry-validate-target
+      source: agent-entry-start
+      sourceHandle: source
+      target: agent-entry-validate
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: end
+      id: agent-entry-validate-source-agent-entry-output-target
+      source: agent-entry-validate
+      sourceHandle: source
+      target: agent-entry-output
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: Required serialized agent.trigger.v1 envelope.
+        selected: false
+        title: 시작
+        type: start
+        variables:
+        - default: ''
+          hint: Serialized agent.trigger.v1. Raw chat is forbidden.
+          label: custom_alert_json
+          max_length: 30000
+          options: []
+          placeholder: ''
+          required: true
+          type: paragraph
+          variable: custom_alert_json
+      height: 120
+      id: agent-entry-start
+      position:
+        x: 80
+        y: 282
+      positionAbsolute:
+        x: 80
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: |-
+          import json
+          import re
+          from datetime import datetime
+
+          TOP_LEVEL_FIELDS = {
+              "schema_version", "trigger_id", "source", "source_schema",
+              "trigger_type", "idempotency_key", "occurred_at", "trace_id",
+              "evidence", "guardrails"
+          }
+          GUARDRAIL_FIELDS = {
+              "analysis_mode", "automatic_remediation_allowed",
+              "must_preserve_uncertainty", "raw_chat_included"
+          }
+          SOURCE_RULES = {
+              "DATADOG_MONITOR": {
+                  "source_schema": "datadog.alert.v1",
+                  "trigger_type": "MONITOR_ALERT",
+                  "evidence_fields": {
+                      "event_id", "cycle_key", "monitor_id", "transition", "priority",
+                      "env", "service", "alert_title", "alert_body", "alert_query",
+                      "host", "tags", "link"
+                  },
+              },
+              "CHAT_INCIDENT_CANDIDATE": {
+                  "source_schema": "chat.incident_candidate.v1",
+                  "trigger_type": "USER_SYMPTOM_CLUSTER",
+                  "evidence_fields": {
+                      "candidate_id", "candidate_type", "broadcast_id",
+                      "suspected_surface", "confidence", "window_start", "window_end",
+                      "matched_messages", "unique_users", "strong_signal_count",
+                      "weak_signal_count", "matched_rule_ids", "metric_status",
+                      "root_cause", "requires_metric_corroboration"
+                  },
+              },
+          }
+
+          def fail(code):
+              raise ValueError("CONTRACT_REJECTED:" + code)
+
+          def require_exact_keys(value, expected, code):
+              if not isinstance(value, dict) or set(value.keys()) != expected:
+                  fail(code)
+
+          def require_datetime(value, code):
+              if not isinstance(value, str):
+                  fail(code)
+              try:
+                  datetime.fromisoformat(value.replace("Z", "+00:00"))
+              except ValueError:
+                  fail(code)
+
+          def main(custom_alert_json: str):
+              if not isinstance(custom_alert_json, str) or not custom_alert_json:
+                  fail("INPUT_NOT_STRING")
+              try:
+                  payload = json.loads(custom_alert_json)
+              except (TypeError, json.JSONDecodeError):
+                  fail("INVALID_JSON")
+
+              require_exact_keys(payload, TOP_LEVEL_FIELDS, "TOP_LEVEL_FIELDS")
+              if payload["schema_version"] != "1.0":
+                  fail("SCHEMA_VERSION")
+              if not isinstance(payload["trigger_id"], str) or not re.fullmatch(
+                  r"trg_[0-9A-HJKMNP-TV-Z]{26}", payload["trigger_id"]
+              ):
+                  fail("TRIGGER_ID")
+              source = payload["source"]
+              if source not in SOURCE_RULES:
+                  fail("SOURCE")
+              rule = SOURCE_RULES[source]
+              if payload["source_schema"] != rule["source_schema"]:
+                  fail("SOURCE_SCHEMA")
+              if payload["trigger_type"] != rule["trigger_type"]:
+                  fail("TRIGGER_TYPE")
+              key = payload["idempotency_key"]
+              if not isinstance(key, str) or not 1 <= len(key) <= 256:
+                  fail("IDEMPOTENCY_KEY")
+              require_datetime(payload["occurred_at"], "OCCURRED_AT")
+              if payload["trace_id"] is not None and (
+                  not isinstance(payload["trace_id"], str)
+                  or len(payload["trace_id"]) > 128
+              ):
+                  fail("TRACE_ID")
+
+              guardrails = payload["guardrails"]
+              require_exact_keys(guardrails, GUARDRAIL_FIELDS, "GUARDRAIL_FIELDS")
+              if guardrails != {
+                  "analysis_mode": "READ_ONLY",
+                  "automatic_remediation_allowed": False,
+                  "must_preserve_uncertainty": True,
+                  "raw_chat_included": False,
+              }:
+                  fail("GUARDRAIL_VALUES")
+
+              evidence = payload["evidence"]
+              require_exact_keys(evidence, rule["evidence_fields"], "EVIDENCE_FIELDS")
+              if source == "DATADOG_MONITOR":
+                  if evidence["transition"] not in {
+                      "Triggered", "Re-Triggered", "Recovered", "Warn", "No Data",
+                      "Renotify"
+                  }:
+                      fail("DATADOG_TRANSITION")
+                  if not isinstance(evidence["event_id"], str) or not evidence["event_id"]:
+                      fail("DATADOG_EVENT_ID")
+                  if not isinstance(evidence["cycle_key"], str) or not evidence["cycle_key"]:
+                      fail("DATADOG_CYCLE_KEY")
+              else:
+                  if evidence["candidate_type"] != "USER_PERCEIVED_LATENCY":
+                      fail("CHAT_CANDIDATE_TYPE")
+                  if evidence["suspected_surface"] not in {
+                      "READ_PATH", "PLAYBACK", "CHAT", "UNKNOWN"
+                  }:
+                      fail("CHAT_SURFACE")
+                  if evidence["confidence"] not in {"MEDIUM", "LOW"}:
+                      fail("CHAT_CONFIDENCE")
+                  if (
+                      evidence["metric_status"] != "NOT_CHECKED"
+                      or evidence["root_cause"] != "UNDETERMINED"
+                  ):
+                      fail("CHAT_UNCERTAINTY")
+                  if evidence["requires_metric_corroboration"] is not True:
+                      fail("CHAT_METRIC_GATE")
+                  for field in ("matched_messages", "unique_users"):
+                      if (
+                          not isinstance(evidence[field], int)
+                          or isinstance(evidence[field], bool)
+                          or evidence[field] < 1
+                      ):
+                          fail("CHAT_POSITIVE_COUNTS")
+                  for field in ("strong_signal_count", "weak_signal_count"):
+                      if (
+                          not isinstance(evidence[field], int)
+                          or isinstance(evidence[field], bool)
+                          or evidence[field] < 0
+                      ):
+                          fail("CHAT_NONNEGATIVE_COUNTS")
+                  rules = evidence["matched_rule_ids"]
+                  if (
+                      not isinstance(rules, list)
+                      or not rules
+                      or len(rules) != len(set(rules))
+                  ):
+                      fail("CHAT_RULE_IDS")
+
+              return {
+                  "result": json.dumps({
+                      "accepted": True,
+                      "idempotency_key": key,
+                      "source": source,
+                      "source_schema": rule["source_schema"],
+                      "status": "ACCEPTED"
+                  }, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+              }
+        code_language: python3
+        dependencies: []
+        desc: >-
+          Validates source pairing, exact field sets, uncertainty preservation, and
+          read-only guardrails. It never returns evidence or raw input.
+        outputs:
+          result:
+            children: null
+            type: string
+        selected: false
+        title: 계약 검증
+        type: code
+        variables:
+        - value_selector:
+          - agent-entry-start
+          - custom_alert_json
+          variable: custom_alert_json
+      height: 120
+      id: agent-entry-validate
+      position:
+        x: 382
+        y: 282
+      positionAbsolute:
+        x: 382
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        desc: Returns only a sanitized deterministic acceptance summary.
+        outputs:
+        - value_selector:
+          - agent-entry-validate
+          - result
+          value_type: string
+          variable: result
+        selected: false
+        title: 출력
+        type: end
+      height: 83
+      id: agent-entry-output
+      position:
+        x: 684
+        y: 282
+      positionAbsolute:
+        x: 684
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    viewport:
+      x: 335
+      y: 140
+      zoom: 1
+  rag_pipeline_variables: []

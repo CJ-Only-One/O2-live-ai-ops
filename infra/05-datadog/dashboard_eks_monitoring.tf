@@ -783,12 +783,12 @@ resource "datadog_dashboard" "aws_infrastructure_eks_monitoring_o2_eks" {
       2. `datadog-agent` DaemonSet이 각 노드에서 실행되면 자동으로 Pod/Container 메트릭 수집
       3. 수집 시작 후 이 대시보드에 Pod 메트릭 위젯 추가 가능
       EOF
-      font_size      = "14"
-      has_padding    = true
-      text_align     = "left"
-      tick_edge      = "left"
-      tick_pos       = "50%"
-      vertical_align = "top"
+      font_size        = "14"
+      has_padding      = true
+      text_align       = "left"
+      tick_edge        = "left"
+      tick_pos         = "50%"
+      vertical_align   = "top"
     }
     widget_layout {
       height = 3

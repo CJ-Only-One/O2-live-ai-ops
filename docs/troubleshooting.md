@@ -30,7 +30,16 @@
 | T-012 | Dify 가 넘긴 값을 안 쓰는데 에러도 안 난다 | 모르는 입력 키 무시, 계약 불일치 |
 | T-013 | 아무 일도 안 하는데 클러스터가 느려진다 | `CPUCreditBalance`, t3 버스트, `kubectl top`, `/proc/*/task` |
 | T-014 | Function URL 이 403 인데 정책은 분명히 허용이다 | `InvokeFunction` 도 필요, `FunctionUrlAuthType` 조건, 시뮬레이터 함정, 페더레이션 토큰 |
-| T-015 | SDK 가 봉투 필드를 늘렸는데 드리프트 시험이 안 깬다 | `ENVELOPE_FIELDS`, `pod_name`, 상수 없는 계약, 늘어난 쪽 감지 |
+| T-015 | 부하 테스트에서 서버가 느린 게 아니라 k6 가 못 따라간 것이었다 | `dropped_iterations`, `preAllocatedVUs`, `maxVUs`, 생성기 병목 |
+| T-016 | 노드를 바꿨더니 총 여유가 45% 인데 파드가 안 뜬다 | `Insufficient memory`, DaemonSet Pending, 파드 쏠림, `topologySpreadConstraints` |
+| T-017 | 부하도 안 줬는데 AI 에이전트가 계속 깨어난다 | `notify_no_data`, `@webhook-dify`, Downtime, EWMA baseline 오염 |
+| T-018 | 과거 사례가 늘 비는데 워크플로는 성공으로 끝난다 | `s3vectors:GetVectors`, `returnMetadata`, 의도한 조용한 실패, 웜 컨테이너가 옛 자격증명을 든다 |
+| T-019 | Worker Lambda가 타임아웃 나는데 Dify 쪽은 매번 성공으로 남는다 | `urllib.request.urlopen timeout=55`, `workflow_runs`, Hot Path·Runbook Lookup, Slack 승인 |
+| T-020 | 채팅은 전달되는데 Incident Candidate가 생성되지 않는다 | Chat Signal Worker 5초 timeout, 예약 동시성 1, SQS in-flight, `LATE_EVENT_DROPPED` |
+| T-021 | timeout은 없어졌는데 15초 안의 네 채팅으로 Candidate가 안 생긴다 | tumbling window 경계, epoch 정렬, 3+1 분리, rolling window 오해 |
+| T-022 | 저장소의 Dify 입력 계약과 실제 게시 앱이 다르다 | DSL 미내보내기, `/v1/info`, `/v1/parameters`, `custom_alert_json`, API key 앱 매핑 |
+| T-023 | SDK 가 봉투 필드를 늘렸는데 드리프트 시험이 안 깬다 | `ENVELOPE_FIELDS`, `pod_name`, 상수 없는 계약, 늘어난 쪽 감지 |
+
 
 ---
 
@@ -670,6 +679,543 @@ aws sts get-federation-token --name t --duration-seconds 900 \
 않은 것이 실수였다.**
 
 ---
+
+
+## T-015. 부하 테스트에서 서버가 느린 게 아니라 k6 가 못 따라간 것이었다
+
+**증상** — `read-path.js` 를 400 RPS 로 돌리니 p95 가 **3,514ms** 로 뛰었다.
+직전 계단 200 RPS 에서는 127ms 였으니 28배다. 서버가 무너진 것으로 읽었다.
+
+```
+RATE  p95(ms)  RPS   드롭    api CPU
+ 200      127  200      0    433m
+ 400     3514  366   1628    951m     ← 목표 400 인데 366 만 나갔다
+```
+
+`드롭 1628` 은 k6 가 도착률을 못 지켜 아예 못 보낸 요청 수다. **이것을 서버가
+느려서 생긴 결과로 해석했다.**
+
+### 원인 — `preAllocatedVUs` 가 응답 시간 가정과 안 맞았다
+
+고정 도착률(`constant-arrival-rate`)에서 필요한 VU 수는 `RATE × 응답시간` 이다.
+
+```
+400 RPS × 3.5초 = 1,400 VU 필요
+maxVUs = RATE × 3 = 1,200        ← 여기서 막혔다
+```
+
+VU 상한에 걸려 요청을 못 만들면 k6 는 그 이터레이션을 버리고
+(`dropped_iterations`), **남은 요청은 큐에서 더 오래 기다린 것들이라 p95 가
+실제보다 부풀려진다.** 원인과 결과가 뒤집혀 보인다.
+
+`preAllocatedVUs` 를 `RATE/4`(응답 250ms 가정)에서 `RATE`(1초 가정)로,
+`maxVUs` 를 `RATE×3` 에서 `RATE×5` 로 올리고 다시 쟀다.
+
+| 조건 | p95 | 실제 RPS | 드롭 |
+|---|---|---|---|
+| `maxVUs = RATE × 3` | 3,514ms | 366 | 1,628 |
+| `maxVUs = RATE × 5` | **1,352ms** | 392 | 234 |
+
+**서버는 그렇게까지 느리지 않았다.** 2.6배가 생성기 탓이었다.
+
+### 가리는 법 — 두 지표를 같이 본다
+
+`loadtest/run.sh` 가 k6 프로세스의 CPU·RSS 를 파드 지표와 같이 찍는 이유가 이것이다.
+
+| `프레임/s`·`RPS` | `k6 CPU%` | 판정 |
+|---|---|---|
+| 예상대로 | 낮음 | 정상 |
+| 낮음 | **높음** | **생성기가 병목** |
+| 낮음 | 낮음 + 파드 CPU 높음 | 서버가 병목 (찾던 것) |
+
+`dropped_iterations` 임계도 걸어 두었다. 다만 **0 이 아니라 10** 이다 —
+첫 틱에 VU 를 깨우는 동안 두세 건이 밀리는데(200 RPS 에서 12,000건 중 2건,
+VU 는 50 중 3개만 썼다) 그것까지 실패로 보면 정상 계단을 포화점으로 읽는다.
+
+### 왜 늦게 찾았나
+
+**숫자가 그럴듯했다.** p95 3.5초, 드롭 1,628, api CPU 951m — 셋 다 "서버가
+한계에 닿았다" 는 이야기로 매끄럽게 읽혔다. 특히 CPU 951m 이 1 코어에 붙어
+있어서 그쪽이 진짜 병목(uvicorn 워커 1개)이 맞았기 때문에, **맞는 결론과
+틀린 숫자가 섞여 있었다.**
+
+`드롭` 을 표에 찍어 두지 않았다면 아예 몰랐을 것이다. 실제로 처음에는
+`k6 CPU 17%` 를 보고 "생성기는 여유" 로 넘겼는데, CPU 는 여유여도 **VU 상한**
+이라는 다른 축에서 막힐 수 있다는 것을 생각하지 못했다.
+
+**측정 도구의 한계를 측정값에 같이 기록하지 않으면 이 실수는 반복된다.**
+그래서 `measurements.md` M-009 에 버린 값과 그 이유를 각주로 남겼다.
+
+---
+
+## T-016. 노드를 바꿨더니 총 여유가 45% 인데 파드가 안 뜬다
+
+**증상** — 노드그룹을 교체한 뒤 Datadog DaemonSet 하나가 계속 `Pending` 이다.
+
+```
+0/2 nodes are available: 1 Insufficient memory,
+                         1 node(s) didn't satisfy plugin(s) [NodeAffinity].
+```
+
+그런데 클러스터 전체로 보면 자리가 남는다.
+
+```
+총 requests 3,468Mi / 2대 합계 6,280Mi = 55%
+```
+
+### 원인 — 교체 직후 파드가 한 노드에 몰린다
+
+노드그룹을 지우면 전 파드가 한꺼번에 `Pending` 이 됐다가 새 노드가 등록되는
+순간 배치된다. 그때 **먼저 Ready 된 노드로 쏠리고, 쿠버네티스는 나중에 뜬
+노드로 재분배하지 않는다.** 스케줄러는 배치 시점에만 판단한다.
+
+2026-08-21 c6i.large 교체 직후 실측 — 노드 등록 시각 차이는 **1초**였다.
+
+| 노드 | 파드 | 메모리 requests |
+|---|---|---|
+| ip-10-0-153-138 | **24개** | 2,956Mi (**94%**) |
+| ip-10-0-66-38 | 4개 (DaemonSet 뿐) | 256Mi (8%) |
+
+DaemonSet 은 **노드마다 하나씩** 떠야 한다. 다른 노드에 자리가 있어도 소용없다.
+
+```
+노드1 allocatable 3,140Mi − 사용 2,956Mi = 184Mi 여유
+Datadog 요구                              256Mi   → 못 뜬다
+```
+
+**"1 Insufficient memory" 와 "1 NodeAffinity" 를 합쳐 읽어야 한다.** 앞은
+자리가 없는 노드, 뒤는 이미 이 DaemonSet 이 떠 있는 노드다.
+
+### 해소
+
+```bash
+kubectl rollout restart deploy -n o2-dev
+```
+
+노드1 이 꽉 차 있으므로 새 파드가 노드2 로 간다. 해소 후 노드1 69% · 노드2 41%.
+
+**8 GiB 노드(m6i.large)에서는 같은 쏠림이 나도 다 들어갔다.** 4 GiB 는 이
+워크로드의 패킹 습성에 여유가 부족하다 (M-008).
+
+### 재발을 줄이는 것과 못 막는 것
+
+매니페스트에 `topologySpreadConstraints` 를 넣었다
+(`app.kubernetes.io/part-of: o2`, maxSkew 1, DoNotSchedule).
+`name` 이 아니라 `part-of` 로 묶는 이유는, 서비스마다 따로 흩으면 `replicas: 1`
+짜리 넷이 같은 노드에 몰려도 **각자 제약을 만족해 아무것도 막지 못하기**
+때문이다. 같은 서비스의 파드끼리도 갈라야 하면 자기 이름 기준 제약을 하나 더
+건다 — 두 제약은 AND 로 걸린다.
+
+**그래도 교체 직후는 못 막는다.** 파드가 배치되는 순간 노드가 하나만 Ready 면
+토폴로지 도메인이 하나뿐이라 skew 가 0 이고, 제약이 아무 일도 하지 않는다.
+제약이 듣는 것은 **두 노드가 다 Ready 인 상태에서 배치될 때** — 평상시 롤아웃,
+파드 재생성, HPA 증설이 여기 해당한다.
+
+**노드를 추가하거나 교체한 뒤에는 배치를 확인하는 습관이 낫다.**
+
+```bash
+kubectl get pods -n o2-dev -o wide
+```
+
+### 왜 늦게 찾았나
+
+**"메모리 부족" 이라는 메시지를 용량 문제로 읽었다.** 총합이 55% 라 앞뒤가 안
+맞는데도, 노드를 4 GiB 로 줄인 직후라 "역시 작았나" 하는 쪽으로 먼저 기울었다.
+
+배치를 본 뒤에야 24 대 4 라는 것을 알았다. `kubectl get pods -o wide` 한 번이면
+보이는 것을 `describe node` 의 합계만 보고 있었다. **자원 문제인지 배치 문제인지
+가르는 데는 합계가 아니라 분포를 봐야 한다.**
+
+---
+
+## T-017. 부하도 안 줬는데 AI 에이전트가 계속 깨어난다
+
+**증상** — 부하 테스트를 시작하기도 전인데 Dify 릴레이 Lambda 가 계속 돌고 있다.
+
+```
+datadog-to-dify          최근 3일 호출 173  (8/19 145 · 8/20 19 · 8/21 9)
+datadog-to-dify-worker   호출 121
+o2-dify-worker           호출 23   오류 15   ← 65% 실패
+o2-dev-dify-alert-dlq-o2 메시지 4건 적체
+```
+
+방송도 주문도 없는 개발 환경인데 알림이 나가고 있었다.
+
+### 원인 — 데이터가 없는 것이 알람이 된다
+
+`[O2][시나리오 2·5] 주문 응답 p95 지연` 모니터에 `notify_no_data = True`,
+`no_data_timeframe = 10` 이 걸려 있다.
+
+```
+주문 트래픽이 없다
+  → o2.warm.latency_p95 지표가 안 올라간다
+  → 10분 뒤 No Data 판정
+  → 알림 발송 → @webhook-dify → Dify 기동
+```
+
+**dev 환경은 평소 트래픽이 0 이라 이 조건이 상시 참이다.**
+
+같은 태그의 모니터 10개 중 `@webhook-dify` 가 붙은 것이 **7개**다.
+`monitor.tf` 를 grep 하면 6개로 세지는데 배포된 상태는 7개다 —
+그래서 손으로 고르지 말고 **`stack:05-datadog` 태그로 걸어야 한다.**
+
+### 비용은 지금 문제가 아니다. 나중이 문제다
+
+8월 Bedrock 청구는 **$0.07** 이다. 현재 워크플로가 763토큰(M-001)이고
+Nova Lite 단가가 1K 당 $0.0000355~0.000071 이라 알림 하나에 0.005센트다.
+
+**모델을 Claude 로 바꾸거나 Datadog 조회(pull)를 붙이면 자릿수가 뛴다.**
+M-006 의 "webhook 재시도 5회 = 토큰 6배" 가 그때 실제 비용이 된다.
+
+### 진짜 손해는 돈이 아니다
+
+- **늑대소년** — 상시로 울면 진짜 알람을 못 알아본다
+- **측정 오염** — 부하 테스트 중 에이전트가 끼어들면 원인 구분이 안 된다
+- **시연 신뢰도** — 지금까지 에이전트가 반응한 이력이 **전부 "데이터가 없음"**
+  이고, 그마저 `o2-dify-worker` 는 65% 가 실패했다
+
+### 부하 테스트 전에는 Downtime 으로 덮는다
+
+```
+Monitors → Manage Downtimes → monitor tag `stack:05-datadog`, Group scope `*`
+```
+
+**고정 종료 시각을 준다.** 무기한으로 걸면 푸는 것을 잊는다.
+`notify_end_states` 를 비워 두면 창이 끝날 때 `No Data` 상태여도 알림이 안 나간다
+— 그게 없으면 만료 시각에 밀린 것이 한꺼번에 터진다.
+
+**Downtime 은 새 알림만 막는다.** 이미 ingress Lambda 가 받아 Worker 로 넘긴
+비동기 호출과 재시도(`maximum_retry_attempts = 2`)는 그대로 실행된다.
+걸고 1~2분 기다렸다가 부하를 시작한다.
+
+**그리고 Downtime 으로는 못 막는 것이 하나 있다** — 집계 Lambda 의 EWMA 학습이다.
+`baseline.py` 의 스파이크 가드는 `samples >= 30` 일 때만 걸리므로 처음 30개 창은
+가드 없이 학습된다. 부하 구간이 "평시" 로 박히면 조기 경보가 영영 안 울린다.
+테스트 후 `o2-agent-context` 의 `sk = BASELINE#RPS` 항목을 지운다.
+
+### 왜 늦게 찾았나
+
+**"에이전트가 왜 깨어나지" 에서 원인까지 네 단계였다.**
+Dify 로그 → Worker Lambda → ingress Lambda → Datadog webhook → 모니터 설정.
+
+그리고 **찾을 생각을 안 했다.** 부하 테스트를 준비하면서 "테스트하면 알람이
+울릴 테니 미리 뮤트하자" 는 맥락으로 모니터를 열어봤고, 그때 `No Data` 5건이
+눈에 띄어 우연히 발견했다. 알람이 나가는 것을 **아무도 받고 있지 않아서**
+(SNS 토픽 `o2-dev-dify-alert-relay-alarm` 구독자 0명) 증상이 사람에게 안 보였다.
+
+**받는 사람이 없는 알림은 조용히 실패한다.** 비용도 지금은 작아서 청구서로도
+안 드러났다.
+
+---
+
+## T-018. 과거 사례가 늘 비는데 워크플로는 성공으로 끝난다
+
+**증상** — 이력을 붙였는데 Dify 의 `past_cases` 가 언제나 빈 문자열이다.
+겉으로는 아무 문제가 없다.
+
+- Dify 워크플로 `succeeded`
+- Lambda 성공, DLQ 비어 있음, 알람 안 울림
+- `incidents/` 에 원본 JSON 도 정상으로 쌓인다
+- **저장은 되는데 검색만 안 된다**
+
+원인은 CloudWatch 로그 한 줄에만 있다.
+
+```
+history search failed: AccessDeniedException ... is not authorized to perform:
+s3vectors:GetVectors on resource: .../index/incidents
+```
+
+### 원인 — QueryVectors 는 GetVectors 도 요구한다
+
+`s3vectors:QueryVectors` 만 주면 거부된다. `returnMetadata = true` 로 부르면
+AWS 가 메타데이터를 돌려주면서 **`s3vectors:GetVectors` 를 함께 검사한다.**
+
+| 신원 기반 정책 | 결과 |
+|---|---|
+| `QueryVectors` 만 | **AccessDeniedException** |
+| `QueryVectors` + `GetVectors` | 200 |
+| `PutVectors` 만 (저장) | 200 — 그래서 저장은 되고 검색만 죽는다 |
+
+**저장이 되니까 권한은 맞다고 착각하기 쉽다.** 쓰기와 읽기가 요구하는 액션
+집합이 다르다.
+
+T-014 와 같은 종류의 함정이다 — API 이름(`QueryVectors`)만 보고 권한을 맞추면
+걸린다. 그쪽은 `InvokeFunctionUrl` 에 `InvokeFunction` 이 더 필요했다.
+
+### 가려내는 법
+
+증상이 조용하므로 **로그를 먼저 본다.** 알람을 기다리면 영원히 안 온다.
+
+```bash
+aws logs tail /aws/lambda/datadog-to-dify-worker --since 30m --region ap-northeast-2 \
+  | grep -E "history"
+```
+
+정상이면 이 줄이 나온다. `matched 0 of 0` 은 권한이 아니라 **아직 이력이
+비었다**는 뜻이므로 구분해야 한다.
+
+```
+history: matched 2 of 3
+history: stored incidents/dt=2026-08-21/....json
+```
+
+권한만 따로 떼어 확인하려면 CLI 로 같은 호출을 해 본다.
+
+```bash
+aws s3vectors list-vectors --vector-bucket-name o2-dev-dify-history-vectors \
+  --index-name incidents --region ap-northeast-2
+```
+
+### 고쳤는데 그대로다 — 실행 환경이 옛 자격증명을 들고 있다
+
+권한을 고쳐 `apply` 한 뒤에도 **같은 에러가 계속 났다.** 정책은 분명히 맞았다.
+
+```bash
+# 인라인 정책에 GetVectors 가 들어 있고 Resource 도 에러 메시지와 글자까지 같다
+aws iam get-role-policy --role-name o2-dev-dify-alert-worker-role \
+  --policy-name o2-dev-dify-alert-worker
+
+# 조건 키가 없으므로 시뮬레이터를 믿어도 된다 (T-014 의 함정은 조건 키 얘기다)
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::<계정>:role/o2-dev-dify-alert-worker-role \
+  --action-names s3vectors:QueryVectors s3vectors:GetVectors \
+  --resource-arns arn:aws:s3vectors:ap-northeast-2:<계정>:bucket/<버킷>/index/incidents
+# → 셋 다 allowed
+```
+
+**Lambda 실행 환경이 정책 변경 전에 받은 자격증명을 캐시하고 있었다.**
+IAM 변경은 새 세션에 즉시 반영되지만 살아 있는 세션에는 늦게 붙는다.
+
+가려내는 단서는 **로그 스트림 ID** 다. 실패한 호출이 전부 같은 스트림이면
+같은 실행 환경이다.
+
+```bash
+aws logs tail /aws/lambda/datadog-to-dify-worker --since 30m --region ap-northeast-2 \
+  | grep -E "INIT_START|history"
+```
+
+`INIT_START` 가 없으면 웜이다. 새 실행 환경에서 돈 회차는 스트림 ID 가 다르고
+`INIT_START` 가 찍힌다 — 그때 `history: matched 3 of 3` 로 바뀌었다.
+
+**함정: 확인하려고 알림을 자주 쏘면 그 컨테이너가 안 죽는다.** 2~3분 간격으로
+테스트하면 고장난 환경을 직접 붙잡고 있는 셈이다. **약 15분 유휴로 두면**
+회수된다. `update-function-configuration` 으로 억지로 흔들지 마라 — terraform
+state 와 어긋나 다음 plan 에 엉뚱한 diff 가 뜬다.
+
+급하면 페이로드를 만들어 직접 부르는 편이 빠르다. Ingress 를 거치지 않으므로
+webhook 시크릿도 필요 없다.
+
+```bash
+aws lambda invoke --function-name datadog-to-dify-worker --region ap-northeast-2 \
+  --cli-binary-format raw-in-base64-out --payload file://payload.json out.json
+```
+
+이때 `cycle_key` 를 알아볼 수 있는 값으로 두면 나중에 테스트 데이터만 골라낼
+수 있다. 이력에 실제로 한 건이 쌓이기 때문이다.
+
+### 왜 늦게 찾았나
+
+**조용히 실패하도록 일부러 만들었기 때문이다.** 검색은 보조 기능이라 실패해도
+예외를 올리지 않는다 — 과거 사례 하나 때문에 알림 분석 전체를 잃지 않으려는
+설계이고, 그 판단 자체는 맞다(D-044).
+
+문제는 **그 방어가 동시에 눈가리개라는 점이다.** 알람도 DLQ 도 안 울리므로
+로그를 직접 열어 보기 전에는 기능이 죽은 것을 모른다. 저장은 정상이라
+`incidents/` 만 확인하면 "잘 되는구나" 로 끝난다.
+
+배포 직후 로그를 한 번 봤기 때문에 잡았다. **안 봤으면 발표 때 "과거 사례를
+참고합니다" 라고 말하면서 실제로는 한 번도 참고하지 않는 상태였다.**
+
+조용한 실패를 의도했다면 **그것을 확인하는 절차도 같이 만들어야 한다.**
+지금은 배포 후 로그 확인이 그 절차다. 검색 실패가 반복되는 것이 문제가 되면
+`history search failed` 를 메트릭 필터로 잡아 알람에 붙인다.
+
+두 번째로 늦은 이유는 따로다. **고친 뒤에도 같은 에러가 나오니 "정책이 틀렸나"
+로 돌아가 정책만 세 번 다시 봤다.** 정책은 처음부터 맞았고 봐야 할 것은
+로그 스트림 ID 였다. 같은 에러 메시지라도 **고치기 전과 후는 다른 사건**이다 —
+고친 뒤에도 같은 증상이면 원인이 같다고 가정하지 말고 "변경이 이 호출에
+도달했는가" 를 먼저 묻는다.
+
+---
+
+## T-019. Worker Lambda가 타임아웃 나는데 Dify 쪽은 매번 성공으로 남는다
+
+**증상**
+
+```
+Error: timed out
+```
+
+`worker.py` 304행 `urllib.request.urlopen(req, timeout=55)` 에서 예외가 난다.
+그런데 Dify EC2 안에서 `workflow_runs` 테이블을 직접 조회하면 같은 실행이
+`status=succeeded` 로 정상 종료돼 있다.
+
+**원인**
+
+Hot Path·Runbook Lookup API 가 붙으면서 워크플로 1회 처리 시간이 실측
+39.8~58초대로 늘었다(M-001). Worker(`worker.py`)의 urlopen 타임아웃은 여전히
+55초, Lambda 함수 자체 타임아웃도 60초로 남아 있어서 워크플로가 실제로는
+끝났는데도 클라이언트가 먼저 포기하는 상황이 생겼다.
+
+여기에 Slack 승인이 얹히면 Dify 승인 노드가 최대 600초까지 기다리므로 격차가
+훨씬 커진다. 또한 Worker 의 재시도 정책(`maximum_retry_attempts=2`)과 겹치면,
+이미 성공한 실행에 대해 클라이언트만 타임아웃 나서 불필요한 재실행(중복 LLM
+비용, 중복 인시던트 적재)까지 유발할 수 있었다.
+
+**해결**
+
+`worker.py` 의 urlopen timeout 을 55→820초로, `lambda_o2.tf` 의 Lambda 함수
+timeout 을 60→850초로 올렸다(Lambda 자체 상한 900초 대비 여유를 둠). 이 둘의
+대소관계(Lambda timeout > urlopen timeout)는 반드시 유지해야 한다 — 반대가
+되면 Lambda 런타임이 이 예외처리보다 먼저 함수를 강제 종료해서 DLQ 로그가
+지금보다 훨씬 알아보기 어려운 형태로 남는다.
+
+**왜 늦게 찾았나**
+
+클라이언트 쪽 예외(`Error: timed out`)만 보면 Dify 워크플로 자체가 실패한
+것처럼 보인다. 하지만 Dify 는 자기 `workflow_runs` 테이블에 `succeeded` 를
+정확히 남기기 때문에, "워크플로가 느려서 실패한다"와 "워크플로는 끝났는데
+클라이언트가 먼저 포기한다"는 겉으로 같은 에러 메시지를 낸다. Dify Postgres
+를 EC2 안에서 직접 조회해 대조해보고 나서야 후자라는 게 확인됐다.
+
+---
+
+## T-020. 채팅은 전달되는데 Incident Candidate가 생성되지 않는다
+
+**증상**
+
+외부 ALB WebSocket으로 합성 사용자 4명이 15초 안에 약한 지연 신호를 보냈다.
+네 연결은 모두 성공했고 각 채팅은 네 클라이언트에 전달됐지만 Candidate는 없었다.
+
+Worker 로그에는 다음 순서가 남았다.
+
+```text
+REPORT Duration: 5000.00 ms Status: timeout
+chat_signal_processed ... status=BELOW_THRESHOLD
+chat_signal_processed ... status=BELOW_THRESHOLD
+chat_signal_processed ... status=LATE_EVENT_DROPPED
+chat_signal_processed ... status=LATE_EVENT_DROPPED
+```
+
+Queue는 visible 0, not-visible 4였다. 메시지가 사라진 것이 아니라 Lambda poller가
+받아 둔 채 처리하지 못하고 있었다. DynamoDB에는 중간 상태 7건만 있고 Candidate는
+0건이었다. 원문 속성은 0건이었다(M-011).
+
+**원인**
+
+두 제한을 실제 SQS-Lambda 경로 없이 정했다.
+
+1. 함수 timeout 5초는 cold start, boto3 자격증명 초기화, 순차 DynamoDB 쓰기를 합친
+   첫 invocation보다 짧았다. 첫 호출은 정확히 5초에서 강제 종료됐다.
+2. 예약 동시성은 1인데 event source mapping의 최대 동시성을 제한하지 않았다. 같은
+   1분 구간에서 CloudWatch `Throttles=2`, `ConcurrentExecutions max=1`이 확인됐다. SQS
+   poller가 받은 다음 batch가 throttling과 visibility 30초 동안 기다렸고, 그 결과
+   15초 window + 5초 late allowance를 넘겨 정상 메시지가 late로 폐기됐다.
+
+**해결**
+
+먼저 D-049 순서대로 생산자를 `off`로 바꾸고 Chat Gateway를 재시작한 뒤 event source
+mapping을 Disabled로 바꿨다. 데이터 리소스는 삭제하지 않았다.
+
+Worker timeout은 10초, 예약 동시성은 2로 바꾸고 event source mapping의
+`maximum_concurrency=2`를 명시한다. poller 최대치와 함수 예약치를 같게 해 throttling으로
+in-flight 메시지가 늦어지는 경로를 닫는다. Queue visibility 30초는 함수 timeout보다
+길고, 원문 보존 60초 안에서 한 번 재시도할 여지를 남기므로 유지한다.
+
+수정 배포 후에는 새 broadcast ID로 같은 외부 WebSocket 4사용자 시나리오를 다시 실행해
+Candidate 1건, Queue visible/in-flight 0, Lambda timeout 0, 원문 속성 0을 모두 확인한다.
+
+수정 적용 후 cold invocation은 5,369ms와 5,866ms에 정상 종료돼 timeout이 재발하지
+않았다. 이어 같은 고정 15초 window에 네 메시지를 넣은 `bc_1044`에서 Candidate 1건,
+Queue visible/in-flight 0, 원문 속성 0을 확인했다. 해당 성공 구간의 CloudWatch 값은
+`Errors=0`, `Throttles=0`, `ConcurrentExecutions max=2`였다(M-011).
+
+**왜 늦게 찾았나**
+
+로컬 AC 테스트는 결정론적 분류·DynamoDB 조건부 쓰기·중복 처리를 검증했지만 Lambda
+cold start와 SQS poller가 batch를 선점하는 동작은 포함하지 않았다. Terraform validate와
+unit test가 모두 통과해 처리 용량도 검증된 것처럼 보였다. visible backlog만 봤다면 0이라
+정상으로 오판했을 것이고, not-visible과 CloudWatch `REPORT`를 함께 봐야 원인이 보였다.
+
+---
+
+## T-021. timeout은 없어졌는데 15초 안의 네 채팅으로 Candidate가 안 생긴다
+
+**증상**
+
+T-020 수정 후 외부 WebSocket으로 서로 다른 네 사용자의 약한 신호를 보냈다. 네 연결과
+16건의 팬아웃은 모두 성공했고 Worker도 5,369ms와 5,866ms에 정상 종료됐지만 Candidate는
+0건이었다. 처리 결과는 `BELOW_THRESHOLD` 1건과 `LATE_EVENT_DROPPED` 3건이었다.
+
+**원인**
+
+문서의 "15초 안"을 첫 메시지부터 세는 rolling window로 읽었지만, 구현은 Unix epoch에
+정렬된 15초 tumbling window를 사용한다. 네 메시지가 실제로 서로 15초 이내여도 고정
+경계를 걸치면 이전 window 3건과 다음 window 1건으로 분리된다. cold processing이 끝났을
+때 이전 window는 5초 late allowance도 지나 세 건이 late로 폐기됐다.
+
+**현재 처리와 미결정 사항**
+
+기존 구현 검증을 위해 window 시작 후 offset 2초에 새 `bc_1044` 시나리오를 보냈다.
+네 메시지가 같은 window에 들어가자 `LOW/UNKNOWN` Candidate 1건이 생성됐고, matched
+messages 4와 unique users 4가 확인됐다. 이것은 AC-004 구현 검증이지 운영 미탐의 해결이
+아니다.
+
+후속 Shadow matrix에서는 cold start 영향을 제거하고 경계를 직접 제어했다. offset
+13.200초에 약한 신호 3건, 다음 window offset 0.399초에 1건을 보냈다. Worker는 네 건을
+모두 정상 처리했지만 DynamoDB window는 3표와 1표로 갈렸고 Candidate는 없었다. 같은
+관찰 구간의 Lambda는 `Errors=0`, `Throttles=0`, duration 67-288ms였다. 따라서 이 현상은
+T-020의 timeout 재발이 아니라 window 의미 자체의 독립된 한계다(M-011).
+
+운영 정책은 `VERIFY-CHAT-WINDOW-001`로 남긴다. Shadow replay에서 경계 미탐률과 비용을
+측정한 뒤 다음 중 하나를 결정한다.
+
+1. 현재 tumbling window를 유지하고 경계 미탐을 허용한다.
+2. 중첩 window를 추가하고 Candidate 멱등성과 쓰기 비용을 함께 제한한다.
+3. sliding window로 상태와 Candidate 계약을 다시 설계한다.
+
+**왜 늦게 찾았나**
+
+AC 단위 테스트 timestamp가 모두 같은 고정 window 안에 있었고, "within 15s"라는 표현도
+rolling 의미로 읽힐 수 있었다. Lambda runtime 문제를 먼저 고친 뒤 timeout 없이 다시
+외부 E2E를 수행했기 때문에 두 번째 독립 원인이 드러났다.
+
+---
+
+## T-023. 저장소의 Dify 입력 계약과 실제 게시 앱이 다르다
+
+**증상**
+
+저장소 `infra/06-agent/dify/README.md`와 DSL에는 `alert_title` 등 Datadog용 변수 8개와
+유일한 workflow만 적혀 있다. 실제 Lambda API key로 `/v1/info`와 `/v1/parameters`를
+조회하면 다른 게시 앱이 선택되고 `behavior`, `custom_alert_json`을 포함한 입력 10개가
+나온다. 앱 목록에도 여러 workflow와 agent가 존재한다.
+
+**원인**
+
+Dify Studio에서 게시 workflow를 변경한 뒤 DSL을 저장소로 다시 export하지 않았다.
+Terraform은 Dify 앱과 workflow를 관리하지 않으므로 EC2 Postgres의 배포 상태와 Git의
+DSL이 자동으로 맞춰지지 않는다. Lambda API key가 어떤 앱을 가리키는지도 저장소의 앱
+이름만으로는 알 수 없다.
+
+**해결**
+
+런타임 확인은 Lambda가 쓰는 API key로 다음 세 가지를 함께 본다.
+
+1. `/v1/info`에서 실제 앱 이름과 mode를 확인한다.
+2. `/v1/parameters`에서 게시 앱의 입력 변수 이름·타입·필수 여부를 확인한다.
+3. Dify Postgres에서 해당 앱의 `workflow_id`가 가리키는 게시 graph가 필요한 변수를
+   실제로 참조하는지 확인한다.
+
+그 뒤 게시 앱에서 DSL을 다시 export하고 저장소 README의 입력 계약을 함께 갱신한다.
+API key나 workflow graph 원문은 로그와 문서에 남기지 않는다. DSL 동기화 전에는 저장소
+파일을 현재 배포 상태라고 보고 새 호출 경로를 활성화하지 않는다.
+
+**왜 늦게 찾았나**
+
+Dify는 모르는 입력 키를 조용히 무시하고, workflow 내부 실패도 HTTP 200으로 응답할 수
+있다(T-011, T-012). 저장소 DSL만 읽으면 계약이 맞아 보이고, API key로 실제 앱을 조회해
+게시 graph까지 대조해야 drift가 드러난다.
 
 ## T-015. SDK 가 봉투 필드를 늘렸는데 드리프트 시험이 안 깬다
 

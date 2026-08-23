@@ -158,6 +158,88 @@ variable "alert_relay_max_concurrency" {
   default     = 5
 }
 
+# ── Agent 공통 진입점 ────────────────────────────────────────────
+
+variable "agent_entry_secret_name" {
+  description = <<-EOT
+    전용 Agent Entry contract-test Dify 앱의 API key를 보관한 Secrets Manager 이름.
+
+    SecretString은 Terraform으로 만들거나 읽지 않는다. 값은 다음 key 하나를 가진다:
+
+      dify-api-key  전용 테스트 앱의 Service API key
+
+    Phase 1B Worker는 이 이름만 참조하고 AGENT_ENTRY_EXECUTION_ENABLED=false라
+    자동으로 값을 사용하지 않는다.
+  EOT
+  type        = string
+  default     = "o2/dev/dify-agent-entry-contract-test"
+}
+
+variable "agent_entry_worker_max_concurrency" {
+  description = "전용 Dify 테스트 앱을 보호하는 Generic Worker 예약 동시성 상한"
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.agent_entry_worker_max_concurrency >= 2 && var.agent_entry_worker_max_concurrency <= 10
+    error_message = "Lambda SQS scaling 하한과 운영 안전 범위를 고려해 2 이상 10 이하로 둔다."
+  }
+}
+
+variable "agent_entry_idempotency_ttl_seconds" {
+  description = "성공·실패 멱등성 상태 보존 기간. DLQ 14일보다 길어 replay 중 중복 호출을 막는다."
+  type        = number
+  default     = 2592000 # 30일
+
+  validation {
+    condition     = var.agent_entry_idempotency_ttl_seconds >= 1209600
+    error_message = "DLQ 최대 보존 기간 14일 이상이어야 한다."
+  }
+}
+
+# ── Slack 승인 중계 Lambda ───────────────────────────────────────
+
+variable "slack_approval_secret_name" {
+  description = <<-EOT
+    Slack 승인 중계 Lambda 가 실행 시점에 읽는 **Secrets Manager 시크릿 이름**.
+
+    alert_secret_name 과 같은 이유로 값이 아니라 이름만 참조한다. 시크릿은
+    apply 전에 손으로 한 번 만든다. 키 네 개가 필요하다:
+
+      slack-bot-token       Bot User OAuth Token (xoxb-...)
+      slack-channel-id      알림 보낼 채널 ID (C로 시작, 채널 이름 아님)
+      slack-signing-secret  Slack App Basic Information 의 Signing Secret
+      approval-api-key      임의로 정하는 값. Dify 의 SLACK_APPROVAL_API_KEY
+                             환경변수와 반드시 같아야 한다
+
+      aws secretsmanager create-secret --name o2/dev/slack-approval \
+        --secret-string '{"slack-bot-token":"xoxb-...","slack-channel-id":"C...","slack-signing-secret":"...","approval-api-key":"..."}' \
+        --region ap-northeast-2
+  EOT
+  type        = string
+  default     = "o2/dev/slack-approval"
+}
+
+# ── Runbook Lookup Lambda ────────────────────────────────────────
+
+variable "runbook_lookup_secret_name" {
+  description = <<-EOT
+    Runbook Lookup Lambda 가 실행 시점에 읽는 **Secrets Manager 시크릿 이름**.
+
+    값이 아니라 이름만 참조한다. 시크릿은 apply 전에 손으로 한 번 만든다.
+    키 하나가 필요하다:
+
+      runbook-lookup-api-key   임의로 정하는 값. Dify 의
+                                RUNBOOK_LOOKUP_API_KEY 환경변수와 반드시 같아야 한다
+
+      aws secretsmanager create-secret --name o2/dev/runbook-lookup \
+        --secret-string '{"runbook-lookup-api-key":"..."}' \
+        --region ap-northeast-2
+  EOT
+  type        = string
+  default     = "o2/dev/runbook-lookup"
+}
+
 # ── Session Manager ──────────────────────────────────────────────
 
 variable "manage_session_preferences" {

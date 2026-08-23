@@ -63,7 +63,12 @@ variable "node_instance_types" {
       테스트 페이지 외에 뭐라도 하나 더 올리는 순간 이쪽으로 올려야 한다.
 
     t3.small 선택 근거: 3주 기준 t3.medium 대비 약 $27 절감.
-    부족해지면 instance_types만 바꿔 apply하면 노드그룹이 롤링 교체된다.
+
+    부족해지면 instance_types만 바꾸면 되지만 **롤링 교체가 아니다.**
+    이 값은 ForceNew라 plan에 `must be replaced`가 뜨고, node_group_name이
+    "default"로 고정돼 있어 create_before_destroy도 못 건다. 즉 노드그룹을
+    지운 뒤 새로 만든다 — 그동안 노드가 0대이고 모든 Pod가 Pending이다.
+    서비스가 뜬 상태에서 바꾸려면 중단 창을 잡고 해라.
   EOT
   type        = list(string)
   default     = ["t3.small"]
@@ -125,4 +130,19 @@ variable "control_plane_log_types" {
 variable "control_plane_log_retention_days" {
   type    = number
   default = 7
+}
+
+variable "enable_karpenter" {
+  description = <<-EOT
+    Karpenter 용 IAM·SQS·EventBridge 를 만든다. Helm 설치는 04-platform 이 한다.
+
+    **4차 안전망이지 주력이 아니다.** 노드 확보에 최소 26초(2026-08-21 실측) +
+    이미지 pull 이 걸리는데 방송 시작 스파이크는 30초 안에 끝난다. 주력은 큐시트
+    기반 사전 확장이고(D-041), Karpenter 는 예상 밖 Pending Pod 와 노드 장애를 받는다.
+
+    끄면 IAM 역할과 큐가 지워진다. Helm 릴리스를 먼저 내린 뒤 끌 것 —
+    순서를 바꾸면 컨트롤러가 권한을 잃은 채로 남아 노드를 정리하지 못한다.
+  EOT
+  type        = bool
+  default     = false
 }

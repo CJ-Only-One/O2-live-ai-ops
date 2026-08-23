@@ -67,6 +67,33 @@ output "alert_relay_log_command" {
   ])
 }
 
+# ── Agent 공통 진입점 (Phase 1B: 비활성) ─────────────────────────
+
+output "agent_entry_queue_url" {
+  description = "agent.trigger.v1 전용 Queue. Phase 1B event source는 disabled"
+  value       = aws_sqs_queue.agent_entry.url
+}
+
+output "agent_entry_dlq_url" {
+  description = "Agent Entry Worker가 세 번 처리하지 못한 envelope가 이동하는 DLQ"
+  value       = aws_sqs_queue.agent_entry_dlq.url
+}
+
+output "agent_entry_idempotency_table" {
+  description = "idempotency_key별 IN_PROGRESS/SUCCEEDED/FAILED 상태와 lease를 보관"
+  value       = aws_dynamodb_table.agent_entry_idempotency.name
+}
+
+output "agent_entry_worker_name" {
+  description = "Phase 1B에서는 event source와 실행 플래그가 모두 disabled인 Generic Worker"
+  value       = aws_lambda_function.agent_entry_worker.function_name
+}
+
+output "agent_entry_event_source_enabled" {
+  description = "자동 Agent 호출 활성화 여부. Phase 1B 완료 상태는 반드시 false"
+  value       = aws_lambda_event_source_mapping.agent_entry.enabled
+}
+
 # ── O2 알림 중계 Lambda (병렬 파이프라인) ──────────────────────────
 
 output "alert_relay_o2_function_url" {
@@ -111,4 +138,24 @@ output "ssm_port_forward_command" {
     "--parameters portNumber=80,localPortNumber=17080",
     "--region ${var.region}",
   ])
+}
+
+# ── 이력 저장소 ───────────────────────────────────────────────────
+#
+# scripts/ 의 도구들이 `terraform output -raw` 로 읽는다. 버킷 이름을
+# 스크립트에 하드코딩하지 않기 위해서다 (D-018 과 같은 원칙).
+
+output "history_bucket" {
+  description = "인시던트 원본 JSON 이 쌓이는 S3 버킷"
+  value       = aws_s3_bucket.history.bucket
+}
+
+output "history_vector_bucket" {
+  description = "유사 인시던트 검색용 S3 Vectors 버킷"
+  value       = aws_s3vectors_vector_bucket.history.vector_bucket_name
+}
+
+output "history_vector_index" {
+  description = "S3 Vectors 인덱스 이름"
+  value       = aws_s3vectors_index.incidents.index_name
 }
