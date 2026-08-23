@@ -63,6 +63,7 @@
 | D-046 | Runbook 조회도 D-043 과 같은 이유로 Lambda 릴레이를 쓴다 | `aws_iam_role.dify` 죽은 권한, SigV4, Function URL, x-api-key |
 | D-047 | 채팅 분석은 Chat Gateway에서 SQS로 직접 분기한다 | Valkey 팬아웃 전용, Lambda, DynamoDB, 60초 원문, Incident Candidate |
 | D-048 | Chat Signal Worker는 독립 `08-chat-signal` 스택에 둔다 | EKS 비결합, state 분리, 비활성 trigger, fail-safe skeleton |
+| D-049 | Phase 4 Shadow는 생산자와 소비자를 독립 스위치로 제어한다 | enable_event_source, chat_signal_mode, 순차 활성화, 즉시 롤백 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -2997,3 +2998,34 @@ Phase 1B의 event source mapping은 변수로 켤 수 없고 코드에 `enabled 
 
 골격은 SQS body를 파싱하거나 로그에 기록하지 않는다. Phase 3에서 실제 처리기를
 넣더라도 `ReportBatchItemFailures`, 본문 비기록, 조건부/트랜잭션 쓰기 계약은 유지한다.
+
+---
+
+## D-049. Phase 4 Shadow는 생산자와 소비자를 독립 스위치로 제어한다
+
+D-048의 `enabled = false` 하드코딩은 Candidate 처리기가 없던 Phase 1B에서 메시지
+삭제를 막기 위한 임시 안전 게이트였다. Phase 3의 AC-001부터 AC-010까지 통과했으므로
+Phase 4 Shadow에서는 다음 두 스위치를 독립적으로 둔다.
+
+| 경계 | 스위치 | `off` | `on` |
+|---|---|---|---|
+| SQS -> Worker | `08-chat-signal.enable_event_source` | Lambda가 SQS를 소비하지 않음 | Event source mapping 활성화 |
+| Chat Gateway -> SQS | `04-platform.chat_signal_mode` | 채팅을 SQS에 발행하지 않음 | `shadow` 발행 활성화 |
+
+활성화는 `03-data -> 08-chat-signal -> 04-platform -> Chat Gateway 재시작` 순서로 한다.
+소비자를 먼저 켜면 생산자가 꺼진 빈 큐에서 Worker를 검증할 수 있고, 잘못된 생산자가
+원문을 쌓기 전에 IAM·환경 변수·Lambda 상태를 확인할 수 있다.
+
+롤백은 반대로 생산자를 먼저 끈다. `chat_signal_mode=off` 적용 후 Chat Gateway를
+재시작하고, 그 다음 `enable_event_source=false`를 적용한다. SQS와 DynamoDB는 삭제하지
+않는다. 원문은 SQS 보존 정책에 따라 최대 60초 후 만료된다.
+
+`04-platform`은 Chat Signal 외에 Karpenter·KEDA와 서비스별 Pod Identity도 소유한다.
+따라서 Phase 4 적용 전에 Terraform plan에서 Chat Signal 대상 외 변경이 섞이지 않는지
+확인해야 한다. 2026-08-23 plan에서는 Karpenter·KEDA 차이는 없었지만, 이전에 병합되고
+미적용된 서비스별 IAM 분리가 함께 잡혔다. 이런 기존 변경을 Chat Signal 활성화라는
+이유만으로 검토 없이 전체 apply하지 않는다.
+
+이 결정은 D-048의 스택 분리와 최소 IAM 원칙을 유지하며, Phase 1B의 하드코딩된 비활성
+게이트만 운영 가능한 변수형 게이트로 대체한다. Datadog Pull, Dify·Bedrock 호출,
+자동 조치는 여전히 범위 밖이다.

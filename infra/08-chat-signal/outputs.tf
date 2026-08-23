@@ -11,6 +11,6 @@ output "event_source_mapping_uuid" {
 }
 
 output "event_source_enabled" {
-  description = "Phase 1B에서는 반드시 false"
-  value       = false
+  description = "SQS event source mapping의 Terraform 의도 상태"
+  value       = var.enable_event_source
 }
