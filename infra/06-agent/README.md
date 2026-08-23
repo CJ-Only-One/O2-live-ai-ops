@@ -87,9 +87,11 @@ ledger를 정리하고 재투입한다.
 ledger 획득, Dify 호출 전에 거부한다.
 
 현재 `06-agent` 전체 plan에는 Phase 1B와 무관하게 먼저 병합된 기존 Lambda 코드 변경이
-함께 잡힌다. 이 변경을 검토하지 않은 상태에서 전체 stack을 apply하지 않는다. Phase 1B
-대상 plan이 `14 add, 0 change, 0 destroy`인지 확인하거나 기존 Lambda 변경을 별도
-적용해 전체 plan을 정리한 뒤 진행한다. 상세 근거는 `docs/agent-entrypoint.md` 6.2에 있다.
+함께 잡힌다. 이 변경을 검토하지 않은 상태에서 전체 stack을 apply하지 않는다.
+2026-08-23에는 Phase 1B 대상 저장 plan이 `14 add, 0 change, 0 destroy`이고 두 실행
+게이트가 모두 `false`임을 확인한 뒤 한 번만 target apply했다. apply 후 Phase 1B 대상
+재-plan은 `No changes`, 전체 plan은 기존 변경만 `0 add, 4 change, 0 destroy`였다.
+상세 근거는 `docs/agent-entrypoint.md` 6.2에 있다.
 
 Phase 1B apply 후 다음을 확인한다.
 
@@ -104,7 +106,8 @@ aws sqs get-queue-attributes --queue-url "$(terraform output -raw agent_entry_qu
 ```
 
 성공 조건은 event source가 `Disabled`, Queue/DLQ가 비어 있고 새 Dify workflow run이
-0건인 것이다. Phase 3 전에는 event source나 실행 플래그를 켜지 않는다.
+0건인 것이다. 2026-08-23 실환경에서 이 조건을 모두 확인했다. Phase 3 전에는 event
+source나 실행 플래그를 켜지 않는다.
 
 ### 1. 버전 고정
 
