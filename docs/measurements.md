@@ -23,6 +23,7 @@
 | M-008 | EKS 노드 자원 사용률 · 인스턴스 타입별 실측 | 노드 등급·대수 변경 · 파드 추가 |
 | M-009 | 읽기 경로 포화점 (api 파드) | replicas·워커 수 변경 · 인스턴스 변경 · 캐시 TTL 변경 |
 | M-010 | 채팅 팬아웃 한계 (chat-gateway) | 틱 주기·`MAX_PER_TICK` 변경 · 직렬화 방식 변경 · replicas 변경 |
+| M-011 | Chat Signal 외부 WebSocket E2E | Worker timeout·동시성·batch·Queue visibility 변경 |
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
 그 절의 표에 **행을 추가**한다. 조건이 다르면 값도 다르므로 조건을 꼭 적는다.
@@ -541,3 +542,29 @@ architecture.md 9.4-8 이 예고한 지점이다.
 > `프레임/s` 가 예상보다 적으면 서버에서 밀린 것이다. 10 msg/s · 4,000 연결의
 > 이론값은 약 17,500 인데 실측이 14,370(82%)이었다. 반대로 2 msg/s 에서는
 > 이론 6,700 대 실측 6,749 로 오차 0.7% 였다. 이 차이가 밀린 양이다.
+
+---
+
+## M-011. Chat Signal 외부 WebSocket E2E
+
+**조건 (2026-08-23, 최초 Shadow 활성화)** — 외부 ALB `/ws`, `bc_1042`, 서로 다른
+합성 사용자 4명, 약한 지연 신호 4건 동시 전송. Chat Gateway 2 replicas,
+Worker Python 3.13 arm64 128MB, timeout 5초, 예약 동시성 1, SQS batch 10,
+Queue visibility 30초·원문 보존 60초.
+
+| 구간 | 실측 |
+|---|---|
+| WebSocket 연결 | 4/4 성공 |
+| 클라이언트 수신 chat items | 16건 — 4건 × 4연결 |
+| 첫 Lambda invocation | 5,000ms, timeout |
+| 다음 성공 invocation | 3,922ms, `BELOW_THRESHOLD` 2건 |
+| Lambda CloudWatch | `Errors=1`, `Throttles=2`, `ConcurrentExecutions max=1` |
+| 나머지 메시지 | `LATE_EVENT_DROPPED` 2건 |
+| E2E 직후 Queue | visible 0, not-visible 4 |
+| DynamoDB | 전체 상태 7건, Candidate 0건, 원문 속성 0건 |
+
+팬아웃은 성공했지만 Candidate 경로는 실패했다. timeout 10초, 예약 동시성 2,
+event source 최대 동시성 2로 수정한 뒤 같은 조건을 새 broadcast ID로 재측정한다.
+
+**다시 재야 할 때** — Worker timeout·예약 동시성·event source 최대 동시성·batch 크기,
+Queue visibility, DynamoDB 처리 구조를 바꿀 때.
