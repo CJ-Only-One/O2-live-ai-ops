@@ -1,7 +1,7 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 0 contract only; no AWS resource or production routing change
+> **Status:** Phase 1A complete; Phase 1B infrastructure not implemented
 > **Updated:** 2026-08-23
 > **Decision:** `decisions.md` D-050
 > **Wire contract:** `contracts.md` 5.8 and `contracts/agent-trigger-v1.schema.json`
@@ -9,17 +9,20 @@
 ```yaml
 implementation_state:
   runtime_baseline_verified: COMPLETE
-  common_contract: COMPLETE_IN_THIS_CHANGE
+  common_contract: COMPLETE
   agent_trigger_queue: NOT_IMPLEMENTED
   chat_candidate_adapter: NOT_IMPLEMENTED
   generic_dify_worker: NOT_IMPLEMENTED
-  dedicated_test_workflow: NOT_CREATED
+  dedicated_test_workflow: PUBLISHED_CODE_ONLY
+  dedicated_test_workflow_ui_contract_tests: PASS
+  dedicated_test_workflow_service_api_tests: PASS
+  dedicated_test_workflow_dsl: RECORDED_IN_REPOSITORY
+  dedicated_test_workflow_api_key: STORED_IN_SECRETS_MANAGER
   existing_team_workflow_targeted: false
   datadog_migration: NOT_STARTED
   production_agent_handoff: DISABLED
 activation_blockers:
   - GENERIC_ENTRY_WORKER_AND_IDEMPOTENCY_LEDGER_NOT_IMPLEMENTED
-  - DEDICATED_TEST_WORKFLOW_NOT_CREATED_EXPORTED_AND_PUBLISHED
 production_migration_blockers:
   - EXISTING_O2_DIFY_DLQ_NOT_EMPTY
   - DEPLOYED_TEAM_WORKFLOW_DSL_NOT_EXPORTED_TO_REPOSITORY
@@ -39,6 +42,10 @@ production_migration_blockers:
 | Agent 호출 | Datadog Ingress Lambda가 비동기로 VPC Worker Lambda를 호출하고 Worker가 Dify Workflow API를 blocking 호출 |
 | 관찰한 기존 게시 앱 | `O2 Agentic AIOps — Source-Aligned Mock v4`; 팀 구성 중인 앱이며 신규 진입점 대상이 아님 |
 | 확인한 Dify 입력 기능 | `custom_alert_json` 형태의 paragraph 입력과 게시 graph 참조가 가능함을 확인 |
+| 전용 contract-test 앱 | 별도 앱으로 게시 완료; Start → Code → Output, LLM·Bedrock·자동 조치 없음 |
+| 게시 전 UI 계약 테스트 | Chat·Datadog 정상 예시 ACCEPTED, source/schema 불일치 REJECTED, 토큰 0 |
+| Service API 계약 테스트 | 전용 API key로 Chat·Datadog succeeded, 불일치 failed, 토큰 0 |
+| 전용 key 보관 | Secrets Manager `o2/dev/dify-agent-entry-contract-test`; 소스·Terraform state에 값 없음 |
 | 채팅 Candidate handoff | 미구현, `agent_handoff_status=NOT_CONFIGURED` |
 | 기존 Agent 경로 상태 | 성공 실행도 있으나 Worker 오류와 DLQ backlog가 있어 신규 경로의 무검증 재사용 금지 |
 
@@ -228,6 +235,25 @@ Phase 1A는 전용 테스트 앱 API를 사람이 직접 호출해 계약만 확
 전용 테스트 앱과 합성 입력만으로 Queue E2E를 진행하므로 기존 O2 Worker DLQ와 팀
 workflow drift를 건드리지 않는다. 두 문제의 정리는 기존 Datadog 경로를 공통 진입점으로
 옮기는 Phase 4의 선행 조건이다.
+
+### 6.1 Phase 1A 현재 체크포인트
+
+2026-08-23에 격리 앱을 생성하고 게시했다. Dify 편집기 Test Run으로 저장소의 두 정상
+예시와 source/schema 불일치 음성 예시를 실행했다. 정상 예시는 source별 `ACCEPTED`,
+불일치는 content-free code `CONTRACT_REJECTED:SOURCE_SCHEMA`로 종료됐고 세 실행 모두
+LLM 토큰은 0이었다. DSL 원본은
+[`agent-entry-contract-test-v1.yml`](../infra/06-agent/dify/agent-entry-contract-test-v1.yml)에
+기록했다.
+
+전용 API key는 Secrets Manager `o2/dev/dify-agent-entry-contract-test`에 저장했고,
+터널의 `localhost:17081/v1`을 통해 게시 `/parameters`와 `/workflows/run`을 직접
+검증했다. 호출 클라이언트는 Dify 화면의 `http://localhost/v1`을 그대로 사용하지 않고
+자신의 SSM local port를 붙여야 한다. Chat·Datadog 정상 입력은 각각 `succeeded`,
+source/schema 불일치는 Dify HTTP 응답 본문의 `data.status=failed`와
+`CONTRACT_REJECTED:SOURCE_SCHEMA`를 반환했다. 세 호출 모두 `total_tokens=0`이었다.
+
+따라서 Phase 1A 완료 게이트는 충족했다. 다음 구현 범위는 Phase 1B이며, 자동 source는
+여전히 연결하지 않는다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 

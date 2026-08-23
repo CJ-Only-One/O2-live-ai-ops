@@ -19,12 +19,23 @@ Dify 콘솔에 들어가지 않고도 워크플로가 무엇을 하는지 읽을
 | 파일 | 무엇 |
 |---|---|
 | `alert-triage.yml` | Datadog 알림 입력으로 내보낸 과거 workflow DSL |
+| `agent-entry-contract-test-v1.yml` | Chat·Datadog 공통 envelope를 LLM 없이 검증하는 격리 테스트 workflow DSL |
 
 > **2026-08-23 runtime drift 확인:** Lambda API key가 가리키는 실제 게시 앱은 이 DSL보다
 > 새롭고 `behavior`, `custom_alert_json` 입력을 추가로 가진다. 이 파일을 현재 배포본의
 > 백업이라고 간주하지 않는다. 이 기존 앱은 새 Agent 진입점의 테스트 대상이 아니다.
 > `docs/agent-entrypoint.md`에 정의한 전용 테스트 앱을 새로 만들고 그 DSL을 별도 파일로
 > export한다. 기존 앱 DSL drift는 Datadog production migration 전에 정리한다(T-022, M-012).
+
+`agent-entry-contract-test-v1.yml`은 기존 팀 앱과 API key를 재사용하지 않는다. Start 입력은
+required paragraph `custom_alert_json` 하나이고, Code 노드는 `source`별 exact field set과
+`READ_ONLY`, uncertainty 보존, raw chat 제외를 검사한다. 성공 응답에는 evidence나 입력
+원문을 복사하지 않는다. 이 앱에는 Bedrock·Datadog Pull·자동 조치 노드가 없다.
+
+이 파일은 AI와 코드 리뷰가 안정적으로 비교할 수 있도록 runtime UUID와 UI 표시 label을
+정규화한 canonical DSL이다. 실행 계약은 node label이 아니라 `custom_alert_json` variable,
+Code 함수, output selector가 소유한다. 실제 게시 앱의 `/parameters`와 정상·거부 Service
+API 호출 결과는 `docs/measurements.md` M-013에 기록한다.
 
 워크플로가 30초를 넘기면 빠른 층 / 깊은 층으로 쪼갠다. 그때 파일이
 `alert-triage-fast.yml`, `alert-triage-deep.yml` 로 늘어난다
