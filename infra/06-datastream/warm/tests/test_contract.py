@@ -72,6 +72,50 @@ def test_payload_fields_match_emit_signature(func_name, fields):
     )
 
 
+def test_envelope_fields_match_sdk():
+    """봉투 키 집합이 SDK 실제 출력과 어긋나면 여기서 깹니다.
+
+    **이 시험이 없어서 실제로 한 번 놓쳤습니다.** SDK 0.3.0 이 봉투에
+    `pod_name` 을 추가했는데, 이 파일의 `E_POD_NAME` 상수만 만들고
+    `ENVELOPE_FIELDS` 집합에 넣지 않은 채로 아무 시험도 깨지지 않았습니다
+    (`docs/troubleshooting.md` T-015).
+
+    SDK 에는 봉투 필드 목록을 내보내는 상수가 없습니다(v0.3.1 기준). 그래서
+    상수끼리 비교하지 못하고 `_envelope()` 을 직접 불러 실제 키를 봅니다 —
+    위 `test_payload_fields_match_emit_signature` 가 `inspect.signature()` 로,
+    `test_client_prefix_rule_matches_sdk_routing` 이 `sinks._stream_for()` 로
+    하는 것과 같은 방식입니다. SDK 가 공개 상수를 내주면 그때 갈아탑니다.
+    """
+    actual = set(o2emit._envelope(C.EVENT_ORDER_CREATE, {"order_id": "O-1"}))
+
+    missing = C.ENVELOPE_FIELDS - actual
+    assert not missing, (
+        f"집계가 참조하는데 봉투에 없는 필드: {sorted(missing)} — "
+        f"해당 지표가 조용히 None 이 됩니다"
+    )
+
+    # 늘어난 쪽도 잡습니다. 빠진 필드보다 **새로 생긴 필드를 모르는 것**이
+    # 실제로 우리를 문 경우였습니다 — 쓸지 말지 한 번은 정하게 만듭니다.
+    unknown = actual - C.ENVELOPE_FIELDS - C.ENVELOPE_FIELDS_UNUSED
+    assert not unknown, (
+        f"봉투에 생겼는데 집계가 모르는 필드: {sorted(unknown)} — "
+        f"쓸 것이면 ENVELOPE_FIELDS 에, 안 쓸 것이면 "
+        f"ENVELOPE_FIELDS_UNUSED 에 넣으세요"
+    )
+
+
+def test_envelope_unused_fields_still_exist_in_sdk():
+    """'안 쓴다'고 선언한 필드가 SDK 에서 사라졌으면 선언을 지워야 합니다.
+
+    없어진 필드를 계속 예외로 두면 그 자리가 죽은 코드가 되고, 나중에 같은
+    이름이 다른 뜻으로 되살아나도 시험이 안 깹니다.
+    """
+    actual = set(o2emit._envelope(C.EVENT_ORDER_CREATE, {"order_id": "O-1"}))
+
+    stale = C.ENVELOPE_FIELDS_UNUSED - actual
+    assert not stale, f"SDK 봉투에 없는데 예외로 남아 있는 필드: {sorted(stale)}"
+
+
 def test_client_prefix_rule_matches_sdk_routing():
     """어떤 이벤트가 클라이언트 스트림으로 가는지에 대한 판단이 양쪽에서
     같아야 합니다. 어긋나면 클릭이 비즈니스 윈도우로 새거나 그 반대가 됩니다.
