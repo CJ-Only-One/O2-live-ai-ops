@@ -86,6 +86,7 @@
 | D-069 | S1 차단률은 failure_codes 분포가 아니라 전체 chat.send 시도에서 계산한다 | CHANNEL_LIMITED, 전체 시도 분모, 고정 스칼라, Datadog 검증 축 |
 | D-070 | Incident 환경은 배포 environment와 exact match하며 namespace 별칭을 만들지 않는다 | `dev`, `o2-dev`, source mismatch, fail-safe ambiguity |
 | D-071 | 조치 상태 머신의 결정론적 절반만 Lambda 로 뺀다 — 대기는 Dify 가 한다 | 실행 락, 기준값, 재분석 1회, 세 갈래 판정, `incident_state` 재사용 |
+| D-072 | READ_PATH 상관관계에는 시나리오 4 page composite monitor 하나만 매핑한다 | role:page, role:sub, cache absorption, order path, duplicate signal |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4341,3 +4342,25 @@ correlator 가 이미 revision 을 직렬화한다. 그런데도 조치 락이 �
 악화·개선을 가르는 5% 는 **자리값이지 측정한 잡음 폭이 아니다.** 이 값으로
 판정이 뒤집히는 경우는 사람이 본다. 반복 실행의 지표 산포를 재면
 `measurements.md` 에 남기고 이 값을 바꾼다.
+
+---
+
+## D-072. READ_PATH 상관관계에는 시나리오 4 page composite monitor 하나만 매핑한다
+
+Chat의 `READ_PATH/LATENCY/api` Candidate와 병합할 Datadog monitor를 이름이 비슷하다는 이유로
+모두 넣으면 같은 metric이 page·sub monitor에서 중복 신호가 되거나 주문 경로를 읽기 경로로
+오분류한다. 2026-08-24 실제 Datadog Terraform state와 query·tag·message를 함께 확인했다.
+
+| 후보 | 결정 | 이유 |
+|---|---|---|
+| 시나리오 4 캐시 흡수 실패 composite | 매핑 | `role:page`, `service:api`; cache hit 저하와 API p95 상승을 함께 요구 |
+| 시나리오 4 latency p95 high | 제외 | composite의 `role:sub`; 알림 핸들이 없고 포함하면 같은 사건을 중복 전달 |
+| 시나리오 4 cache hit rate low | 제외 | composite의 `role:sub`; 단독으로는 사용자 지연을 뜻하지 않음 |
+| 주문 응답 p95 지연 | 제외 | 주문 경로이며 현재 Incident surface 계약에 ORDER가 없음 |
+
+선택한 composite를 `LATENCY/READ_PATH/api`로 고정 매핑한다. monitor title/body를 LLM으로 읽어
+상관관계를 추론하지 않는다. monitor ID는 환경별 배포 식별자이므로 generic variable default에
+넣지 않고 `infra/06-agent/terraform.tfvars`가 소유한다.
+
+이 결정은 mapping만 구성한다. 신규 Shadow webhook을 운영 monitor에 붙이거나 Source Adapter,
+Correlator, Worker를 활성화하지 않는다. webhook migration과 production handoff는 별도 승인이다.

@@ -177,14 +177,19 @@ Incident로 안전하게 분리돼 source 간 environment canonicalization 필�
 Phase 4D는 source environment 계약을 강제한다(D-070). canonical 값은 `var.environment`이며
 현재 `dev`다. `o2-dev`는 Kubernetes namespace라 alias로 취급하지 않는다. Datadog `env`가
 배포값과 다르면 Correlator는 정상 correlation key를 만들지 않고
-`AMBIGUOUS/SOURCE_ENVIRONMENT_MISMATCH`로 격리한다. 이 변경은 아직 적용하지 않았고, 병합 후
-Correlator와 Generic Worker Lambda를 같은 비활성 targeted apply로 갱신한 뒤 mismatch가 기존
-Incident에 자동 병합되지 않는지 검증한다. 두 Lambda는 새 reason code의 생산자·소비자라
-나눠 배포하지 않는다. `AMBIGUOUS` snapshot은 향후 Worker 활성화 시에도 operator confirmation을
-요구한다.
+`AMBIGUOUS/SOURCE_ENVIRONMENT_MISMATCH`로 격리한다. Correlator와 Generic Worker를 함께
+비활성 apply했고 live Shadow에서 canonical `dev`, 원본 evidence `o2-dev`, operator confirmation
+`true`, Worker/Dify 호출 0을 확인했다. 종료 후 모든 gate·Queue·state를 기본 빈 상태로
+복귀했고 대상 plan은 `No changes`다.
 
 병합 전 실제 state 기반 targeted plan은 `0 add / 2 change / 0 destroy`이며 두 Lambda의
 code hash만 변경한다. 저장 plan은 병합 전 커밋 기준이라 apply에 재사용하지 않는다.
+
+Phase 4E는 시나리오 4의 `role:page` 캐시 흡수 실패 composite monitor 한 개만
+`LATENCY/READ_PATH/api`로 매핑한다(D-072). sub monitor 둘은 중복, 주문 p95 monitor는 경로
+오분류 때문에 제외한다. mapping은 구현했지만 아직 적용하지 않았고 신규 Shadow webhook도
+운영 monitor에 붙이지 않는다. 병합 전 targeted plan은 `0 add / 1 change / 0 destroy`이며
+비활성 Correlator의 mapping 환경변수만 바뀐다.
 
 ## Incident Correlator Phase 3B
 

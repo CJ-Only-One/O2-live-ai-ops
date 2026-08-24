@@ -1,9 +1,9 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 4D environment contract implemented, not applied; all production execution gates disabled
+> **Status:** Phase 4D live validation complete; Phase 4E monitor mapping implemented, not applied; all production execution gates disabled
 > **Updated:** 2026-08-24
-> **Decision:** `decisions.md` D-050, D-055, D-066, and D-070
+> **Decision:** `decisions.md` D-050, D-055, D-066, D-070, and D-072
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
 
 ```yaml
@@ -39,14 +39,16 @@ implementation_state:
   datadog_monitor_id_guard: APPLIED_EXECUTION_DISABLED
   phase4c_live_source_to_dify_e2e: PASS_CHAT_DATADOG_CORRELATED_DIFY_ONCE
   phase4c_datadog_cycle_substitution: PASS_TRIGGERED_RECOVERED_SAME_CYCLE
-  phase4d_environment_contract: IMPLEMENTED_NOT_APPLIED
-  phase4d_targeted_plan: PASS_0_ADD_2_CHANGE_0_DESTROY_CODE_HASH_ONLY
+  phase4d_environment_contract: APPLIED_EXECUTION_DISABLED
+  phase4d_targeted_plan: APPLIED_0_ADD_2_CHANGE_0_DESTROY_CODE_HASH_ONLY
+  phase4d_environment_mismatch_shadow: PASS_AMBIGUOUS_NO_AUTO_MERGE
+  phase4e_datadog_monitor_mapping: IMPLEMENTED_NOT_APPLIED
+  phase4e_targeted_plan: PASS_0_ADD_1_CHANGE_0_DESTROY_MAPPING_ONLY
   datadog_migration: PHASE4C_SHADOW_E2E_ONLY
   production_agent_handoff: DISABLED
 activation_blockers:
   - CORRELATION_WINDOW_NOT_DECIDED_FROM_TWO_SAMPLES
-  - DATADOG_MONITOR_MAPPING_NOT_CONFIGURED
-  - CROSS_SOURCE_ENVIRONMENT_VALIDATION_NOT_APPLIED
+  - DATADOG_MONITOR_MAPPING_NOT_APPLIED
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
 production_migration_blockers:
@@ -757,6 +759,39 @@ operator confirmation 없이 자동 조치로 넘어갈 수 없다.
 병합 전 실제 state 기반 targeted plan은 `0 add / 2 change / 0 destroy`였고 두 Lambda의
 `source_code_hash`만 바뀐다. IAM·환경변수·Queue·event source 변경은 없다. 이 저장 plan은
 병합 전 커밋 기준이므로 apply에 재사용하지 않고 병합 후 같은 두 target으로 다시 만든다.
+
+2026-08-24 병합 후 새 plan으로 두 Lambda를 함께 적용했다. Correlator·Worker의 code hash만
+바뀌었고 실행 플래그와 event source는 계속 disabled였다. 이어 합성 idempotency key 한 개,
+300초 test window, 합성 monitor mapping 한 개로 Correlator만 잠시 열어 `env:o2-dev` 신호를
+넣었다. 생성된 revision 1은 다음 계약을 만족했다.
+
+| 필드 | 실제 결과 |
+|---|---|
+| correlation | `AMBIGUOUS/LOW` |
+| reason | `SOURCE_ENVIRONMENT_MISMATCH` |
+| normalized environment | `dev` |
+| source evidence env | `o2-dev` |
+| operator confirmation | `true` |
+| Worker/Dify | Worker disabled, 호출 0 |
+
+검증 직후 Correlator를 `false`, allowlist empty, window `0`, mapping `{}`, event source
+`Disabled`로 복귀했다. Signal·Invocation Queue와 두 DLQ, Incident State·execution ledger는
+모두 0이고 Phase 4D 대상 plan은 `No changes`다.
+
+### 6.11 Phase 4E 운영 Datadog monitor mapping
+
+D-072에 따라 시나리오 4의 `role:page` 캐시 흡수 실패 composite monitor 한 개만
+`LATENCY/READ_PATH/api`로 매핑한다. 이 monitor는 cache hit 저하와 API p95 상승을 동시에
+요구한다. 같은 조건의 두 `role:sub` monitor는 중복 신호를 막기 위해 제외하고, 주문 응답 p95
+monitor는 READ_PATH가 아니므로 제외한다.
+
+mapping은 `infra/06-agent/terraform.tfvars`가 환경별 실제 monitor ID를 소유한다. 숫자 ID와
+통제된 symptom/surface, 1~128자 service만 허용하도록 Terraform validation도 추가했다.
+Phase 4E는 아직 apply하지 않았고 Shadow webhook도 운영 monitor에 붙이지 않는다. 병합 후
+Correlator가 disabled인 상태에서 mapping 환경변수 한 개만 바뀌는 targeted apply를 수행한다.
+병합 전 실제 state plan은 `0 add / 1 change / 0 destroy`이며
+`INCIDENT_DATADOG_MONITOR_MAP_JSON` 외 속성은 바뀌지 않았다. saved plan은 병합 후 재사용하지
+않고 새로 만든다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 

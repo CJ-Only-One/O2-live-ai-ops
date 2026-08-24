@@ -326,13 +326,25 @@ variable "incident_chat_surface_map" {
 }
 
 variable "incident_datadog_monitor_map" {
-  description = "Datadog monitor_id를 상관관계 차원으로 바꾸는 명시 mapping. Phase 3B 기본값은 비어 있음"
+  description = "Datadog monitor_id를 상관관계 차원으로 바꾸는 명시 mapping. 환경별 실제 ID는 terraform.tfvars가 소유한다."
   type = map(object({
     symptom_family    = string
     suspected_surface = string
     service           = string
   }))
   default = {}
+
+  validation {
+    condition = alltrue([
+      for monitor_id, mapping in var.incident_datadog_monitor_map :
+      can(regex("^[0-9]{1,20}$", monitor_id)) &&
+      contains(["LATENCY", "AVAILABILITY", "ERROR_RATE", "UNKNOWN"], mapping.symptom_family) &&
+      contains(["READ_PATH", "PLAYBACK", "CHAT", "UNKNOWN"], mapping.suspected_surface) &&
+      length(trimspace(mapping.service)) >= 1 &&
+      length(mapping.service) <= 128
+    ])
+    error_message = "Datadog monitor mapping은 숫자 ID와 통제된 symptom/surface, 1~128자 service를 사용해야 한다."
+  }
 }
 
 # ── Slack 승인 중계 Lambda ───────────────────────────────────────
