@@ -16,6 +16,15 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# CI Runner에는 AWS region/credential이 없다. ingress.py는 import 시점에 Lambda와
+# S3 client를 만들기 때문에, 이 값이 없으면 테스트가 AWS를 호출하기도 전에
+# NoRegionError로 죽는다(T-028). 전부 테스트용 가짜 값이고 네트워크 호출은 하지 않는다.
+os.environ.setdefault("AWS_DEFAULT_REGION", "ap-northeast-2")
+os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
+os.environ.setdefault("AWS_SESSION_TOKEN", "testing")
+
 # boto3 는 Lambda 런타임에만 있다. 이 점검은 AWS 를 부르지 않으므로,
 # 로컬에 없으면 가짜를 끼워 넣는다. 설치를 요구하면 아무도 안 돌린다.
 try:

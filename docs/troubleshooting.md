@@ -43,6 +43,7 @@
 | T-025 | 새 custom metric 값은 보이는데 tag-filter monitor가 계속 No Data다 | metric ingestion, tag index propagation, `all-tags`, prewarm, `{*}` 금지 |
 | T-026 | Chat과 Datadog이 같은 장애인데 Incident가 두 개 생긴다 | `dev`, `o2-dev`, environment exact match, canonicalization |
 | T-027 | 시험 파일을 저장소에 넣었는데 CI 가 한 번도 안 돌린다 | 명시 파일 목록, 두 가지 시험 양식, `NO TESTS RAN` 종료 코드 5 |
+| T-028 | 로컬에서는 통과한 `test_history.py`가 CI에서 `NoRegionError`로 죽는다 | boto3 import-time client, AWS_DEFAULT_REGION, EC2 metadata, hermetic test |
 
 
 ---
@@ -1424,3 +1425,26 @@ Correlator는 environment·symptom·service·surface를 exact match하며, 환�
 그 52건이 **어느 파일에서 나온 것인지** 는 안 셌다. 시험을 추가했으면 건수가
 늘었는지를 봐야 하는데 초록만 봤다. 파일 목록을 손으로 관리하는 CI 에서는
 **추가한 시험이 로그에 나타나는지**를 매번 확인해야 한다.
+
+---
+
+## T-028. 로컬에서는 통과한 `test_history.py`가 CI에서 `NoRegionError`로 죽는다
+
+**증상** — T-027 후속으로 단독 스크립트 시험을 CI에 연결하자
+`python3 lambda/test_history.py`만 `botocore.exceptions.NoRegionError: You must specify a
+region`으로 실패했다. 같은 파일은 개발자 Mac에서 통과했다.
+
+**원인** — `test_history.py`가 import하는 `ingress.py`는 module import 시점에
+`boto3.client("lambda")`와 `boto3.client("s3")`를 만든다. Mac에는 AWS 기본 region이 있지만
+GitHub Runner에는 없다. 테스트가 AWS API를 호출해서 실패한 것이 아니라 client 객체를 만드는
+단계에서 환경 차이가 드러난 것이다. 자격증명이 없으면 boto3가 EC2 metadata를 찾으려 할 수도
+있어 네트워크 비결정성도 남아 있었다.
+
+**조치** — `test_history.py`가 application module을 import하기 전에 테스트 전용
+`AWS_DEFAULT_REGION`, dummy credential, `AWS_EC2_METADATA_DISABLED=true`를 넣는다. 실제 AWS
+호출은 계속 하지 않고, Lambda 코드나 배포 환경변수도 바꾸지 않는다. 빈 환경을 재현하는 이력
+기능 변수들은 기존대로 비워 둔다.
+
+**왜 늦게 찾았나** — CI에 시험을 연결하기 전에는 개발자 Mac의 AWS 설정을 테스트 전제로
+착각했다. 로컬에서 boto3가 설치돼 있는 경로와 없는 경로는 검사했지만, **boto3는 있고 AWS
+설정은 없는 Runner 경로**를 검사하지 않았다.
