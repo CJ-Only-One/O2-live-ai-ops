@@ -107,6 +107,7 @@ resource "aws_lambda_function" "worker" {
     variables = {
       CHAT_INCIDENT_TABLE_NAME = local.chat_incident_table_name
       WORKER_MODE              = var.enable_event_source ? "SHADOW" : "SOURCE_DISABLED"
+      DEPLOYMENT_ENVIRONMENT   = var.environment
     }
   }
 

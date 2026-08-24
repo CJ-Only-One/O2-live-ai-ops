@@ -73,8 +73,9 @@ sudo docker exec docker-ssrf_proxy-1 cat /etc/squid/dify_allow_private.conf
 
 # Dify 가 실제로 가는 경로(squid 경유)로 때려 본다 — 이게 진짜 확인이다
 sudo docker exec docker-api-1 sh -c 'curl -s --proxy http://ssrf_proxy:3128 \
-  -X POST http://hot-proxy:8788/v1/hot/datadog/query \
-  -H "Content-Type: application/json" -d "{\"query\":\"avg:system.cpu.user{*}\"}"'
+  -X POST http://hot-proxy:8788/v1/hot/datadog/metric \
+  -H "Content-Type: application/json" \
+  -d "{\"metric\":\"latency_p95\",\"service\":\"api\"}"'
 ```
 
 ## Dify 에 붙이기
@@ -109,7 +110,8 @@ Lambda 콜드 스타트가 겹치면 2~3초까지 올라간다. 더 무거운 �
 
 ### 경로를 좁혀 두었다
 
-`/v1/hot/` 아래만 통과시킨다(`O2_HOT_ALLOWED_PREFIX`). 서명을 대신 해 주는
+`/v1/hot/health`와 `/v1/hot/datadog/metric`만 통과시킨다. raw Datadog query는
+Lambda 직접 진단용으로 남아 있지만 이 프록시에서는 403이다. 서명을 대신 해 주는
 물건이라 경로를 그대로 믿으면 같은 자격증명으로 다른 것을 부르는 통로가 된다.
 
 ### 호스트로 포트를 내보내지 않는다

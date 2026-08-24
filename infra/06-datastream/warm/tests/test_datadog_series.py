@@ -144,3 +144,21 @@ def test_channel_limited_rate_uses_all_chat_attempts_as_denominator():
     series = _series_for(events, service="chat-gateway")
     metric = next(s for s in series if s["metric"] == "o2.warm.channel_limited_rate")
     assert metric["points"][0]["value"] == 0.2
+
+
+def test_canary_emits_end_to_end_freshness_at_aggregate_timestamp():
+    event = factory.envelope(
+        "canary.ping",
+        factory.BASE,
+        service="o2-canary",
+        user="u_canary",
+        payload={"emitted_at": "2026-08-24T00:00:00.000Z"},
+    )
+    sk = build("o2-canary", window_start(factory.BASE), [event])
+    metrics = derive(sk, now=factory.BASE + 7)
+    series = build_series(metrics, prefix="o2.warm.", env="dev")
+
+    freshness = next(s for s in series if s["metric"] == "o2.warm.pipeline_freshness_seconds")
+    assert freshness["points"][0]["timestamp"] == int(factory.BASE + 7)
+    assert freshness["points"][0]["value"] == 7
+    assert metrics["source_event_last_ts"] == factory.BASE

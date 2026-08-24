@@ -758,6 +758,43 @@ resource "datadog_dashboard" "infra" {
       }
     }
   }
+
+  widget {
+    group_definition {
+      title       = "5. 네트워크 오류 · 드롭"
+      layout_type = "ordered"
+
+      widget {
+        timeseries_definition {
+          title       = "Pod Network errors / drops"
+          title_size  = "16"
+          show_legend = true
+
+          request {
+            q            = "sum:kubernetes.network.rx_errors{${local.infra_scope}} by {pod_name}.as_rate()"
+            display_type = "line"
+          }
+          request {
+            q            = "sum:kubernetes.network.tx_errors{${local.infra_scope}} by {pod_name}.as_rate()"
+            display_type = "line"
+          }
+          request {
+            q            = "sum:kubernetes.network.rx_dropped{${local.infra_scope}} by {pod_name}.as_rate()"
+            display_type = "line"
+          }
+          request {
+            q            = "sum:kubernetes.network.tx_dropped{${local.infra_scope}} by {pod_name}.as_rate()"
+            display_type = "line"
+          }
+
+          yaxis {
+            min          = "0"
+            include_zero = true
+          }
+        }
+      }
+    }
+  }
 }
 
 output "dashboard_infra_url" {

@@ -73,6 +73,18 @@ data "aws_iam_policy_document" "canary" {
   }
 
   statement {
+    sid       = "ReadPipelineFreshness"
+    actions   = ["dynamodb:Query"]
+    resources = [aws_dynamodb_table.agent_context.arn]
+  }
+
+  statement {
+    sid       = "CheckPreviousBusinessPartition"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.data_lake.arn]
+  }
+
+  statement {
     sid = "Logs"
 
     actions = [
@@ -116,8 +128,11 @@ resource "aws_lambda_function" "canary" {
 
   environment {
     variables = {
-      CANARY_STREAM  = aws_kinesis_stream.business.name
-      CANARY_SERVICE = local.canary_service
+      CANARY_STREAM    = aws_kinesis_stream.business.name
+      CANARY_SERVICE   = local.canary_service
+      WARM_TABLE       = aws_dynamodb_table.agent_context.name
+      DATA_LAKE_BUCKET = aws_s3_bucket.data_lake.id
+      ENVIRONMENT      = var.environment
     }
   }
 
@@ -150,6 +165,38 @@ resource "aws_lambda_permission" "canary" {
   function_name = aws_lambda_function.canary[0].function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.canary[0].arn
+}
+
+resource "aws_cloudwatch_metric_alarm" "warm_window_stale" {
+  count = var.enable_pipeline_canary ? 1 : 0
+
+  alarm_name          = "o2-warm-window-stale"
+  alarm_description   = "The latest o2-canary Warm window is older than 15 minutes."
+  namespace           = "O2/Pipeline"
+  metric_name         = "WarmWindowAgeSeconds"
+  dimensions          = { Environment = var.environment }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 900
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "breaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "business_partition_missing" {
+  count = var.enable_pipeline_canary ? 1 : 0
+
+  alarm_name          = "o2-business-partition-missing"
+  alarm_description   = "The previous UTC-hour business raw partition is missing from S3."
+  namespace           = "O2/Pipeline"
+  metric_name         = "BusinessPartitionMissing"
+  dimensions          = { Environment = var.environment }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "breaching"
 }
 
 output "canary_service_tag" {

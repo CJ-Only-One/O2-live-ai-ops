@@ -71,7 +71,11 @@ SERVICE = os.environ.get("CANARY_SERVICE", "o2-canary")
 EVENT_NAME = "canary.ping"
 
 _kinesis = boto3.client("kinesis")
+_s3 = boto3.client("s3")
+_dynamodb = boto3.client("dynamodb")
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+TABLE = os.environ.get("WARM_TABLE", "")
+DATA_LAKE_BUCKET = os.environ.get("DATA_LAKE_BUCKET", "")
 
 
 def _iso_now() -> str:
@@ -117,7 +121,70 @@ def _envelope() -> dict:
     }
 
 
+def _previous_hour_prefix(now: datetime) -> str:
+    previous = datetime.fromtimestamp(now.timestamp() - 3600, timezone.utc)
+    return previous.strftime("raw/business/year=%Y/month=%m/day=%d/hour=%H/")
+
+
+def _warm_window_age(now_epoch: float) -> float | None:
+    if not TABLE:
+        return None
+    response = _dynamodb.query(
+        TableName=TABLE,
+        KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues={
+            ":pk": {"S": f"METRIC#{SERVICE}"},
+            ":prefix": {"S": "TS#"},
+        },
+        ScanIndexForward=False,
+        Limit=1,
+        ProjectionExpression="window_end",
+    )
+    items = response.get("Items") or []
+    if not items:
+        return None
+    window_end = float(items[0]["window_end"]["N"])
+    return max(0.0, now_epoch - window_end)
+
+
+def _business_partition_missing(now: datetime) -> int:
+    if not DATA_LAKE_BUCKET:
+        return 1
+    response = _s3.list_objects_v2(
+        Bucket=DATA_LAKE_BUCKET,
+        Prefix=_previous_hour_prefix(now),
+        MaxKeys=1,
+    )
+    return 0 if response.get("KeyCount", 0) > 0 else 1
+
+
+def _emit_health(now: datetime) -> None:
+    """CloudWatch EMF로 Datadog intake와 독립된 신선도 증거를 남깁니다."""
+    age = _warm_window_age(now.timestamp())
+    missing = _business_partition_missing(now)
+    metrics = [{"Name": "BusinessPartitionMissing", "Unit": "Count"}]
+    payload = {
+        "_aws": {
+            "Timestamp": int(now.timestamp() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "O2/Pipeline",
+                "Dimensions": [["Environment"]],
+                "Metrics": metrics,
+            }],
+        },
+        "Environment": os.environ.get("ENVIRONMENT", "dev"),
+        "BusinessPartitionMissing": missing,
+        "CheckedPartition": _previous_hour_prefix(now),
+    }
+    if age is not None:
+        metrics.append({"Name": "WarmWindowAgeSeconds", "Unit": "Seconds"})
+        payload["WarmWindowAgeSeconds"] = age
+    print(json.dumps(payload, separators=(",", ":")))
+
+
 def handler(event, context):
+    now = datetime.now(timezone.utc)
+    _emit_health(now)
     env = _envelope()
     resp = _kinesis.put_record(
         StreamName=STREAM,

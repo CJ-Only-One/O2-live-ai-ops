@@ -39,8 +39,8 @@ RUNBOOKS = [
         "success_criteria": {
             # 절대 SLO — architecture.md 12.1 계약, M-009 실측이 이 기준으로 판정됨.
             "conditions": [
-                {"metric": "p95_ms", "comparison": "<=", "threshold": 800},
-                {"metric": "error_rate", "comparison": "<=", "threshold": Decimal("0.01")},
+                {"metric": "latency_p95", "comparison": "<=", "threshold": 800},
+                {"metric": "failure_rate", "comparison": "<=", "threshold": Decimal("0.01")},
             ],
             # 기준선 상대(D-058) — canary 붙이기 전 정상 파드만의 p95 가
             # baseline_p95_ms 로 Baseline 상태에서 기록된다(0.4). 격리 후,
@@ -48,7 +48,7 @@ RUNBOOKS = [
             # 그 파드였다"는 근거가 된다(2.2 최종 재검증).
             # 허용 오차는 아직 안 잰다 — 정하는 대로 이 값을 채운다.
             "baseline_conditions": [
-                {"metric": "p95_ms", "comparison": "<=", "relative_to": "baseline_p95_ms"},
+                {"metric": "latency_p95", "comparison": "<=", "relative_to": "baseline_p95_ms"},
             ],
             "logic": "AND",
         },
@@ -107,15 +107,13 @@ RUNBOOKS = [
         #   재는 건 이 작업 범위 밖이라 자리만 채워 둔다(사용자 지시로
         #   임시값 허용). 실측 나오면 이 표를 실측값으로 덮어쓸 것 —
         #   숫자를 지어내지 않는다는 AGENTS.md 원칙의 예외이므로 굵게 표시.
-        #   metric 이름(chat_propagation_p95_ms)도 Datadog/warm path 쪽
-        #   실제 필드명과 맞는지 담당자 확인 필요 — o2warm/metrics.py 에는
-        #   아직 채팅 전파 지표가 없다.
+        #   서버 fanout 완료 지연과 합성 consumer E2E 지연은 별도 지표다.
         "rca_type": "chat_channel_overload",
         "success_criteria": {
             "conditions": [
                 # TEMP: 채팅 전파 계약 기준이 문서에 없다(2.1). read-path 계약
                 # (800ms, architecture.md 12.1)을 자리채움으로 그대로 썼다.
-                {"metric": "chat_propagation_p95_ms", "comparison": "<=", "threshold": 800},
+                {"metric": "chat_fanout_p95", "comparison": "<=", "threshold": 800},
                 # TEMP: "이 값이 없으면 성공 판정이 성립 안 함"이라고 문서가
                 # 못박은 바로 그 값. 5% 는 근거 없는 임시 상한이다.
                 {"metric": "block_rate", "comparison": "<=", "threshold": Decimal("0.05")},
@@ -126,7 +124,7 @@ RUNBOOKS = [
             # 기준선 상대(D-058) — S1은 "복구"가 아니라 "감내 가능한 열화"라
             # (2.1) 절대 임계만으론 자연 회복과 조치 효과를 못 가른다.
             "baseline_conditions": [
-                {"metric": "chat_propagation_p95_ms", "comparison": "<=", "relative_to": "baseline_propagation_p95_ms"},
+                {"metric": "chat_fanout_p95", "comparison": "<=", "relative_to": "baseline_propagation_p95_ms"},
             ],
             "logic": "AND",
         },
@@ -195,7 +193,7 @@ RUNBOOKS = [
         "rca_type": "other",
         "success_criteria": {
             # TEMP: block_rate는 아직 warm path에 없는 지표다(o2warm/metrics.py
-            # 확인 필요) — S1의 chat_propagation_p95_ms와 같은 처지, 자리만
+            # 확인 필요) — S1의 서버 fanout 지표와 같은 처지, 자리만
             # 채워 둔다. 실측/실제 필드명 확인 후 덮어쓸 것.
             "conditions": [
                 {"metric": "block_rate", "comparison": "<=", "threshold": 0},
@@ -289,7 +287,9 @@ KNOBS = [
         "diagnostic_contamination": True,
         "rollback_method": "immediate_delete",
         "rollback_call": {"endpoint": "$CHAT_GATEWAY_ADMIN_URL", "action": "clear"},
-        "verification_metrics": ["chat_propagation_p95_ms", "block_rate", "items_per_sec"],
+        # 서버 fanout 완료와 합성 consumer E2E는 서로 다른 지표다. 자동 검증은
+        # 항상 수집되는 서버측 논리 지표를 쓰고 E2E는 k6 수용 시험에서 확인한다.
+        "verification_metrics": ["chat_fanout_p95", "block_rate", "items_per_sec"],
         # 결정론적 사전 검사. 통과 못 하면 자동 실행하지 않는다.
         "preconditions": [
             {"check": "broadcast_is_live", "source": "observability.alert.broadcast_id"},
@@ -313,7 +313,7 @@ KNOBS = [
         "diagnostic_contamination": True,
         "rollback_method": "previous_value",
         "rollback_call": {"endpoint": "$SCALE_EXECUTOR_URL", "note": "replicas 를 이전 값으로"},
-        "verification_metrics": ["p95_ms", "error_rate"],
+        "verification_metrics": ["latency_p95", "failure_rate"],
         # 이게 없으면 서비스를 통째로 내릴 수 있다 (scenario-experiment.md 3절).
         "preconditions": [
             {"check": "healthy_capacity_at_or_above_safe_minimum"},
@@ -346,7 +346,7 @@ KNOBS = [
         "rollback_method": "immediate_delete",
         "rollback_call": {"endpoint": "$API_ADMIN_URL", "action": "clear"},
         # 효율 축(포화점 이동)은 아직 못 넣는다 — 안 쟀다.
-        "verification_metrics": ["block_rate", "api_cpu_per_request"],
+        "verification_metrics": ["latency_p95", "failure_rate"],
         "preconditions": [
             {"check": "broadcast_is_live", "source": "observability.alert.broadcast_id"},
             {"check": "read_path_not_already_degraded", "source": "cfg:read_path_degraded:{broadcast_id}"},

@@ -150,6 +150,18 @@ def build_series(metrics: dict, *, prefix: str | None = None, env: str | None = 
                 "tags": tags,
             }
         )
+    if metrics.get("service") == "o2-canary" and metrics.get("pipeline_freshness_seconds") is not None:
+        series.append(
+            {
+                "metric": f"{prefix}pipeline_freshness_seconds",
+                "type": GAUGE,
+                "points": [{
+                    "timestamp": int(metrics.get("aggregate_ts") or ts),
+                    "value": float(metrics["pipeline_freshness_seconds"]),
+                }],
+                "tags": tags,
+            }
+        )
     return series
 
 
@@ -159,6 +171,7 @@ def submit(series: list[dict]) -> bool:
         return True
     key = api_key()
     if not key:
+        _submit_failed("api_key_unavailable")
         return False
 
     url = f"https://api.{settings.dd_site}/api/v2/series"
@@ -175,10 +188,10 @@ def submit(series: list[dict]) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=settings.dd_timeout) as resp:
             return 200 <= resp.status < 300
-    except urllib.error.HTTPError as e:
-        _warn(f"Datadog {e.code}: {e.read()[:200]!r}")
-    except Exception as e:  # 네트워크·타임아웃 전부 여기로
-        _warn(f"Datadog 전송 실패: {e}")
+    except urllib.error.HTTPError as error:
+        _submit_failed(f"http_{error.code}")
+    except Exception:
+        _submit_failed("transport_error")
     return False
 
 
@@ -195,3 +208,8 @@ def publish(metrics_list: list[dict]) -> int:
 
 def _warn(msg: str) -> None:
     sys.stderr.write(f"[o2warm] {msg}\n")
+
+
+def _submit_failed(reason: str) -> None:
+    """CloudWatch가 읽는 고정되고 비민감한 실패 신호를 남깁니다."""
+    _warn(f"DATADOG_SUBMIT_FAILED reason={reason}")

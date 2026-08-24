@@ -133,7 +133,8 @@ resource "datadog_dashboard" "business" {
           precision  = 0
 
           request {
-            q          = "avg:${local.p}latency_p95{${local.scope}}"
+            # APM 원시 단위(second)를 기존 화면 계약(ms)으로 변환한다.
+            q          = "p95:trace.fastapi.request{${local.scope}} * 1000"
             aggregator = "last"
 
             conditional_formats {
@@ -320,7 +321,7 @@ resource "datadog_dashboard" "business" {
           show_legend = true
 
           request {
-            q            = "avg:${local.p}rps{${local.scope}}"
+            q            = "sum:trace.fastapi.request.hits{${local.scope}}.as_rate()"
             display_type = "bars"
             style {
               palette = "dog_classic"
@@ -401,7 +402,7 @@ resource "datadog_dashboard" "business" {
           # 두 선이 함께 오르면 전반적 지연, p95만 오르면 꼬리만 나빠진 것이다.
           # 후자는 평균으로는 보이지 않는다.
           request {
-            q            = "avg:${local.p}latency_p50{${local.scope}}"
+            q            = "p50:trace.fastapi.request{${local.scope}} * 1000"
             display_type = "line"
             style {
               palette   = "cool"
@@ -410,7 +411,7 @@ resource "datadog_dashboard" "business" {
           }
 
           request {
-            q            = "avg:${local.p}latency_p95{${local.scope}}"
+            q            = "p95:trace.fastapi.request{${local.scope}} * 1000"
             display_type = "line"
             style {
               palette    = "warm"

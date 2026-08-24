@@ -125,7 +125,7 @@ resource "datadog_monitor" "order_latency_p95" {
   name    = "[O2][시나리오 2·5] 주문 응답 p95 지연"
   type    = "metric alert"
   message = <<-EOT
-    주문 응답 p95(`${var.metric_prefix}latency_p95{service:api}`)가
+    주문 응답 p95(`trace.fastapi.request{service:api}`)가
     위험 임계를 넘었습니다.
 
     **이 alert가 커버하는 두 시나리오**
@@ -143,11 +143,13 @@ resource "datadog_monitor" "order_latency_p95" {
     @webhook-o2-dify
   EOT
 
-  query = "min(last_${var.scenario_entry_window_minutes}m):avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical}"
+  # trace.fastapi.request 의 Datadog API 단위는 second다. 사용자 계약과 변수는
+  # ms를 유지하므로 비교 임계만 1000으로 나눈다(2026-08-24 recent point 확인).
+  query = "min(last_${var.scenario_entry_window_minutes}m):p95:trace.fastapi.request{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical / 1000}"
 
   monitor_thresholds {
-    warning  = var.latency_p95_warning
-    critical = var.latency_p95_critical
+    warning  = var.latency_p95_warning / 1000
+    critical = var.latency_p95_critical / 1000
   }
 
   # dev 에는 주문 트래픽이 상시로 흐르지 않는다. 켜 두면 "지표가 안 온다" 가
@@ -198,11 +200,11 @@ resource "datadog_monitor" "cache_hit_rate_low" {
 resource "datadog_monitor" "latency_p95_high" {
   name    = "[O2][시나리오 4] 응답 p95 지연 높음 (서브 모니터)"
   type    = "metric alert"
-  query   = "min(last_${var.scenario_entry_window_minutes}m):avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical}"
+  query   = "min(last_${var.scenario_entry_window_minutes}m):p95:trace.fastapi.request{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical / 1000}"
   message = "응답 p95 지연 시간이 임계치를 초과했습니다. 복합 모니터의 하위 조건으로 작동합니다."
 
   monitor_thresholds {
-    critical = var.latency_p95_critical
+    critical = var.latency_p95_critical / 1000
   }
 
   notify_no_data      = false
@@ -429,7 +431,7 @@ resource "datadog_monitor" "latency_p95_pod_outlier" {
     파드에 희석돼 임계 안에 머물 수 있습니다.
 
     **먼저 방향을 봅니다.** 이 탐지는 "무리에서 떨어진 파드" 를 잡지
-    "느린 파드" 를 잡지 않습니다. 대시보드에서 `${var.metric_prefix}latency_p95`
+    "느린 파드" 를 잡지 않습니다. 대시보드에서 `trace.fastapi.request`
     를 `by {pod_name}` 으로 펼쳐, 잡힌 파드가 **위로** 떨어졌는지 확인하세요.
     아래로 떨어진 것이면 조치할 것이 없습니다.
 
@@ -449,7 +451,7 @@ resource "datadog_monitor" "latency_p95_pod_outlier" {
     @webhook-o2-dify
   EOT
 
-  query = "avg(last_10m):outliers(avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} by {pod_name}, 'DBSCAN', ${var.pod_latency_outlier_tolerance}) > 0"
+  query = "avg(last_10m):outliers(p95:trace.fastapi.request{service:${var.default_service},env:${local.monitor_env}} by {pod_name}, 'DBSCAN', ${var.pod_latency_outlier_tolerance}) > 0"
 
   notify_no_data      = false
   require_full_window = true

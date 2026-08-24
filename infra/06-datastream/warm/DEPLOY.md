@@ -226,3 +226,19 @@ DynamoDB에만 둔다.
 **`METRIC#` TTL은 7일이다.** 그보다 오래된 분석은 Cold Path(S3 원본 →
 Athena)의 몫이다. Warm을 길게 잡아 Cold를 대신하려 들면 DynamoDB 비용만
 오르고 재집계는 여전히 불가능하다.
+
+## Datadog-native 전환과 롤백
+
+앱/APM primary를 배포한 뒤에도 Warm의 DynamoDB 저장과 Datadog 중복 series는
+recent point 및 단축 게이트를 통과할 때까지 유지한다. 전환 순서는 다음과 같다.
+
+1. 앱/GitOps와 `04-platform` DogStatsD 설정을 배포한다.
+2. `by {pod_name}` series, 정상/실패 counter, p95 단위를 확인한다.
+3. Hot Metric Catalog에서 primary와 Warm shadow 차이를 확인한다.
+4. `05-datadog` Dashboard/Monitor를 apply한다.
+5. 마지막으로 `DATADOG_SCALARS`와 `datadog.build_series()`의 확인된 중복만 제거한다.
+
+이 작업 브랜치에서는 1~3의 실제 배포 증거가 없으므로 5를 수행하지 않는다. 문제가
+생기면 Hot Metric Catalog의 primary query를 Warm으로 되돌리는 것이 1차 롤백이고,
+Dashboard/Monitor query를 `o2.warm.*`으로 되돌리는 것이 2차 롤백이다. DynamoDB Warm
+API 계약과 복합 특징은 제거하지 않으므로 롤백 중에도 Agent evidence는 유지된다.

@@ -27,6 +27,7 @@ from sqlalchemy.orm import sessionmaker
 
 from worker.config import settings
 from worker.models import Order
+from worker.telemetry import telemetry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,6 +120,7 @@ def _handle(record: dict) -> None:
 
     if inserted:
         logger.info("주문 확정: %s amount=%s (%sms)", msg["order_id"], msg["amount"], latency_ms)
+        telemetry.order_confirm("success", latency_ms)
         _emit_confirm(msg["order_id"], latency_ms)
     else:
         logger.info("이미 처리된 주문(중복 전달): %s", msg["order_id"])
@@ -145,6 +147,7 @@ def _emit_cancel(record: dict, reason: str) -> None:
 
     일시적 실패마다 발행하면 재시도 횟수만큼 취소 이벤트가 쌓여 통계가 망가진다.
     """
+    telemetry.cancel(reason)
     try:
         body = json.loads(record["Body"])
         order_id = body.get("order_id", "unknown")
@@ -160,6 +163,7 @@ def _emit_cancel(record: dict, reason: str) -> None:
 
 
 def _poll_once() -> int:
+    batch_started = time.perf_counter()
     resp = sqs.receive_message(
         QueueUrl=settings.SQS_ORDER_QUEUE_URL,
         MaxNumberOfMessages=settings.SQS_BATCH_SIZE,
@@ -168,24 +172,30 @@ def _poll_once() -> int:
     records = resp.get("Messages", [])
 
     for record in records:
+        record_started = time.perf_counter()
         try:
             _handle(record)
         except PermanentError as exc:
             # 재시도해도 같은 결과다. 큐에 남기면 DLQ 까지 도는 동안 처리량만 먹는다.
             logger.error("영구 오류, 메시지를 버린다: %s", exc)
+            telemetry.order_confirm("failed", (time.perf_counter() - record_started) * 1000)
+            telemetry.failure("SYSTEM_ERROR")
             _emit_cancel(record, "SYSTEM_ERROR")
         except OperationalError:
             # DB 순단 같은 일시적 오류. 삭제하지 않아 SQS 가 다시 준다.
             logger.exception("일시적 DB 오류 — 메시지를 남긴다")
+            telemetry.retry("DB_OPERATIONAL_ERROR")
             continue
         except Exception:
             # 정체를 모르는 오류는 일시적으로 취급한다. 지우면 주문이 사라지고,
             # 남기면 maxReceiveCount 뒤 DLQ 로 가 사람이 볼 수 있다.
             logger.exception("알 수 없는 오류 — 메시지를 남긴다")
+            telemetry.retry("UNEXPECTED_ERROR")
             continue
 
         sqs.delete_message(QueueUrl=settings.SQS_ORDER_QUEUE_URL, ReceiptHandle=record["ReceiptHandle"])
 
+    telemetry.batch(len(records), (time.perf_counter() - batch_started) * 1000)
     return len(records)
 
 

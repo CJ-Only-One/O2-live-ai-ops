@@ -138,6 +138,30 @@ def _route(event: dict) -> tuple[str, str]:
     return method.upper(), path.rstrip("/") or "/"
 
 
+def _emit_athena_metrics(*, result: str, duration_ms: float, scanned_bytes: int = 0) -> None:
+    payload = {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "O2/WarmApi",
+                "Dimensions": [["FunctionName", "Environment", "Result"]],
+                "Metrics": [
+                    {"Name": "AthenaQuery", "Unit": "Count"},
+                    {"Name": "AthenaDurationMs", "Unit": "Milliseconds"},
+                    {"Name": "AthenaScannedBytes", "Unit": "Bytes"},
+                ],
+            }],
+        },
+        "FunctionName": "o2-warm-api",
+        "Environment": settings.dd_env,
+        "Result": result,
+        "AthenaQuery": 1,
+        "AthenaDurationMs": duration_ms,
+        "AthenaScannedBytes": scanned_bytes,
+    }
+    print(json.dumps(payload, separators=(",", ":")))
+
+
 def handler(event, context):
     method, path = _route(event)
     if method == "OPTIONS":
@@ -194,8 +218,19 @@ def _dispatch(method: str, path: str, params: dict, body: dict):
                 time.sleep(0.5)
             
             if state != "SUCCEEDED":
+                _emit_athena_metrics(
+                    result=state.lower(),
+                    duration_ms=(time.time() - start_t) * 1000,
+                )
                 reason = status_res["QueryExecution"]["Status"].get("StateChangeReason", "Unknown error")
                 return _resp(500, {"error": "athena_query_failed", "state": state, "reason": reason})
+
+            statistics = status_res["QueryExecution"].get("Statistics") or {}
+            _emit_athena_metrics(
+                result="success",
+                duration_ms=float(statistics.get("EngineExecutionTimeInMillis", (time.time() - start_t) * 1000)),
+                scanned_bytes=int(statistics.get("DataScannedInBytes", 0)),
+            )
             
             results = athena_client.get_query_results(QueryExecutionId=execution_id)
             rows = results["ResultSet"]["Rows"]
@@ -218,6 +253,7 @@ def _dispatch(method: str, path: str, params: dict, body: dict):
                 "rows": data_rows
             })
         except Exception as ex:
+            _emit_athena_metrics(result="error", duration_ms=0)
             return _resp(500, {"error": "athena_execution_error", "detail": str(ex)})
 
     parts = [p for p in path.split("/") if p]
