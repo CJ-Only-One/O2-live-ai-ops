@@ -58,6 +58,32 @@ def _approval_id(incident_id: str, action: dict) -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:20]
 
 
+def _shorten(text, limit=150):
+    # LLM이 낸 rca는 완결된 문장 여러 개로 길게 나올 때가 많다. Slack
+    # 승인 메시지는 빠른 판단용이라 전문을 다 보여줄 필요가 없다 — 잘라도
+    # 원문은 이력에 그대로 남는다(여기서 자르는 건 표시 전용).
+    #
+    # 글자 수로 그냥 자르면 단어 중간이 잘린다("...팬아웃 경로가 수용" 처럼).
+    # 1순위: limit 안에서 끝나는 마지막 문장(".")까지만 보여준다 — 완결된
+    #        문장이라 잘렸다는 티가 안 난다.
+    # 2순위: 문장이 너무 짧거나(limit의 절반 미만) 아예 없으면, 마지막
+    #        단어(공백) 경계에서 자르고 "…"를 붙인다.
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text or "-"
+
+    window = text[:limit]
+    last_period = window.rfind(". ")
+    if last_period == -1:
+        last_period = window.rstrip().rfind(".")
+    if last_period >= limit // 2:
+        return window[: last_period + 1].strip()
+
+    last_space = window.rfind(" ")
+    cut = window[:last_space] if last_space > 0 else window
+    return cut.rstrip() + "…"
+
+
 def _post_slack_message(secrets, approval_id, incident_id, diagnosis, action, risk_level):
     # Dify 의 "diagnosis" 필드는 diagnosis_agg.output(= {"diagnosis": {...},
     # "context": {...}} 번들 전체)을 그대로 담아 보낸다 — 한 겹 더 감싸져
@@ -67,17 +93,27 @@ def _post_slack_message(secrets, approval_id, incident_id, diagnosis, action, ri
     if isinstance(diagnosis, dict) and isinstance(diagnosis.get("diagnosis"), dict):
         diagnosis = diagnosis["diagnosis"]
     rca = diagnosis.get("rca") if isinstance(diagnosis, dict) else None
+    rca_short = _shorten(rca)
     action_id = action.get("action_id", "unknown")
     blast_radius = action.get("blast_radius", "-")
 
-    text = (
-        f"*인시던트 승인 요청* — `{incident_id}`\n"
-        f"원인: {rca or '-'}\n"
-        f"조치: `{action_id}` (위험도 {risk_level}, 영향 범위: {blast_radius})"
-    )
+    # text는 Slack 알림·접근성용 폴백이라 blocks 내용과 별개로 항상 채운다.
+    text = f"인시던트 승인 요청 — {incident_id} / 원인: {rca_short} / 조치: {action_id} (위험도 {risk_level})"
 
     blocks = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f":rotating_light: *인시던트 승인 요청*\n`{incident_id}`"},
+        },
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*원인*\n{rca_short}"}},
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*조치*\n`{action_id}`"},
+                {"type": "mrkdwn", "text": f"*위험도*\n{risk_level}"},
+            ],
+        },
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"영향 범위: {blast_radius}"}]},
         {
             "type": "actions",
             "block_id": "o2_approval_actions",
