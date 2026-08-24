@@ -149,6 +149,49 @@ CloudWatch에서 합성 원문은 0건이었다(M-011).
 경계 시나리오는 현 tumbling window의 미탐을 재현하기 위한 것이다. 스크립트 성공을
 rolling-window 보장이나 실제 운영 오탐률 측정으로 해석하지 않는다.
 
+## Chat 입력 → 전용 Dify Workflow E2E
+
+`apps/chat-gateway/scripts/chat-to-dify-e2e.mjs`는 현재 상시 활성인 Chat Gateway·Chat
+Signal Worker 뒤의 비활성 실행 게이트를 합성 식별자 한 개로만 순차 활성화한다.
+
+```text
+external WebSocket chat
+  -> Chat Gateway -> Chat Signal SQS -> Worker -> Candidate
+  -> Chat Source Adapter -> Signal Queue -> Correlator
+  -> Invocation Queue -> Generic Worker -> dedicated contract-test Dify Workflow
+```
+
+실행기는 시작 전 세 작업 Queue가 모두 비어 있는지, Chat Gateway가 `shadow`인지, Chat Signal
+Worker consumer가 활성인지 확인한다. 기존 DLQ 메시지는 장애 증거이므로 삭제하거나 테스트
+입력과 섞지 않는다. Signal·Invocation DLQ는 시작 baseline 증가 여부를 검사하고, Stream
+Adapter DLQ는 비활성 기간의 5분 초과 record가 재활성화 시 이동할 수 있으므로 이번 합성
+`broadcast_id`가 들어갔는지를 본문 비출력 방식으로 검사한다. Candidate ID와 Incident ID를
+미리 추측하지 않고 앞 단계의 authoritative DynamoDB 상태에서 읽은 뒤 다음 단계 allowlist를
+연다. 성공은 Candidate privacy 계약, `agent.incident.v1` revision 1, Worker ledger `SUCCEEDED`,
+`attempt_count=1`, Dify `workflow_run_id` 존재를 모두 만족해야 한다.
+
+```bash
+cd apps/chat-gateway
+
+ALLOW_LIVE_CHAT_TO_DIFY_E2E=1 \
+CHAT_TEST_WS_BASE=ws://<dev-ingress-host> \
+CHAT_E2E_BROADCAST_ID=bc_<unused-numeric-id> \
+node scripts/chat-to-dify-e2e.mjs
+```
+
+이 테스트는 dev AWS 리소스와 전용 테스트 Workflow를 실제로 호출한다. 매번 사용하지 않은
+`broadcast_id`를 써야 하며, 실행 중에는 Terraform targeted apply가 Adapter, Correlator,
+Generic Worker와 각 event source만 변경한다. 종료 시 성공·실패와 무관하게 세 실행 게이트를
+기본 비활성값으로 복귀시키고, 실행 중 발견한 합성 Candidate·Incident·ledger 키만 삭제한다.
+원문은 결과와 로그에 출력하지 않는다. 원복 실패가 하나라도 있으면 테스트는 실패한다.
+
+2026-08-24 최초 자동화 실행은 합성 채팅 4건·고유 사용자 4명, 네 WebSocket client의 fanout
+수신 16건, `READ_PATH` Candidate와 `raw_chat_included=false`, Chat-only Incident revision 1,
+전용 Dify Worker ledger `SUCCEEDED/attempt_count=1`을 확인했다. 종료 후 세 작업 Queue는 0,
+Signal·Invocation DLQ는 0을 유지했고 기존 Adapter DLQ 2건은 삭제하지 않았다. 이번 합성
+broadcast는 Adapter DLQ에 없었으며, 실행기가 변경한 Terraform 대상의 재-plan은 모두
+`No changes`였다.
+
 ## Phase 4 적용 순서
 
 적용 순서를 바꾸지 않는다.
