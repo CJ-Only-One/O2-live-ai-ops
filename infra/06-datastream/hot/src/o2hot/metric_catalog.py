@@ -16,10 +16,18 @@ _GROUPS = {"pod_name"}
 
 METRIC_CATALOG = {
     "rps": {
-        "source": "datadog_apm",
-        "primary": "sum:trace.fastapi.request.hits{$scope}$group.as_rate()",
-        "sample": "sum:trace.fastapi.request.hits{$scope}.as_count()",
-        "fallback": "avg:o2.warm.rps{$scope}$group",
+        "source": "datadog_native",
+        "primary": {
+            "api": "sum:trace.fastapi.request.hits{$scope}$group.as_rate()",
+            "chat-gateway": "sum:o2.app.business_event{$scope,event:chat.send}$group.as_rate()",
+            "order-worker": "sum:o2.app.business_event{$scope,event:order.confirm}$group.as_rate()",
+        },
+        "sample": {
+            "api": "sum:trace.fastapi.request.hits{$scope}.as_count()",
+            "chat-gateway": "sum:o2.app.business_event{$scope,event:chat.send}.as_count()",
+            "order-worker": "sum:o2.app.business_event{$scope,event:order.confirm}.as_count()",
+        },
+        "fallback": None,
         "unit": "request/s",
         "primary_scale": 1,
         "fallback_scale": 1,
@@ -32,7 +40,7 @@ METRIC_CATALOG = {
         "source": "datadog_apm",
         "primary": "p95:trace.fastapi.request{$scope}$group",
         "sample": "sum:trace.fastapi.request.hits{$scope}.as_count()",
-        "fallback": "avg:o2.warm.latency_p95{$scope}$group",
+        "fallback": None,
         "unit": "ms",
         # Datadog APM trace metric의 API 단위는 second, 기존 논리 계약은 ms다.
         "primary_scale": 1000,
@@ -46,7 +54,7 @@ METRIC_CATALOG = {
         "source": "dogstatsd",
         "primary": "sum:o2.app.business_event{$scope,result:failed}.as_count() / sum:o2.app.business_event{$scope}.as_count()",
         "sample": "sum:o2.app.business_event{$scope}.as_count()",
-        "fallback": "avg:o2.warm.failure_rate{$scope}$group",
+        "fallback": None,
         "unit": "ratio",
         "primary_scale": 1,
         "fallback_scale": 1,
@@ -59,7 +67,7 @@ METRIC_CATALOG = {
         "source": "dogstatsd",
         "primary": "sum:o2.app.cache_access{$scope,result:hit}.as_count() / sum:o2.app.cache_access{$scope}.as_count()",
         "sample": "sum:o2.app.cache_access{$scope}.as_count()",
-        "fallback": "avg:o2.warm.cache_hit_rate{$scope}$group",
+        "fallback": None,
         "unit": "ratio",
         "primary_scale": 1,
         "fallback_scale": 1,
@@ -85,7 +93,7 @@ METRIC_CATALOG = {
         "source": "dogstatsd",
         "primary": "sum:o2.app.failure{$scope,event:chat.send,failure_code:CHANNEL_LIMITED}.as_count() / sum:o2.app.business_event{$scope,event:chat.send}.as_count()",
         "sample": "sum:o2.app.business_event{$scope,event:chat.send}.as_count()",
-        "fallback": "avg:o2.warm.channel_limited_rate{$scope}",
+        "fallback": None,
         "unit": "ratio",
         "primary_scale": 1,
         "fallback_scale": 1,
@@ -122,6 +130,43 @@ METRIC_CATALOG = {
     },
 }
 
+# Native 전환이 끝난 지표는 Warm fallback을 두지 않는다. 데이터가 없으면
+# NO_DATA로 드러나야 계측/배포 문제를 Warm 값이 가리지 않는다.
+METRIC_CATALOG.update({
+    "latency_p50": {**METRIC_CATALOG["latency_p95"], "primary": "p50:trace.fastapi.request{$scope}$group"},
+    "latency_p99": {**METRIC_CATALOG["latency_p95"], "primary": "p99:trace.fastapi.request{$scope}$group"},
+    "event_count": {
+        "source": "dogstatsd", "primary": "sum:o2.app.business_event{$scope}$group.as_count()",
+        "sample": "sum:o2.app.business_event{$scope}.as_count()", "fallback": None,
+        "unit": "event", "primary_scale": 1, "fallback_scale": 1, "value_type": "count",
+        "default_window_seconds": 300, "minimum_samples": 1, "maximum_freshness_seconds": 120,
+    },
+    "retry_rate": {
+        "source": "dogstatsd", "primary": "sum:o2.app.retry{$scope}.as_count() / sum:o2.app.retry_eligible{$scope}.as_count()",
+        "sample": "sum:o2.app.retry_eligible{$scope}.as_count()", "fallback": None,
+        "unit": "ratio", "primary_scale": 1, "fallback_scale": 1, "value_type": "ratio",
+        "default_window_seconds": 300, "minimum_samples": 1, "maximum_freshness_seconds": 120,
+    },
+    "fallback_rate": {
+        "source": "dogstatsd", "primary": "sum:o2.app.fallback{$scope}.as_count() / sum:o2.app.fallback_attempt{$scope}.as_count()",
+        "sample": "sum:o2.app.fallback_attempt{$scope}.as_count()", "fallback": None,
+        "unit": "ratio", "primary_scale": 1, "fallback_scale": 1, "value_type": "ratio",
+        "default_window_seconds": 300, "minimum_samples": 1, "maximum_freshness_seconds": 120,
+    },
+    "cancel_rate": {
+        "source": "dogstatsd", "primary": "sum:o2.app.cancel{$scope}.as_count() / sum:o2.app.order_create{$scope}.as_count()",
+        "sample": "sum:o2.app.order_create{$scope}.as_count()", "fallback": None,
+        "unit": "ratio", "primary_scale": 1, "fallback_scale": 1, "value_type": "ratio",
+        "default_window_seconds": 300, "minimum_samples": 1, "maximum_freshness_seconds": 120,
+    },
+    "db_latency_p95": {
+        "source": "datadog_span_metric", "primary": "p95:o2.apm.db.duration{$scope}$group",
+        "sample": "sum:trace.fastapi.request.hits{$scope}.as_count()", "fallback": None,
+        "unit": "ms", "primary_scale": 0.000001, "fallback_scale": 1, "value_type": "gauge",
+        "default_window_seconds": 300, "minimum_samples": 1, "maximum_freshness_seconds": 120,
+    },
+})
+
 
 class MetricRequestError(ValueError):
     pass
@@ -151,6 +196,10 @@ def _request(body: dict[str, Any]) -> tuple[str, dict[str, Any], str, str, int, 
 
 def _render(template: str, scope: str, group: str) -> str:
     return template.replace("$scope", scope).replace("$group", group)
+
+
+def _template(value: str | dict[str, str] | None, service: str) -> str | None:
+    return value.get(service) if isinstance(value, dict) else value
 
 
 def _latest(result: dict[str, Any]) -> tuple[float | None, int | None]:
@@ -206,9 +255,14 @@ def read_metric(
     metric, catalog, scope, group, window, groups = _request(body)
     to_ts = int(now if now is not None else time.time())
     from_ts = to_ts - window
+    service = body["service"]
+    primary_template = _template(catalog["primary"], service)
+    sample_template = _template(catalog["sample"], service)
+    if primary_template is None:
+        raise MetricRequestError("metric is not available for service")
     primary = _observed(
         query_fn,
-        _render(catalog["primary"], scope, group),
+        _render(primary_template, scope, group),
         from_ts,
         to_ts,
         catalog["primary_scale"],
@@ -216,12 +270,12 @@ def read_metric(
     sample = (
         _observed(
             query_fn,
-            _render(catalog["sample"], scope, ""),
+            _render(sample_template, scope, ""),
             from_ts,
             to_ts,
             sum_points=True,
         )
-        if catalog["sample"]
+        if sample_template
         else {"query": None, "value": 1 if primary["value"] is not None else 0, "timestamp_ms": primary["timestamp_ms"], "groups": []}
     )
     fallback = (

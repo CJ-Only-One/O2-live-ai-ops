@@ -153,11 +153,11 @@ resource "datadog_dashboard" "scenarios" {
           title       = "채팅 인입 — RPS · 평시 대비 배수"
           show_legend = true
           request {
-            q            = "avg:${var.metric_prefix}rps{${local.scenario_chat_scope}}"
+            q            = "sum:o2.app.business_event{${local.scenario_chat_scope},event:chat.send}.as_rate()"
             display_type = "line"
           }
           request {
-            q            = "avg:${var.metric_prefix}rps_ratio{${local.scenario_chat_scope}}"
+            q            = "anomalies(sum:o2.app.business_event{${local.scenario_chat_scope},event:chat.send}.as_rate(), 'agile', 3, direction='above', interval=60, alert_window='last_5m', seasonality='hourly')"
             display_type = "line"
           }
         }
@@ -209,7 +209,7 @@ resource "datadog_dashboard" "scenarios" {
           title       = "채팅 실패율 — 이벤트 계약 이상 포함"
           show_legend = true
           request {
-            q            = "avg:${var.metric_prefix}failure_rate{${local.scenario_chat_scope}} by {event}"
+            q            = "sum:o2.app.failure{${local.scenario_chat_scope}} by {event}.as_count() / sum:o2.app.business_event{${local.scenario_chat_scope}} by {event}.as_count()"
             display_type = "line"
           }
         }
@@ -235,7 +235,7 @@ resource "datadog_dashboard" "scenarios" {
           title       = "채팅 이벤트 수 — 결측 판별"
           show_legend = true
           request {
-            q            = "avg:${var.metric_prefix}event_count{${local.scenario_chat_scope}}"
+            q            = "sum:o2.app.business_event{${local.scenario_chat_scope}}.as_count()"
             display_type = "bars"
           }
         }
@@ -268,15 +268,15 @@ resource "datadog_dashboard" "scenarios" {
           title       = "API 서비스 지연 — p50 · p95 · p99"
           show_legend = true
           request {
-            q            = "avg:${var.metric_prefix}latency_p50{${local.scenario_api_scope}}"
+            q            = "p50:trace.fastapi.request{${local.scenario_api_scope}} * 1000"
             display_type = "line"
           }
           request {
-            q            = "avg:${var.metric_prefix}latency_p95{${local.scenario_api_scope}}"
+            q            = "p95:trace.fastapi.request{${local.scenario_api_scope}} * 1000"
             display_type = "line"
           }
           request {
-            q            = "avg:${var.metric_prefix}latency_p99{${local.scenario_api_scope}}"
+            q            = "p99:trace.fastapi.request{${local.scenario_api_scope}} * 1000"
             display_type = "line"
           }
           marker {
@@ -297,7 +297,7 @@ resource "datadog_dashboard" "scenarios" {
           title       = "API 파드별 p95 — 이상 파드 식별"
           show_legend = true
           request {
-            q            = "avg:${var.metric_prefix}latency_p95{${local.scenario_api_scope}} by {pod_name}"
+            q            = "p95:o2.apm.request.duration{${local.scenario_api_scope}} by {pod_name} / 1000000"
             display_type = "line"
           }
         }
@@ -376,7 +376,7 @@ resource "datadog_dashboard" "scenarios" {
           title       = "API 이벤트 수 · 신뢰도"
           show_legend = true
           request {
-            q            = "avg:${var.metric_prefix}event_count{${local.scenario_api_scope}}"
+            q            = "sum:o2.app.business_event{${local.scenario_api_scope}}.as_count()"
             display_type = "bars"
           }
           request {
@@ -413,11 +413,11 @@ resource "datadog_dashboard" "scenarios" {
           title       = "읽기 부하 — API RPS · 평시 대비 배수"
           show_legend = true
           request {
-            q            = "avg:${var.metric_prefix}rps{${local.scenario_api_scope}}"
+            q            = "sum:trace.fastapi.request.hits{${local.scenario_api_scope}}.as_rate()"
             display_type = "line"
           }
           request {
-            q            = "avg:${var.metric_prefix}rps_ratio{${local.scenario_api_scope}}"
+            q            = "anomalies(sum:trace.fastapi.request.hits{${local.scenario_api_scope}}.as_rate(), 'agile', 3, direction='above', interval=60, alert_window='last_5m', seasonality='hourly')"
             display_type = "line"
           }
         }
@@ -428,15 +428,15 @@ resource "datadog_dashboard" "scenarios" {
           title       = "읽기 영향 — p95 · p99 · 실패율"
           show_legend = true
           request {
-            q            = "avg:${var.metric_prefix}latency_p95{${local.scenario_api_scope}}"
+            q            = "p95:trace.fastapi.request{${local.scenario_api_scope}} * 1000"
             display_type = "line"
           }
           request {
-            q            = "avg:${var.metric_prefix}latency_p99{${local.scenario_api_scope}}"
+            q            = "p99:trace.fastapi.request{${local.scenario_api_scope}} * 1000"
             display_type = "line"
           }
           request {
-            q            = "avg:${var.metric_prefix}overall_failure_rate{${local.scenario_api_scope}}"
+            q            = "sum:o2.app.failure{${local.scenario_api_scope}}.as_count() / sum:o2.app.business_event{${local.scenario_api_scope}}.as_count()"
             display_type = "line"
           }
         }
@@ -504,11 +504,11 @@ resource "datadog_dashboard" "scenarios" {
             display_type = "line"
           }
           request {
-            q            = "avg:${var.metric_prefix}cache_hit_rate{${local.scenario_api_scope}}"
+            q            = "sum:o2.app.cache_access{${local.scenario_api_scope},result:hit}.as_count() / sum:o2.app.cache_access{${local.scenario_api_scope}}.as_count()"
             display_type = "line"
           }
           request {
-            q            = "avg:${var.metric_prefix}fallback_rate{${local.scenario_api_scope}}"
+            q            = "sum:o2.app.fallback{${local.scenario_api_scope}}.as_count() / sum:o2.app.fallback_attempt{${local.scenario_api_scope}}.as_count()"
             display_type = "line"
           }
         }
