@@ -8,7 +8,7 @@ from app.db.session import Base
 
 # 모델을 import 해야 Base.metadata 에 테이블이 등록된다.
 # 빠뜨리면 autogenerate 가 "지울 테이블"로 인식해 DROP 을 만들어낸다.
-from app.models import broadcast, order, product  # noqa: F401
+from app.models import broadcast, cue_sheet, order, product  # noqa: F401
 
 config = context.config
 
