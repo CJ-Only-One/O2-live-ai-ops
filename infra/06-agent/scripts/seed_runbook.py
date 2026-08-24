@@ -133,28 +133,38 @@ RUNBOOKS = [
         "actions": [
             {
                 "action_id": "limit_channel_volume",
-                "risk_level": "L2",
+                # L3 - 정상 사용자 발화를 일부러 거부하는 조치라 "대가 게이트"
+                # 취지대로 실행 전 사람 승인(Slack)을 거치게 한다. 강도(limit)
+                # 자체는 아직 사람이 직접 고르는 UI가 없어(options_temp 임시값,
+                # Dify Parameter Resolver 참고) 승인이 그 대신 실행 여부를 확인한다.
+                "risk_level": "L3",
                 "expected_effect": "reject chat sends above per-channel total rate; propagation p95 recovers post-application",
                 "blast_radius": "single broadcast_id — 정상 사용자 발화가 거부될 수 있음(부작용, 조치 자체의 목적)",
                 "parameters_schema": {
                     "broadcast_id": {
                         "type": "string",
                         "required": True,
-                        "source": "observability.alert.broadcast_id",
+                        # observability(Warm API 응답)에는 alert가 없다 - 실제 조회로
+                        # 확인함(2026-08-24). broadcast_id는 진단 컨텍스트 쪽에 있다.
+                        "source": "incident_context.broadcast_id",
                     },
                     "action": {
                         "type": "string",
                         "required": True,
                         "source": "static:set",
                     },
-                    # TEMP: 강도 선택지. 문서(0.5)는 "강도 선택"을 대가
-                    # 게이트에서 사람이 고른다고 정했는데, 여기 값 3개는
-                    # 실측 없이 지어낸 자리값이다 — 실측 뒤 조정.
+                    # 강도 선택 UI를 안 만들기로 했다(Parameter Resolver가
+                    # human_selected 소스를 처리할 방법이 없어서 실행 자체가
+                    # Guardrail에서 막혔었음). 사람 개입은 Slack 승인
+                    # (risk_level L3)이 대신한다 — "강도를 고른다"가 아니라
+                    # "이 고정값으로 실행할지 승인/거부"로 단순화.
+                    #
+                    # TEMP: 500은 실측 없는 자리값이다(options_temp 중간값).
+                    # 부하테스트로 실제 안전선 나오면 그 값으로 덮어쓸 것.
                     "limit": {
                         "type": "int",
                         "required": True,
-                        "source": "human_selected",
-                        "options_temp": [200, 500, 1000],
+                        "source": "static:500",
                     },
                 },
                 "execution_target": {
@@ -170,6 +180,53 @@ RUNBOOKS = [
                     # x-admin-key 헤더를 본다(CHANNEL_LIMIT_ADMIN_KEY 값과 비교,
                     # config.ts). Secrets Manager 를 안 거치고 kubectl 로
                     # o2-dev 네임스페이스에 직접 넣은 값이다 — git 에 없다.
+                    "auth_header": "x-admin-key",
+                },
+                "stabilization_wait_seconds": None,
+            },
+        ],
+    },
+    {
+        # S3(scenario-experiment.md 0.7) — 읽기 급증인데 사람인지 자동화인지
+        # 서버 증거로 못 가른다. 원인을 안 가르는 게 정답이라 other로 둔다.
+        # 조치는 양쪽에 다 안전한 것 하나뿐 — 응답 내용은 안 바뀌고 부가
+        # 이벤트 발행만 끈다(D-062). 다른 액션들처럼 여러 후보 중 고르는
+        # 절차가 없다, 후보가 원래 1개다.
+        "rca_type": "other",
+        "success_criteria": {
+            # TEMP: block_rate는 아직 warm path에 없는 지표다(o2warm/metrics.py
+            # 확인 필요) — S1의 chat_propagation_p95_ms와 같은 처지, 자리만
+            # 채워 둔다. 실측/실제 필드명 확인 후 덮어쓸 것.
+            "conditions": [
+                {"metric": "block_rate", "comparison": "<=", "threshold": 0},
+            ],
+            "logic": "AND",
+        },
+        "actions": [
+            {
+                "action_id": "hold_read_path_degraded",
+                "risk_level": "L1",
+                "expected_effect": "read-path 부가 이벤트 발행만 중단, 응답(재고/가격) 불변",
+                "blast_radius": "single broadcast_id — 정상 사용자 차단 없음(조치 설계상 항상 0)",
+                "parameters_schema": {
+                    "broadcast_id": {
+                        "type": "string",
+                        "required": True,
+                        # observability(Warm API 응답)에는 alert가 없다 - 실제 조회로
+                        # 확인함(2026-08-24). broadcast_id는 진단 컨텍스트 쪽에 있다.
+                        "source": "incident_context.broadcast_id",
+                    },
+                    "action": {
+                        "type": "string",
+                        "required": True,
+                        "source": "static:set",
+                    },
+                },
+                "execution_target": {
+                    "method": "POST",
+                    # S1/S2와 같은 패턴 — 공유 base 뒤 상대경로가 아니라
+                    # 이 조치 전용 라우트 전체 주소를 Dify 환경변수로 받는다.
+                    "endpoint": "$API_ADMIN_URL",
                     "auth_header": "x-admin-key",
                 },
                 "stabilization_wait_seconds": None,
