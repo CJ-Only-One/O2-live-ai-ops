@@ -27,6 +27,8 @@
 | M-012 | Agent 공통 진입점 도입 전 Dify runtime baseline | 게시 workflow·모델·Worker·DLQ 정책 변경 |
 | M-013 | 전용 Agent entry contract workflow UI 검증 | DSL·입력 계약·Code 검증 로직 변경 |
 | M-014 | 주문 확정 워커 처리량 (order-worker) | requests·replicas 변경 · 인스턴스 변경 · RDS 등급 변경 · delete 방식 변경 |
+| M-015 | warm 경로 인입·집계 실측과 집계기 지연 | 샤드 수·`parallelization_factor` 변경 · 부하 패턴 변경 |
+
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
 그 절의 표에 **행을 추가**한다. 조건이 다르면 값도 다르므로 조건을 꼭 적는다.
@@ -774,6 +776,7 @@ localhost 터널은 종료하지 않았다.
 
 ---
 
+
 ## M-014. 주문 확정 워커 처리량 (order-worker)
 
 KEDA `ScaledObject` 의 근거값을 잡으려고 쟀다. `loadtest/order-queue.py`.
@@ -914,3 +917,63 @@ D-041 이 KEDA 를 2차 보정으로 둔 것과 같은 방향이라 설계를 �
 **다시 재야 할 때** — requests 를 바꿀 때, 노드 인스턴스 타입을 바꿀 때, RDS 등급을
 바꿀 때, `delete_message` 를 배치로 바꿀 때. 그리고 **replicas 12 위를 쓰려고 할 때** —
 그 구간은 안 쟀다.
+
+## M-015. warm 경로 인입·집계 실측과 집계기 지연
+
+**조건 (2026-08-23)** — CloudWatch 원본 지표를 직접 조회했다(`o2-data` 프로파일,
+`ap-northeast-2`). Datadog 을 거치지 않은 값이다.
+
+### 인입은 간헐적이다
+
+6시간 버킷, 48시간 구간.
+
+| 시각 (KST) | `stream-business` IncomingRecords | `o2-agg` Invocations |
+|---|---|---|
+| 08-22 12:53 | 5 | 1 |
+| 08-22 18:53 | 5 | 1 |
+| 08-23 12:53 | 36 | 7 |
+| 08-23 18:53 | **164,581** | **1,730** |
+
+48시간 중 42시간이 6시간당 5건 수준이고, 나머지가 6시간에 16만 건이다.
+**부하 시험이 돌 때만 흐른다.** 이 분포가 D-052 의 근거다 — 실제 트래픽
+지표에 `notify_no_data` 를 걸면 대부분의 시간이 "장애" 로 보인다.
+
+### 부하 중 집계기가 밀린다
+
+1시간 버킷, 위 표의 마지막 구간.
+
+| 시각 (KST) | `IteratorAge` 최대 | `Errors` | `Throttles` |
+|---|---|---|---|
+| 08-23 18:53 | 17,143 ms | 0 | 0 |
+| 08-23 19:53 | **102,460 ms** | 0 | 0 |
+
+**오류 0 인 채로 지연만 100초까지 올랐다.** 실패가 아니라 밀림이라 어떤 오류
+기반 알림에도 안 걸린다.
+
+구성값 (같은 시점 확인):
+
+| 항목 | 값 |
+|---|---|
+| `stream-business` OpenShardCount | 1 |
+| 이벤트 소스 매핑 | BatchSize 100, BatchingWindow 2s, **ParallelizationFactor 1**, LATEST |
+
+샤드 1개에 병렬 계수 1이므로 소비가 사실상 직렬이다. 인입이 한 소비자의
+처리량을 넘으면 구조적으로 밀린다.
+
+### 이 값이 왜 중요한가
+
+명세의 자기 교정 루프가 **조치 후 90초 뒤 재확인**을 전제로 한다. 집계가
+100초 밀려 있으면 그때 읽는 값은 **조치 이전 값**이다. 에이전트가 자기
+조치의 효과를 반대로 판정할 수 있다.
+
+그래서 `05-datadog` 의 `aggregator_lag_critical_seconds` 기본값을 검증 대기
+시간과 같은 **90초**로 뒀다. 임의로 고른 값이 아니라 그 루프가 깨지는 지점이다.
+
+### 안 잰 것
+
+- Datadog AWS 통합이 `aws.lambda.*` 네임스페이스를 실제로 수집하는지.
+  **CloudWatch 원본에 값이 있는 것과 Datadog 에 들어오는 것은 다른 문제다.**
+  Metrics Explorer 확인이 필요하고, 그때까지
+  `enable_aggregator_lag_monitor` 는 `false` 다
+- 부하 종료 후 따라잡는 데 걸리는 시간
+- 집계 Lambda `Duration` — 같은 구간 조회에서 데이터포인트가 안 나왔다
