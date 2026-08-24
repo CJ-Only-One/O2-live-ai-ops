@@ -22,3 +22,8 @@ datadog_site                        = "us5.datadoghq.com"
 #   Karpenter 4차 최후 — 예상 밖 Pending Pod, 노드 장애
 enable_keda      = true
 enable_karpenter = true
+
+# cue-warmer 의 파드 사전 확장 RBAC. 켜도 워머가 바로 스케일하지는 않는다 —
+# 실제 동작은 매니페스트의 SCALE_ENABLED 가 정하고 지금은 false 다.
+# 권한을 먼저 붙여두면 나중에 terraform 없이 그 값만 바꿔 켤 수 있다.
+enable_cue_warmer_scaling = true

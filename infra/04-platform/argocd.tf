@@ -134,15 +134,32 @@ resource "helm_release" "argocd_apps" {
           server    = "https://kubernetes.default.svc"
           namespace = "o2-dev"
         }
-        # S2에서 api replicas를 런북이 일시적으로 2 -> 3 -> 2로 바꾼다.
-        # 정상 기준값 2는 Git에 남겨야 하므로 필드를 지우지 않고, 이 필드만
-        # selfHeal 대상에서 제외한다. 실험 종료 시 원복은 상태 머신/Runbook의
-        # 책임이다(docs/scenario-experiment.md 3절).
+        # replicas 를 사람 아닌 것이 만지는 Deployment 는 이 목록에 넣는다.
+        # 정상 기준값을 Git 에 남겨야 실험 종료 후 되돌릴 기준이 생기므로
+        # 필드를 지우지 않고 이 필드만 selfHeal 대상에서 제외한다.
+        # (KEDA 가 소유하는 order-worker 는 아예 필드가 없어 해당 없음)
+        #
+        # 넣지 않으면 늘린 쪽과 Argo 가 서로 되돌리기를 무한 반복한다.
+        # 양쪽 다 자기 일을 정상적으로 했다고만 로그를 남겨 알아채기 늦다
+        # (D-004, D-041).
         ignoreDifferences = [
           {
+            # S2 에서 런북이 일시적으로 2 -> 3 -> 2 로 바꾼다.
+            # 원복은 상태 머신/Runbook 책임이다(docs/scenario-experiment.md 3절).
             group        = "apps"
             kind         = "Deployment"
             name         = "api"
+            namespace    = "o2-dev"
+            jsonPointers = ["/spec/replicas"]
+          },
+          {
+            # cue-warmer 가 큐시트의 진입·게스트 세그먼트 앞에서 미리 늘린다
+            # (D-041 사전 확장). 방송 중에는 줄이지 않는다 — 축소는 가용성
+            # 위험이라 cooldown·backlog·활성 연결을 확인하는 결정론적 단계로만
+            # 하고, WebSocket 연결이 끊기는 chat-gateway 는 특히 그렇다.
+            group        = "apps"
+            kind         = "Deployment"
+            name         = "chat-gateway"
             namespace    = "o2-dev"
             jsonPointers = ["/spec/replicas"]
           },
