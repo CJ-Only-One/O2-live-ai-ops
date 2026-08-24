@@ -477,7 +477,8 @@ Peak 20 msg/s × 3,600초 = 방송당 72,000건, 건당 400바이트면 약 29 M
 | `msg_length` | int | 스팸·매크로 판별 |
 | `msg_hash` | string | 동일 문구 도배 탐지 (본문 없이 가능) |
 | `is_duplicate` | bool | 직전 발화와 동일한지 |
-| `rejected_code` | string? | 길이 초과·레이트 리밋 등으로 거부된 경우 |
+| `result` | string | `SUCCESS` / `FAILED`. **거부 여부와 무관하게 항상 싣는다** |
+| `failure_code` | string? | `result=FAILED`일 때만. `TOO_LONG` / `RATE_LIMITED` / `CHANNEL_LIMITED` |
 
 `user_key`, `broadcast_id`, 시각은 봉투에 이미 있다.
 
@@ -486,6 +487,26 @@ Peak 20 msg/s × 3,600초 = 방송당 72,000건, 건당 400바이트면 약 29 M
 
 거부된 발화도 발행한다. 안 하면 레이트 리밋에 걸린 매크로가 통계에서 사라진다 —
 `coupon.issue`에서 실패를 반드시 발행하는 것과 같은 이유다.
+
+#### 실패 필드는 `result` + `failure_code` 로 쓴다
+
+**이름을 자유롭게 고르면 집계가 못 읽는다.** warm 집계는 payload에서
+`result`와 `failure_code`라는 **이름**을 찾는다(`o2warm/contract.py`의
+`F_RESULT`·`F_FAILURE_CODE`). 이름이 다르면 이벤트는 들어오는데 실패 축만
+비어 있고, 아무 에러도 나지 않는다.
+
+**`result`는 성공에도 싣는다.** 실패율은 `실패 / result를 실은 전체`로 계산하므로
+(`o2warm/metrics.py`의 `failure_breakdown`), 실패에만 싣면 분모가 실패 건수와
+같아져 비율이 항상 1.0이 된다. "거부 여부와 무관하게 항상"이 여기서 나온다.
+
+이렇게 두면 warm에 코드를 더하지 않아도 `failure_rate{event:chat.send}`와
+`failure_codes`가 그대로 나온다. `coupon.issue`가 쓰는 경로를 그대로 타기 때문이다.
+
+`chat.send`는 SDK가 발행하지 않으므로(위 "Node에서의 발행") SDK의 `EVENT_NAMES`나
+warm의 `PAYLOAD_FIELDS`에는 넣지 않는다. 그 두 곳은 SDK `emit` 함수와 1:1로 묶여
+있고, 시험이 그 대응을 검사한다. **넣으면 시험이 깨진다.**
+그 결과로 `event_rate{event:chat.send}`는 나오지 않는다 — 인입량은
+`rps{service:chat-gateway}`로 본다. 지금 "채팅 인입 급증" Monitor가 쓰는 값이 그것이다.
 
 #### Node에서의 발행
 
