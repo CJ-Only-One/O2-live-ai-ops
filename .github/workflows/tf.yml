@@ -119,6 +119,7 @@ jobs:
         run: >-
           python3 -m unittest
           lambda/test_agent_entry_worker.py
+          lambda/test_datadog_source_adapter.py
           lambda/test_incident_correlator.py
 
       - name: Chat Signal·Source Adapter 단위 테스트

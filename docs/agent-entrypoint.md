@@ -1,7 +1,7 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 3D disabled deployment and Shadow E2E complete; production execution remains disabled
+> **Status:** Phase 3D Shadow complete; Phase 4A isolated Datadog Adapter implemented but not applied
 > **Updated:** 2026-08-24
 > **Decision:** `decisions.md` D-050 and D-055
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
@@ -20,7 +20,7 @@ implementation_state:
   incident_correlator: DEPLOYED_EXECUTION_DISABLED
   agent_invocation_queue: DEPLOYED_DISABLED_CONSUMER
   phase3c_signal_queue_correlation_e2e: PASS
-  phase3c_source_pipeline_delay_measurement: NOT_RUN
+  phase3c_source_pipeline_delay_measurement: BLOCKED_ON_PHASE4A_APPLY_AND_SHADOW_WEBHOOK
   phase3d_dify_incident_contract_dsl: PUBLISHED
   phase3d_shadow_e2e: PASS
   idempotency_ledger: DEPLOYED_EMPTY
@@ -30,7 +30,9 @@ implementation_state:
   dedicated_test_workflow_dsl: RECORDED_IN_REPOSITORY
   dedicated_test_workflow_api_key: STORED_IN_SECRETS_MANAGER
   existing_team_workflow_targeted: false
-  datadog_migration: NOT_STARTED
+  datadog_source_adapter: IMPLEMENTED_NOT_APPLIED
+  phase4a_targeted_plan: READY_8_ADD_0_CHANGE_0_DESTROY
+  datadog_migration: PHASE4A_SHADOW_FOUNDATION_ONLY
   production_agent_handoff: DISABLED
 activation_blockers:
   - CORRELATION_WINDOW_NOT_MEASURED
@@ -61,7 +63,8 @@ production_migration_blockers:
 | 게시 전 UI 계약 테스트 | Chat·Datadog 정상 예시 ACCEPTED, source/schema 불일치 REJECTED, 토큰 0 |
 | Service API 계약 테스트 | 전용 API key로 Chat·Datadog succeeded, 불일치 failed, 토큰 0 |
 | 전용 key 보관 | Secrets Manager `o2/dev/dify-agent-entry-contract-test`; 소스·Terraform state에 값 없음 |
-| 채팅 Candidate handoff | 미구현, `agent_handoff_status=NOT_CONFIGURED` |
+| 채팅 Candidate handoff | Source Adapter 배포·실행 비활성, `agent_handoff_status=NOT_CONFIGURED` |
+| Datadog 신규 handoff | 기존 ingress와 분리된 Source Adapter 구현 완료·미적용; 기존 경로 변경 없음 |
 | 기존 Agent 경로 상태 | 성공 실행도 있으나 Worker 오류와 DLQ backlog가 있어 신규 경로의 무검증 재사용 금지 |
 
 배포된 기존 앱을 읽은 목적은 Dify 1.16.1에서 필요한 입력 형태를 지원하는지 확인하는
@@ -274,7 +277,9 @@ Chat 원문이 애초에 들어오지 않으며 envelope 전체도 출력하지 
 | 3B | `agent.incident.v1`, Incident State, Correlator, Agent Invocation Queue를 비활성 상태로 구현 | 계약 검증, 기존 Worker와 Correlator가 같은 Queue를 동시에 소비하지 않음, Dify 실행 0 |
 | 3C | 상관관계 전용 합성 E2E와 source 전달 지연 측정 | Signal Queue 직접 입력에서 Chat→Datadog과 Datadog→Chat 모두 같은 `incident_id`, revision 증가, 모호한 후보 강제 병합 0, Dify 실행 0. 이후 실제 Adapter 양쪽 전달 지연을 재서 운영 window 확정 |
 | 3D | 병합된 Incident를 전용 테스트 workflow로 Shadow E2E | revision 멱등, Incident별 실행 직렬화, 장애 시 Queue/DLQ 격리, 기존 앱 영향 0 |
-| 4 | 기존 DLQ·DSL drift 정리 후 Datadog Source Adapter dual-run | legacy/new 결과 비교, Recovered 의미 보존, rollback 확인 |
+| 4A | 기존 ingress와 분리된 Datadog Source Adapter를 비활성 상태로 생성 | 기존 경로 변경 0, 신규 URL·Lambda·최소 IAM만 생성, 실행 false·allowlist empty·2100 cutoff |
+| 4B | 합성 monitor에서 기존/new webhook dual-run과 양쪽 source 지연 측정 | legacy/new 수신 확인, Recovered 보존, Chat/Datadog event·Queue 도착 시각 기록, Dify 실행 0 |
+| 4C | 운영 전환 전 기존 DLQ·DSL drift 정리 | 기존 오류 원인 제거, 게시 DSL export, rollback 확인 |
 | 5 | 운영 hardening | backlog·error·DLQ 알람, replay runbook, concurrency·timeout 실측 근거 |
 
 Phase 1A는 전용 테스트 앱 API를 사람이 직접 호출해 계약만 확인하고, 자동 source는
@@ -594,6 +599,58 @@ Queue·DLQ 0건, Worker/DLQ alarm `OK`, 합성 ledger·lock·Incident State 삭�
 대상 재-plan도 `No changes`였다. 따라서 Phase 3D Shadow 기능 게이트는 통과했지만 production
 Agent handoff는 계속 비활성이다. 남은 활성화 blocker는 실제 source 전달 지연 측정과 운영
 correlation window 결정, Datadog monitor mapping 구성이다.
+
+### 6.8 Phase 4A 격리 Datadog Source Adapter
+
+기존 `o2-dify-ingress`를 수정해 한 요청에서 두 경로로 분기하지 않는다. 신규 Adapter는
+별도 Function URL을 가지며 Datadog의 별도 Shadow webhook이 선택한 합성 monitor에만 붙는다.
+기존 webhook은 기존 Worker/Dify 경로를 그대로 사용하므로 신규 Adapter의 인증·계약·SQS
+오류가 운영 알림 분석을 막지 않는다.
+
+신규 Adapter는 기존 15필드 `datadog.alert.v1` 입력을 exact-field 방식으로 검증한다. 현재
+Datadog `$DATE_POSIX` 값과 RFC 3339를 모두 받아 Queue envelope에서는 RFC 3339 UTC로
+정규화한다. 같은 `cycle_key + transition + event_id`는 같은 ULID trigger와
+`datadog:<cycle_key>:<transition>` 멱등 키를 만든다. `Recovered`도 버리지 않고 전달해
+Correlator가 기존 Incident에 복구 revision을 추가할 수 있게 한다. alert 본문은 Queue
+evidence에는 포함되지만 로그에는 request ID·상태·content-free error code만 남는다.
+
+안전 경계는 다음과 같다.
+
+| 경계 | 기본값·권한 |
+|---|---|
+| 실행 플래그 | `false` |
+| 합성 cycle allowlist | empty; 활성화 시 정확히 1개 |
+| cutover | 2100-01-01; 활성화 시 명시한 epoch |
+| 인증 | 기존 O2 webhook secret을 Secrets Manager에서 실행 시 읽고 `x-dd-secret` 비교 |
+| IAM | 해당 secret read, Signal Queue send, 로그 쓰기만 허용 |
+| 금지 | 기존 ingress/Worker invoke, Dify·Bedrock 호출, Incident State write |
+| 실패 관측 | payload 없는 `status=FAILED` 로그를 CloudWatch metric/alarm으로 변환 |
+
+로컬 06-agent suite는 48개가 통과했고 Lambda-runtime `boto3`가 필요한 기존 Correlator
+transaction 1개만 로컬에서 skip됐다. Terraform `fmt`·`validate`가 통과했으며 신규 대상
+plan은 `8 add, 0 change, 0 destroy`다. 실행 플래그만 `true`로 바꾸고 allowlist와 cutover를
+두지 않은 음성 plan은 resource precondition에서 거부됐다. 이 브랜치에서는 apply하지 않았다.
+전체 stack plan은 `8 add, 4 change, 0 destroy`이며 별도 4개는 기존 `alert_relay` IAM과
+기존 Lambda 3개의 선행 코드 변경이다. Phase 4A 저장 plan에서는 이 네 update를 제외했다.
+
+Phase 4A 병합 후 순서는 다음으로 고정한다.
+
+1. 신규 8개 리소스만 포함한 저장 plan을 다시 만들고 기존 `alert_relay` IAM·Lambda 3개
+   update와 모든 destroy가 제외됐는지 확인한 뒤 비활성 상태로 apply
+2. Function URL은 공유 문서에 남기지 않고, 기존 O2 webhook과 같은 secret header를 쓰는
+   별도 Datadog Shadow webhook으로 등록
+3. 합성 monitor 하나에만 기존 webhook과 Shadow webhook을 함께 붙임
+4. Correlator·Generic Worker는 계속 disabled로 두고, Datadog Adapter는 합성 cycle 1개,
+   Chat Adapter는 합성 broadcast 1개와 명시 cutover로만 일시 활성화
+5. Signal Queue 메시지의 envelope `occurred_at`과 SQS `SentTimestamp`를 source별로 기록
+6. Chat source-to-Queue, Datadog source-to-Queue, 두 source event-time 차이, 두 Queue 도착
+   시각 차이를 Chat-first·Datadog-first 반복 실행에서 측정해 M-017에 추가
+7. `Recovered`가 같은 cycle의 별도 trigger로 도착하는지 확인
+8. 두 Adapter를 기본 비활성값으로 복귀하고 Shadow webhook을 합성 monitor에서 제거한 뒤,
+   정확한 합성 메시지만 개별 삭제하고 Queue·DLQ 0과 대상 재-plan `No changes` 확인
+
+운영 correlation window는 위 측정값이 생긴 뒤에만 결정한다. Phase 4A apply 성공이나 단일
+샘플만으로 값을 정하지 않으며, 이 과정에서는 Agent Invocation Queue와 Dify를 열지 않는다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 
