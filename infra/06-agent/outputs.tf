@@ -99,6 +99,38 @@ output "agent_entry_execution_enabled" {
   value       = var.agent_entry_execution_enabled
 }
 
+# ── Incident Correlator (Phase 3B: 비활성) ───────────────────────
+
+output "incident_state_table" {
+  description = "agent.trigger.v1 귀속 상태와 source signal claim을 보관하는 DynamoDB table"
+  value       = aws_dynamodb_table.incident_state.name
+}
+
+output "incident_correlator_function_name" {
+  description = "Phase 3B에서는 event source와 실행 플래그가 모두 disabled인 Correlator"
+  value       = aws_lambda_function.incident_correlator.function_name
+}
+
+output "incident_correlator_event_source_enabled" {
+  description = "Signal Queue의 Correlator 자동 소비 활성화 여부"
+  value       = aws_lambda_event_source_mapping.incident_correlator.enabled
+}
+
+output "incident_correlator_execution_enabled" {
+  description = "Incident Correlator 실행 게이트"
+  value       = var.incident_correlator_execution_enabled
+}
+
+output "agent_invocation_queue_url" {
+  description = "agent.incident.v1 전용 Queue. Phase 3B에는 consumer가 없음"
+  value       = aws_sqs_queue.agent_invocation.url
+}
+
+output "agent_invocation_dlq_url" {
+  description = "Phase 3D Generic Worker가 처리하지 못한 Incident revision이 이동할 DLQ"
+  value       = aws_sqs_queue.agent_invocation_dlq.url
+}
+
 # ── O2 알림 중계 Lambda (병렬 파이프라인) ──────────────────────────
 
 output "alert_relay_o2_function_url" {
