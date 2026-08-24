@@ -144,9 +144,13 @@ Function URL은 Terraform state에는 존재하지만 sensitive output으로만 
 
 2026-08-24 구현 검증에서 06-agent Python suite 48개가 통과했고 기존 Lambda-runtime
 `boto3` transaction 1개만 로컬에서 skip됐다. Terraform `fmt`·`validate`가 통과했으며 대상
-plan은 신규 리소스만 `8 add, 0 change, 0 destroy`였다. apply는 하지 않았다. 실제 양쪽
-source 지연 측정과 비활성 apply 순서는 `docs/agent-entrypoint.md` 6.8이 원본이다. 전체 stack
-plan의 별도 기존 IAM 1개·Lambda 3개 update는 대상 저장 plan에서 제외해야 한다.
+plan `8 add, 0 change, 0 destroy`만 적용했다. 이어 별도 Datadog Shadow webhook과 일회용
+monitor로 실제 source 지연을 측정했다. Chat은 7,995ms·8,743ms, Datadog Triggered는
+68,400ms·63,611ms였고 Recovered도 두 번 확인했다. 종료 후 Adapter는 실행 `false`, allowlist
+empty, 2100 cutover로 복귀했으며 Shadow webhook은 운영형 payload로 복원하되 monitor에는
+붙이지 않았다. 관련 Queue/DLQ 0과 대상 재-plan `No changes`를 확인했다. 상세 절차·한계는
+`docs/agent-entrypoint.md` 6.8과 M-017이 원본이다. 전체 stack plan의 별도 기존 IAM 1개·Lambda
+3개 update는 계속 대상 저장 plan에서 제외해야 한다.
 
 ## Incident Correlator Phase 3B
 
@@ -169,10 +173,10 @@ agent.trigger.v1 Signal Queue
 | 합성 source allowlist | empty |
 | Datadog monitor mapping | empty |
 
-window `0`은 미설정 상태다. Phase 3C에서 두 source 도착 지연을 측정하기 전에는 값을
-지어내지 않는다. event source와 실행 플래그를 켜더라도 window가 0이거나 합성 allowlist가
-1-3개가 아니면 Terraform precondition이 실패한다. 기존 Agent Worker event source와
-Correlator도 동시에 활성화할 수 없다.
+window `0`은 미설정 상태다. Phase 4B에서 두 source 도착 지연을 각각 두 번 측정했지만
+표본이 적어 운영값을 정하지 않는다. event source와 실행 플래그를 켜더라도 window가 0이거나
+합성 allowlist가 1-3개가 아니면 Terraform precondition이 실패한다. 기존 Agent Worker event
+source와 Correlator도 동시에 활성화할 수 없다.
 
 Chat은 현재 S3 범위인 `READ_PATH → LATENCY/api` mapping만 갖는다. Datadog은 alert 제목이나
 본문을 해석하지 않고 명시한 monitor ID mapping만 사용한다. mapping이 없거나 같은 조건의
@@ -194,8 +198,9 @@ GSI `ACTIVE`, item 0이었다. 전체 stack 재-plan의 기존 `5 change`는 별
 Signal Queue 직접 E2E를 수행했다. Chat→Datadog과 Datadog→Chat 모두 revision 1
 `PROVISIONAL`에서 같은 Incident의 revision 2 `CORRELATED`로 전환됐다. Invocation Queue
 consumer는 0개라 Dify 실행은 없었다. 종료 후 실행 gate·window·allowlist·Datadog mapping을
-기본 비활성값으로 복귀하고 합성 DynamoDB 항목과 Queue 메시지만 개별 삭제했다. 운영
-correlation window는 실제 source Adapter 전달 지연을 재기 전까지 미확정이다.
+기본 비활성값으로 복귀하고 합성 DynamoDB 항목과 Queue 메시지만 개별 삭제했다. 이후
+Phase 4B 실제 Source Adapter 측정에서도 표본이 source별 2개뿐이므로 운영 correlation
+window는 미확정이다.
 
 ### 1. 버전 고정
 

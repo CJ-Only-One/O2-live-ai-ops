@@ -1,7 +1,7 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 3D Shadow complete; Phase 4A isolated Datadog Adapter implemented but not applied
+> **Status:** Phase 4B source-delay slice complete; legacy dual-run not run; all production execution gates disabled
 > **Updated:** 2026-08-24
 > **Decision:** `decisions.md` D-050 and D-055
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
@@ -20,7 +20,7 @@ implementation_state:
   incident_correlator: DEPLOYED_EXECUTION_DISABLED
   agent_invocation_queue: DEPLOYED_DISABLED_CONSUMER
   phase3c_signal_queue_correlation_e2e: PASS
-  phase3c_source_pipeline_delay_measurement: BLOCKED_ON_PHASE4A_APPLY_AND_SHADOW_WEBHOOK
+  phase3c_source_pipeline_delay_measurement: PASS_PHASE4B_TWO_ORDER_RUNS
   phase3d_dify_incident_contract_dsl: PUBLISHED
   phase3d_shadow_e2e: PASS
   idempotency_ledger: DEPLOYED_EMPTY
@@ -30,14 +30,18 @@ implementation_state:
   dedicated_test_workflow_dsl: RECORDED_IN_REPOSITORY
   dedicated_test_workflow_api_key: STORED_IN_SECRETS_MANAGER
   existing_team_workflow_targeted: false
-  datadog_source_adapter: IMPLEMENTED_NOT_APPLIED
-  phase4a_targeted_plan: READY_8_ADD_0_CHANGE_0_DESTROY
-  datadog_migration: PHASE4A_SHADOW_FOUNDATION_ONLY
+  datadog_source_adapter: DEPLOYED_EXECUTION_DISABLED
+  phase4a_targeted_plan: APPLIED_8_ADD_0_CHANGE_0_DESTROY
+  datadog_shadow_webhook: CONFIGURED_PRODUCTION_PAYLOAD_NOT_ATTACHED
+  phase4b_synthetic_monitor: DELETED_AFTER_TEST
+  phase4b_source_delay_samples: CHAT_7995_8743MS_DATADOG_TRIGGERED_68400_63611MS
+  phase4b_legacy_new_dual_run: NOT_RUN_LEGACY_DIFY_INTENTIONALLY_EXCLUDED
+  datadog_migration: PHASE4B_SOURCE_DELAY_ONLY
   production_agent_handoff: DISABLED
 activation_blockers:
-  - CORRELATION_WINDOW_NOT_MEASURED
+  - CORRELATION_WINDOW_NOT_DECIDED_FROM_TWO_SAMPLES
   - DATADOG_MONITOR_MAPPING_NOT_CONFIGURED
-  - SOURCE_PIPELINE_DELAY_MEASUREMENT_NOT_RUN
+  - DATADOG_ALERT_CYCLE_KEY_SUBSTITUTION_NOT_VERIFIED
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
 production_migration_blockers:
@@ -64,7 +68,7 @@ production_migration_blockers:
 | Service API 계약 테스트 | 전용 API key로 Chat·Datadog succeeded, 불일치 failed, 토큰 0 |
 | 전용 key 보관 | Secrets Manager `o2/dev/dify-agent-entry-contract-test`; 소스·Terraform state에 값 없음 |
 | 채팅 Candidate handoff | Source Adapter 배포·실행 비활성, `agent_handoff_status=NOT_CONFIGURED` |
-| Datadog 신규 handoff | 기존 ingress와 분리된 Source Adapter 구현 완료·미적용; 기존 경로 변경 없음 |
+| Datadog 신규 handoff | 기존 ingress와 분리된 Source Adapter 배포·실행 비활성; Shadow webhook은 구성됐지만 monitor에 미부착 |
 | 기존 Agent 경로 상태 | 성공 실행도 있으나 Worker 오류와 DLQ backlog가 있어 신규 경로의 무검증 재사용 금지 |
 
 배포된 기존 앱을 읽은 목적은 Dify 1.16.1에서 필요한 입력 형태를 지원하는지 확인하는
@@ -533,11 +537,10 @@ consumer는 0개여서 Generic Worker와 Dify는 실행되지 않았다. Correla
 4. 대상 Terraform 재-plan `No changes`, Incident State item 0, 네 Queue의 visible·in-flight·
    delayed 0, 두 DLQ 0, Invocation consumer 0, Lambda Error 알람 `OK` 확인
 
-Phase 3C의 **상관관계 기능 게이트는 통과**했다. 그러나 이번 입력은 두 Adapter를 거치지
-않았으므로 source 전달 지연 분포는 측정하지 못했다. 따라서 운영 correlation window는
-여전히 미확정이고, Phase 3C 전체 완료로 표시하지 않는다. Chat Adapter와 신규 Datadog
-Source Adapter의 합성 경로를 각각 열 수 있을 때 전달 시각을 함께 기록해 M-017에 행을
-추가한 뒤 window를 결정한다.
+Phase 3C-A의 **상관관계 기능 게이트는 통과**했다. 이 시점의 입력은 두 Adapter를 거치지
+않았으므로 source 전달 지연 분포는 아직 측정하지 못했다. 이후 Phase 4B에서 실제 Adapter
+지연 표본을 M-017에 추가했지만 source별 2개뿐이므로 운영 correlation window는 계속
+미확정이다.
 
 ### 6.7 Phase 3D 저장소 구현 체크포인트
 
@@ -597,8 +600,9 @@ cold start를 포함해 6,176.10ms, 중복 차단 실행은 143.43ms였다.
 재측정 직후 event source를 `Disabled`, 실행 플래그를 `false`, allowlist를 empty로 복귀했고,
 Queue·DLQ 0건, Worker/DLQ alarm `OK`, 합성 ledger·lock·Incident State 삭제를 확인했다. 최종
 대상 재-plan도 `No changes`였다. 따라서 Phase 3D Shadow 기능 게이트는 통과했지만 production
-Agent handoff는 계속 비활성이다. 남은 활성화 blocker는 실제 source 전달 지연 측정과 운영
-correlation window 결정, Datadog monitor mapping 구성이다.
+Agent handoff는 계속 비활성이다. 당시 남은 blocker 중 실제 source 전달 지연은 Phase 4B에서
+두 표본씩 측정했다. 현재 blocker는 반복 표본 기반 운영 correlation window 결정, Datadog
+monitor mapping, 실제 `$ALERT_CYCLE_KEY` 치환 검증이다.
 
 ### 6.8 Phase 4A 격리 Datadog Source Adapter
 
@@ -628,10 +632,10 @@ evidence에는 포함되지만 로그에는 request ID·상태·content-free err
 
 로컬 06-agent suite는 48개가 통과했고 Lambda-runtime `boto3`가 필요한 기존 Correlator
 transaction 1개만 로컬에서 skip됐다. Terraform `fmt`·`validate`가 통과했으며 신규 대상
-plan은 `8 add, 0 change, 0 destroy`다. 실행 플래그만 `true`로 바꾸고 allowlist와 cutover를
-두지 않은 음성 plan은 resource precondition에서 거부됐다. 이 브랜치에서는 apply하지 않았다.
-전체 stack plan은 `8 add, 4 change, 0 destroy`이며 별도 4개는 기존 `alert_relay` IAM과
-기존 Lambda 3개의 선행 코드 변경이다. Phase 4A 저장 plan에서는 이 네 update를 제외했다.
+plan은 `8 add, 0 change, 0 destroy`였다. 실행 플래그만 `true`로 바꾸고 allowlist와 cutover를
+두지 않은 음성 plan은 resource precondition에서 거부됐다. 병합 후 이 저장 plan만 적용했고
+Lambda `Active`·update `Successful`, 실행 `false`, allowlist empty, 2100 cutover, Queue/DLQ 0을
+확인했다. 전체 stack의 별도 4개 update는 적용하지 않았다.
 
 Phase 4A 병합 후 순서는 다음으로 고정한다.
 
@@ -651,6 +655,38 @@ Phase 4A 병합 후 순서는 다음으로 고정한다.
 
 운영 correlation window는 위 측정값이 생긴 뒤에만 결정한다. Phase 4A apply 성공이나 단일
 샘플만으로 값을 정하지 않으며, 이 과정에서는 Agent Invocation Queue와 Dify를 열지 않는다.
+
+2026-08-24 Phase 4B에서 위 절차를 실제로 수행했다. Datadog API로 별도 Shadow webhook을
+등록했고 URL·`x-dd-secret`·15필드 payload·JSON encoding을 값 노출 없이 재조회 검증했다.
+운영 monitor는 건드리지 않고 전용 custom metric monitor를 일시 생성했으며 기존
+`@webhook-o2-dify`는 붙이지 않았다. 테스트 동안만 두 Adapter의 실행 gate를 열었고
+Correlator·Invocation Worker는 계속 disabled였다.
+
+| 실행 순서 | Chat source-to-Queue | Datadog Triggered source-to-Queue | Recovered 확인 |
+|---|---:|---:|---|
+| Chat-first | 7,995ms | 68,400ms | 63,400ms |
+| Datadog-first | 8,743ms | 63,611ms | 62,828ms |
+
+두 순서는 사람이 다음 source를 넣기 전에 앞 source의 Queue 도착을 확인한 제어 실험이다.
+따라서 source 간 event-time 간격 자체는 운영 correlation window 근거가 아니다. 확인된 것은
+Chat Candidate Stream 경로가 약 8-9초, Datadog monitor 평가·webhook 경로가 약 63-68초였고,
+이번 두 표본에서 source transport 차이가 약 55-60초였다는 점이다. 운영 window는 반복 자동화
+표본과 실제 장애의 source 발생 간격을 더 측정한 뒤 결정한다.
+
+합성 allowlist 값을 Datadog alert 생성 전에 알 수 없으므로 테스트 동안 webhook payload의
+`cycle_key`만 고정 합성값으로 바꿨고 종료 후 `$ALERT_CYCLE_KEY`로 복원했다. 따라서 Triggered와
+Recovered가 같은 고정 cycle로 도착하는 것은 검증했지만 Datadog의 `$ALERT_CYCLE_KEY` 변수
+치환 자체는 아직 별도 검증 항목이다. 신규 custom metric은 값이 먼저 보이고 tag-filter
+index가 늦게 반영돼 초기 `run:` 쿼리가 빈 series였다. 테스트는 격리 전용 metric name의
+`{*}`만 감시했고, 후속 조회에서 세 tag와 filtered series가 모두 나타난 것을 확인했다.
+운영 monitor에서는 `{*}`로 우회하지 않고 tag-filter 조회가 가능해질 때까지 prewarm한다.
+
+종료 후 두 Adapter는 실행 `false`, allowlist empty, 2100 cutover로 복귀했고 Chat event source는
+`Disabled`다. 합성 monitor는 삭제 후 GET 404를 확인했고 Shadow webhook은 운영형 15필드
+payload로 남겨 두되 어떤 monitor에도 붙이지 않았다. Signal Queue·두 Adapter DLQ·Invocation
+Queue/DLQ는 모두 visible/in-flight/delayed 0, 합성 Candidate 0, Adapter 실패 로그 0이었다.
+두 Adapter 대상 재-plan은 `No changes`였고 06-agent 전체 plan의 별도 기존 update 4개는 계속
+적용하지 않았다. 상세 측정 근거는 M-017에 있다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 

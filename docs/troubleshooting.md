@@ -40,6 +40,7 @@
 | T-022 | 저장소의 Dify 입력 계약과 실제 게시 앱이 다르다 | DSL 미내보내기, `/v1/info`, `/v1/parameters`, `custom_alert_json`, API key 앱 매핑 |
 | T-023 | SDK 가 봉투 필드를 늘렸는데 드리프트 시험이 안 깬다 | `ENVELOPE_FIELDS`, `pod_name`, 상수 없는 계약, 늘어난 쪽 감지 |
 | T-024 | 없는 메트릭을 조회했는데 404 가 아니라 빈 태그 목록이 온다 | `/api/v2/metrics/.../all-tags`, 200+`tags:[]`, `/api/v1/search`, `trace.fastapi.request` |
+| T-025 | 새 custom metric 값은 보이는데 tag-filter monitor가 계속 No Data다 | metric ingestion, tag index propagation, `all-tags`, prewarm, `{*}` 금지 |
 
 
 ---
@@ -1329,3 +1330,30 @@ scope 를 보면 `pod_name:N/A` 처럼 "지표는 있는데 그 태그가 없다
 
 실측 결과 자체는 M-016 에 있다.
 
+---
+
+## T-025. 새 custom metric 값은 보이는데 tag-filter monitor가 계속 No Data다
+
+**증상** — 합성 metric을 v1·v2 API에 제출하면 둘 다 `202 Accepted`였고 metric 목록과
+`{*}` query에는 값이 보였다. 하지만 같은 시각의 `run:<id>` filter query는 series 0,
+그 filter를 쓰는 monitor는 계속 `No Data`였다.
+
+**원인** — 신규 custom metric의 값 ingestion과 tag 검색 index 반영은 동시에 보이지
+않았다. 처음에는 tag가 유실됐다고 판단했지만, 후속 조회에서 `all-tags`에 `env`·`run`·
+`service`가 모두 나타났고 같은 filtered query도 series 1을 반환했다. 즉 payload의 tag가
+사라진 것이 아니라 **metric 값보다 tag-filter 사용 가능 시점이 늦었다.**
+
+**해결** — 합성 monitor를 만들기 전에 다음 세 단계를 순서대로 확인한다.
+
+1. metric 제출 API가 202를 반환한다.
+2. `{*}` query에서 non-null point가 보인다.
+3. 실제 monitor가 쓸 tag-filter query에서도 series가 보인다.
+
+3번 전에는 monitor를 활성화하지 않는다. 반복 실험이면 metric과 tag를 미리 한 번 보내
+prewarm한다. 이번에는 다른 producer가 없는 일회용 metric name임을 확인한 뒤에만 `{*}`로
+측정했지만, 운영 metric은 다른 series까지 잡을 수 있으므로 **`{*}` 우회를 금지한다.**
+
+**왜 늦게 찾았나** — 202와 metric 목록 등록을 같은 완료 신호로 읽었다. 반대로 filtered
+series 0은 tag 누락으로 너무 빨리 해석했다. 어느 응답에도 “tag index가 아직 준비되지
+않았다”는 오류가 없었고, 값 경로와 tag 검색 경로를 따로 확인하기 전까지 두 상황이 같은
+빈 series로 보였다.
