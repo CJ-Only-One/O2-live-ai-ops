@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:o2:contract:cue.sheet.v1",
+  "title": "cue.sheet.v1",
+  "description": "Broadcast run-of-show. Names when each load-producing moment happens and how large it is expected to be, so pre-scaling can be planned before the broadcast instead of reacting to metrics after the spike (D-041).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "broadcast_id",
+    "cue_version",
+    "scheduled_at",
+    "baseline",
+    "segments"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "broadcast_id": {
+      "description": "contracts.md 1.2 의 공개 식별자.",
+      "type": "string",
+      "pattern": "^bc_[0-9]+$"
+    },
+    "cue_version": {
+      "description": "큐시트를 고칠 때마다 1 씩 올린다. 신선도 판정과 계획 교체의 근거다(D-041).",
+      "type": "integer",
+      "minimum": 1
+    },
+    "scheduled_at": {
+      "description": "방송 예정 시각. 실제 시작(broadcasts.started_at)과 다른 값이다 — 예정이 밀려도 이 값은 안 바뀐다.",
+      "$ref": "#/$defs/offsetDateTime"
+    },
+    "ends_at": {
+      "description": "방송 예정 종료. 축소 판단의 입력이지 축소 트리거가 아니다(D-041 '축소는 큐시트 종료만으로 실행하지 않는다').",
+      "$ref": "#/$defs/offsetDateTime"
+    },
+    "baseline": {
+      "description": "세그먼트가 없는 구간의 평상 부하. 세그먼트의 expected 가 비어 있으면 이 값을 쓴다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["concurrent", "chat_rate"],
+      "properties": {
+        "concurrent": { "$ref": "#/$defs/concurrent" },
+        "chat_rate": { "$ref": "#/$defs/chatRate" }
+      }
+    },
+    "interpretation": {
+      "description": "대본을 읽어 segment_type 과 expected 를 채운 주체의 기록. 방송 전 1회 배치의 산출물이고, 사람이 직접 쓴 큐시트에는 없다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["by", "at"],
+      "properties": {
+        "by": { "enum": ["agent", "operator"] },
+        "at": { "$ref": "#/$defs/offsetDateTime" },
+        "model": {
+          "description": "agent 가 채웠을 때 쓴 모델 ID. 같은 큐시트를 다시 해석했을 때 결과가 달라진 원인을 좁힌다.",
+          "type": ["string", "null"]
+        },
+        "reviewed_by": {
+          "description": "방송 전에 검토한 사람. null 이면 미검토 — 그 상태로도 유효하지만 상한 clamp 만 신뢰한다.",
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/segment" }
+    }
+  },
+  "$defs": {
+    "offsetDateTime": {
+      "description": "ISO 8601. 오프셋이 반드시 있어야 한다 — 큐시트는 사람이 KST 로 쓰는 문서이고, 오프셋 없는 문자열을 허용하면 어느 시간대인지 아무도 모르는 값이 들어온다. DB 는 naive UTC 라 적재 시 1회만 변환한다.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,6})?([+-][0-9]{2}:[0-9]{2}|Z)$"
+    },
+    "concurrent": {
+      "description": "동시 접속자 수. 연결 수 축이라 chat-gateway 의 프레임/s 를 정한다(M-010 해석 2).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "chatRate": {
+      "description": "1인당 채팅 msg/s. concurrent 와 곱해 아이템/s 가 되고 그것이 팬아웃 총량이다(M-010).",
+      "type": "number",
+      "minimum": 0
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "at", "segment_type", "what"],
+      "properties": {
+        "seq": {
+          "description": "큐시트 안에서만 고유한 순번.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "at": {
+          "description": "이 순간의 절대 시각. 상대 오프셋을 쓰지 않는 이유는 부하를 만드는 것이 고객이고 고객은 벽시계를 보기 때문이다 — 재생이 밀려도 20시 특가를 기다린 사람은 20시에 몰린다.",
+          "$ref": "#/$defs/offsetDateTime"
+        },
+        "duration_s": {
+          "description": "이 부하가 이어질 예상 시간. 확장 폭 계산의 입력이고 축소 트리거가 아니다 — 게스트가 만든 연결은 duration_s 이 지나도 방송 끝까지 유지된다.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "segment_type": {
+          "description": "어느 경로가 몰리는가. 규모는 여기 넣지 않는다(expected 소관).",
+          "enum": [
+            "BROADCAST_START",
+            "GUEST_APPEARANCE",
+            "EVENT_ANNOUNCE",
+            "SALE_OPEN",
+            "SALE_CLOSING"
+          ]
+        },
+        "what": {
+          "description": "사람이 읽는 한 줄 요약.",
+          "type": "string",
+          "minLength": 1
+        },
+        "script": {
+          "description": "대본 원문. 해석 배치의 LLM 이 읽는 자리다.",
+          "type": "string"
+        },
+        "sku_id": {
+          "description": "대상 상품. 계약 1.2 대로 숫자 문자열이다.",
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "expected": { "$ref": "#/$defs/expected" },
+        "note": {
+          "description": "JSON 에 주석을 달 수 없어 둔 자리. 검토용 메모.",
+          "type": "string"
+        }
+      }
+    },
+    "expected": {
+      "description": "예상 부하. 전부 선택이고, 없는 축은 baseline 을 쓴다. 값이 하나도 없는 큐시트도 유효하다 — 나중에 채운다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["by"],
+      "properties": {
+        "concurrent": { "$ref": "#/$defs/concurrent" },
+        "entry_window_s": {
+          "description": "이 인원이 몇 초에 걸쳐 진입하는가. 진입 스냅샷은 1회성이라 인원이 아니라 밀도가 api RPS 를 정한다(M-009).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "chat_rate": { "$ref": "#/$defs/chatRate" },
+        "order_rate": {
+          "description": "초당 주문 시도. order-worker 의 큐 유입이 된다.",
+          "type": "number",
+          "minimum": 0
+        },
+        "grade": {
+          "description": "인지도 등급. 등급에서 숫자로 옮기는 표는 여기 두지 않는다 — 실측이 갱신될 때마다 큐시트를 다시 쓰게 된다.",
+          "enum": ["S", "A", "B", "C"]
+        },
+        "by": {
+          "description": "이 값의 출처. unknown 이면 정보 게이트가 열릴 조건이다.",
+          "enum": ["history", "web_search", "operator", "unknown"]
+        },
+        "evidence": {
+          "description": "web_search 로 판단했을 때의 근거 URL. 발표에서 그대로 띄운다.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "searched_at": { "$ref": "#/$defs/offsetDateTime" },
+        "reason": {
+          "description": "왜 이 규모로 봤는지. 사람이 검토할 때 읽는 자리다.",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

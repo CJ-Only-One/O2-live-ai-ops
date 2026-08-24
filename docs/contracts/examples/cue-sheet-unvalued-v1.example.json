@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "broadcast_id": "bc_1043",
+  "cue_version": 1,
+  "scheduled_at": "2026-08-25T20:00:00+09:00",
+  "baseline": {
+    "concurrent": 2000,
+    "chat_rate": 3.0
+  },
+  "segments": [
+    {
+      "seq": 1,
+      "at": "2026-08-25T20:00:00+09:00",
+      "segment_type": "BROADCAST_START",
+      "what": "방송 시작",
+      "expected": {
+        "by": "unknown"
+      }
+    },
+    {
+      "seq": 2,
+      "at": "2026-08-25T20:30:00+09:00",
+      "segment_type": "SALE_OPEN",
+      "what": "특가 오픈",
+      "sku_id": "88220",
+      "note": "규모 미정. by=unknown 이라 워머는 baseline 으로 돌고, 확장 판단은 정보 게이트로 넘어간다"
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "schema_version": "1.0",
+  "broadcast_id": "bc_1042",
+  "cue_version": 3,
+  "scheduled_at": "2026-08-24T20:00:00+09:00",
+  "ends_at": "2026-08-24T21:30:00+09:00",
+  "baseline": {
+    "concurrent": 2000,
+    "chat_rate": 3.0
+  },
+  "interpretation": {
+    "by": "agent",
+    "at": "2026-08-24T09:12:00+09:00",
+    "model": "global.anthropic.claude-sonnet-5",
+    "reviewed_by": "operator"
+  },
+  "segments": [
+    {
+      "seq": 1,
+      "at": "2026-08-24T20:00:00+09:00",
+      "duration_s": 120,
+      "segment_type": "BROADCAST_START",
+      "what": "방송 시작",
+      "script": "안녕하세요, 오늘 방송 시작합니다",
+      "expected": {
+        "concurrent": 4000,
+        "entry_window_s": 30,
+        "chat_rate": 3.0,
+        "by": "history",
+        "reason": "같은 편성대의 지난 방송 진입 실적"
+      }
+    },
+    {
+      "seq": 2,
+      "at": "2026-08-24T20:00:00+09:00",
+      "duration_s": 300,
+      "segment_type": "GUEST_APPEARANCE",
+      "what": "게스트 등장 · 합성 게스트 A",
+      "script": "오늘 특별한 분 모셨습니다",
+      "note": "시작과 같은 시각이다. 화면에서는 한 장면이지만 축이 달라 세그먼트를 나눈다 — 진입 밀도는 api, 연결 수는 chat-gateway 를 때린다",
+      "expected": {
+        "concurrent": 12000,
+        "entry_window_s": 60,
+        "chat_rate": 3.0,
+        "grade": "S",
+        "by": "web_search",
+        "evidence": ["https://example.invalid/synthetic-guest-profile"],
+        "searched_at": "2026-08-24T09:10:00+09:00",
+        "reason": "합성 예시. 실제 인물이 아니며 등급은 계약 예시용 값이다"
+      }
+    },
+    {
+      "seq": 3,
+      "at": "2026-08-24T20:20:00+09:00",
+      "duration_s": 180,
+      "segment_type": "EVENT_ANNOUNCE",
+      "what": "경품 추첨 참여 유도",
+      "script": "댓글 달아주시면 추첨해서 드려요",
+      "expected": {
+        "concurrent": 12000,
+        "chat_rate": 8.0,
+        "by": "operator",
+        "reason": "전원이 한 번씩 쓰는 단발 동시 발화. 발화율만 오르고 연결은 그대로다"
+      }
+    },
+    {
+      "seq": 4,
+      "at": "2026-08-24T20:45:00+09:00",
+      "duration_s": 600,
+      "segment_type": "SALE_OPEN",
+      "what": "특가 오픈",
+      "script": "자 지금부터 특가 시작합니다",
+      "sku_id": "88213",
+      "expected": {
+        "concurrent": 12000,
+        "chat_rate": 5.0,
+        "order_rate": 120.0,
+        "by": "history"
+      }
+    },
+    {
+      "seq": 5,
+      "at": "2026-08-24T21:05:00+09:00",
+      "duration_s": 180,
+      "segment_type": "SALE_CLOSING",
+      "what": "특가 마감 임박",
+      "script": "3분 남았습니다",
+      "sku_id": "88213",
+      "expected": {
+        "order_rate": 200.0,
+        "by": "history",
+        "reason": "유입은 이미 끝났고 망설이던 사람이 한꺼번에 누른다. 오픈보다 주문율이 높다"
+      }
+    }
+  ]
+}
