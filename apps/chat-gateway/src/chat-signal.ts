@@ -11,6 +11,7 @@ import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 
 import { config, type ChatSignalMode } from './config.js';
 import { ulid } from './events.js';
+import { businessEvent, duration, failure } from './telemetry.js';
 
 export type ChatSignalInput = {
   broadcastId: string;
@@ -55,6 +56,11 @@ function sanitizeErrorCode(error: unknown): string {
 }
 
 function defaultObserve(observation: ChatSignalObservation): void {
+  businessEvent('chat.signal', observation.outcome === 'success' ? 'success' : 'failed');
+  duration('chat.signal.publish', observation.durationMs);
+  if (observation.outcome === 'failure') {
+    failure('chat.signal', observation.errorCode ?? 'UNKNOWN');
+  }
   if (observation.outcome !== 'failure') return;
   // error.message는 AWS SDK나 테스트 입력을 통해 원문을 포함할 수 있으므로 쓰지 않는다.
   console.error(

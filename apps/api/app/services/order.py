@@ -17,6 +17,7 @@ from o2events.core import ulid
 
 from app.core.config import settings
 from app.core.errors import ApiError
+from app.core.telemetry import telemetry
 from app.db.session import SessionLocal
 from app.db.valkey import valkey
 from app.models.order import Order
@@ -152,6 +153,7 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
     # 꺼내므로 사용자가 본 것과 서버가 판정한 것이 어긋나지 않는다.
     product = broadcast_service.get_product(req.broadcast_id, req.sku_id)
     if product is None:
+        _emit_issue(req, "FAILED", "NOT_ELIGIBLE", int((time.perf_counter() - started) * 1000))
         raise ApiError("INVALID_REQUEST", "편성에 없는 상품입니다")
 
     # 특가가 열리기 전에는 팔지 않는다 (contracts.md 2.1).
@@ -179,6 +181,7 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
 
     if code == 1:
         # 같은 멱등키의 재요청. 재고를 다시 깎지 않고 첫 응답을 그대로 준다.
+        telemetry.retry("order.create", "IDEMPOTENT_REPLAY")
         return {"order_id": value, "state": "ACCEPTED"}
 
     latency_ms = int((time.perf_counter() - started) * 1000)
@@ -200,6 +203,7 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
         _publish(order_id, req, idem_key, user_key, unit_price, amount)
     except Exception:
         logger.exception("주문 큐 발행 실패: %s", order_id)
+        telemetry.failure("order.create", "PUBLISH_FAILED")
         _compensate(idem_key, req.sku_id, req.qty)
         raise ApiError("INTERNAL_ERROR", "주문을 접수하지 못했습니다")
 
@@ -222,6 +226,11 @@ def _emit_issue(req, result: str, failure_code: str | None, latency_ms: int, rem
     """SDK 의 이벤트 이름은 쿠폰 도메인 기준이고 우리는 특가 판매다.
     대응은 contracts.md 5.2 가 정한다.
     """
+    normalized_result = result.lower()
+    telemetry.business_event("coupon.issue", normalized_result)
+    telemetry.operation_duration("coupon.issue", latency_ms)
+    if failure_code:
+        telemetry.failure("coupon.issue", failure_code)
     try:
         emit.coupon_issue(
             coupon_id=req.sku_id,
@@ -236,6 +245,9 @@ def _emit_issue(req, result: str, failure_code: str | None, latency_ms: int, rem
 
 
 def _emit_create(order_id: str, req, amount: int, latency_ms: int) -> None:
+    telemetry.emit("o2.app.order_create")
+    telemetry.business_event("order.create", "success")
+    telemetry.operation_duration("order.create", latency_ms)
     try:
         emit.order_create(
             order_id=order_id,

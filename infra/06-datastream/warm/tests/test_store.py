@@ -86,6 +86,10 @@ def test_replayed_batch_is_not_counted_twice(store):
     assert again.n == first.n == len(events)
     assert store._table.puts == 1, "변화가 없으면 쓰기도 일어나지 않아야 합니다"
 
+    merged, duplicate = store.merge_sketch_with_status(partial)
+    assert merged.n == len(events)
+    assert duplicate is True
+
 
 def test_metric_write_is_monotonic(store):
     """늦게 도착한 오래된 상태가 최신 지표를 덮어쓰면 안 됩니다."""

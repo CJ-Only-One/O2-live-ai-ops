@@ -1219,6 +1219,59 @@ S2 의 "느린 파드" 판정은 서버 값으로 한다 — 인터넷 왕복이
   = 2.5)의 근거. 위 부하에서 두 파드가 2.0ms 대 4.0ms 였는데 표본이 적어
   분산을 말할 수 없다
 
+### Datadog-native 이관 전 F-0 재검증 (2026-08-24 19:49 KST)
+
+US5 Datadog API를 최근 2시간 범위로 직접 조회했다. 이름 검색만으로 수집 중이라
+판정하지 않고 series 수와 마지막 non-null point 시각을 함께 확인했다.
+
+| 항목 | query | series · 마지막 point (UTC) | 판정 |
+|---|---|---|---|
+| API request hits | `sum:trace.fastapi.request.hits{service:api,env:dev} by {pod_name}.as_count()` | 1 · `2026-08-24T10:35:00Z` · `pod_name:N/A` | `COLLECTED_NOT_USED` — recent point는 있으나 이관 전 비즈니스 Monitor는 Warm 사용 |
+| API p95 | `p95:trace.fastapi.request{service:api,env:dev} by {pod_name}` | 1 · `2026-08-24T10:35:00Z` · `pod_name:N/A` | `COLLECTED_NOT_USED` — 값 단위는 second, 논리 계약은 ms |
+| API 5xx hits | `sum:trace.fastapi.request.hits.by_http_status{service:api,env:dev,http.status_code:5*}.as_count()` | 0 · 마지막 point 없음 | 정상 0과 `NO_DATA`를 구분해야 하므로 수집 판정 보류 |
+| 신규 `o2.app.*` | 배포 전이라 recent query 미실행 | 없음 | `INSTRUMENTED_NOT_INGESTED` |
+
+`/api/v1/search?q=metrics:trace.fastapi.request` 결과 실제 duration 원천 이름은
+`trace.fastapi.request`다. p95 최근 값의 API unit은 `second`(`scale_factor=1.0`)였고
+최근 표본은 약 0.006초였다. Hot Metric Catalog는 primary에만 `×1000`을 적용해 기존
+ms 계약을 유지한다. `pod_name:N/A`는 신규 Downward API/`DD_TAGS` 배포 전 상태와
+일치하며, 배포 뒤 활성 파드 수만큼 분리되기 전에는 F-1.2 완료로 판정하지 않는다.
+
+2026-08-24 후속 구현에서는 아직 배포하지 않은 항목을 recent point처럼 기록하지
+않는다. 현재 판정은 다음과 같다.
+
+| 항목 | producer/소비 경로 | 판정 |
+|---|---|---|
+| Chat 연결·인입·처리·fanout·Kinesis·크기·delivered/dropped | `apps/chat-gateway` DogStatsD → 신규 pipeline dashboard/Hot catalog | `INSTRUMENTED_NOT_INGESTED` |
+| API business/cache/retry/fallback/DB pool | `apps/api` DogStatsD → 신규 pipeline dashboard/Hot catalog | `INSTRUMENTED_NOT_INGESTED` |
+| order-worker confirm/failure/retry/batch/duration | `apps/order-worker` DogStatsD | `INSTRUMENTED_NOT_INGESTED` |
+| o2-agg batch/duration/cold start/max memory/duplicate/late/decode | CloudWatch EMF + CloudWatch alarm | `INSTRUMENTED_NOT_INGESTED` |
+| Warm window age와 S3 business partition missing | 카나리 CloudWatch EMF + CloudWatch alarm | `INSTRUMENTED_NOT_INGESTED` |
+| 모든 실제 업무/Agent DLQ | AWS/SQS → Datadog Monitor 정의 | `COLLECTED_NOT_USED` — 신규 o2-agg DLQ는 아직 미배포 |
+| Firehose freshness/success | AWS/Firehose → 신규 pipeline dashboard/Monitor 정의 | `COLLECTED_NOT_USED` |
+
+`INSTRUMENTED_NOT_INGESTED`는 실패가 아니라 배포 게이트다. 배포 후 query, series 수,
+마지막 point 시각을 이 표에 새 행으로 추가하기 전에는 Warm 중복 series를 끄지 않는다.
+
+### Datadog-native 인프라 배포 후 recent point (2026-08-24 20:44 KST)
+
+`04-platform`, `06-datastream`, `08-chat-signal`, `05-datadog`를 기능 브랜치의
+검토된 Terraform plan으로 적용한 뒤 `o2-canary`를 수동 호출했다. aggregate 로그는
+`records=1`, `events=1`, `published=1`, `datadog_series=8`, `decode_errors=0`이었다.
+
+| 항목 | query | series · 마지막 point (UTC) | 판정 |
+|---|---|---|---|
+| canary pipeline freshness | `max:o2.warm.pipeline_freshness_seconds{service:o2-canary,env:dev}` | 1 · `2026-08-24T11:44:30Z` · `0.4114997387s` | 수집·Datadog 전송 확인 |
+| canary event count | `sum:o2.warm.event_count{service:o2-canary,env:dev}` | 1 · `2026-08-24T11:44:30Z` · `1` | 수집·Datadog 전송 확인 |
+| 신규 business event | `sum:o2.app.business_event{env:dev}.as_count()` | 0 · 마지막 point 없음 | 앱 이미지 미배포로 `INSTRUMENTED_NOT_INGESTED` 유지 |
+| 신규 operation duration | `p95:o2.app.operation.duration{env:dev}` | 0 · 마지막 point 없음 | 앱 이미지 미배포로 `INSTRUMENTED_NOT_INGESTED` 유지 |
+| 신규 cache access | `sum:o2.app.cache_access{env:dev}.as_count()` | 0 · 마지막 point 없음 | 앱 이미지 미배포로 `INSTRUMENTED_NOT_INGESTED` 유지 |
+| 신규 fanout items | `sum:o2.app.fanout.items{env:dev}.as_count()` | 0 · 마지막 point 없음 | 앱 이미지 미배포로 `INSTRUMENTED_NOT_INGESTED` 유지 |
+
+앱 배포는 `main` 푸시 → `app.yml` → ECR → GitOps 태그 갱신 경로만 허용된다.
+기능 브랜치 상태에서 클러스터를 직접 덮어쓰지 않았으므로 앱 네 항목은 실제 이미지가
+정식 CI 경로로 배포된 뒤 같은 query로 다시 측정한다.
+
 ### 채팅 이벤트는 이미 Kinesis 로 흐른다 (2026-08-24)
 
 `monitor.tf` 가 `chat_ingest_surge` 를 껐던 사유(*"목적지가 stdout 뿐이라

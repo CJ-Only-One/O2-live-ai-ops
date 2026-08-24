@@ -129,7 +129,9 @@ class WarmStore:
             return None, 0
         return _unpack(item["blob"]), int(item.get("rev") or 0)
 
-    def merge_sketch(self, partial: WindowSketch, attempts: int = 6) -> WindowSketch:
+    def merge_sketch_with_status(
+        self, partial: WindowSketch, attempts: int = 6
+    ) -> tuple[WindowSketch, bool]:
         """부분 집계를 윈도우에 병합하고 병합 결과를 돌려줍니다.
 
         읽기 → 병합 → 조건부 쓰기. 조건이 깨지면 다른 스트림이 먼저 쓴
@@ -146,7 +148,7 @@ class WarmStore:
             merged.merge(partial)
 
             if merged.n == rev:
-                return merged  # 이미 반영된 배치 — 쓸 것이 없습니다.
+                return merged, True  # 이미 반영된 배치 — 쓸 것이 없습니다.
 
             expires = int(time.time()) + settings.sketch_ttl_minutes * 60
             try:
@@ -162,7 +164,7 @@ class WarmStore:
                     ExpressionAttributeNames={"#r": "rev"},
                     ExpressionAttributeValues={":prev": rev},
                 )
-                return merged
+                return merged, False
             except ClientError as e:
                 if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
                     raise
@@ -171,6 +173,11 @@ class WarmStore:
         raise ConcurrencyError(
             f"{partial.service}@{partial.window_start} 병합 재시도 {attempts}회 소진"
         )
+
+    def merge_sketch(self, partial: WindowSketch, attempts: int = 6) -> WindowSketch:
+        """중복 여부가 필요 없는 기존 호출 계약을 유지합니다."""
+        merged, _ = self.merge_sketch_with_status(partial, attempts)
+        return merged
 
     # ------------------------------------------------------------ 지표
     def put_metrics(self, metrics: dict) -> None:

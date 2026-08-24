@@ -1,7 +1,8 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.core.config import settings
+from app.core.telemetry import telemetry
 
 # 풀 상한을 명시한다. 기본값(5 + overflow 10)이면 파드 하나가 최대 15개를 잡고,
 # 파드가 늘어나면 db.t4g.micro 의 max_connections 에 먼저 닿는다 (R-06).
@@ -33,6 +34,20 @@ reader_engine = create_engine(
     connect_args={"connect_timeout": 2},
 )
 ReaderSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=reader_engine)
+
+
+def _observe_pool(pool, role: str) -> None:
+    telemetry.db_pool(
+        role,
+        active=pool.checkedout(),
+        idle=pool.checkedin(),
+        overflow=pool.overflow(),
+    )
+
+
+for _engine, _role in ((engine, "writer"), (reader_engine, "reader")):
+    event.listen(_engine.pool, "checkout", lambda *args, p=_engine.pool, r=_role: _observe_pool(p, r))
+    event.listen(_engine.pool, "checkin", lambda *args, p=_engine.pool, r=_role: _observe_pool(p, r))
 
 Base = declarative_base()
 

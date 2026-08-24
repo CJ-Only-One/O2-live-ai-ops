@@ -263,6 +263,12 @@ def derive(
         "window_end": sk.window_start + span,
         "window_seconds": span,
         "window_start_iso": iso_from_epoch(sk.window_start),
+        "source_event_first_ts": sk.first_ts,
+        "source_event_last_ts": sk.last_ts,
+        "aggregate_ts": now,
+        "pipeline_freshness_seconds": (
+            max(0.0, now - sk.last_ts) if sk.last_ts is not None else None
+        ),
 
         "event_count": sk.n,
         "business_count": sk.n_business,
