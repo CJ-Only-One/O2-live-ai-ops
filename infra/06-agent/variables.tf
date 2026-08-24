@@ -360,6 +360,27 @@ variable "slack_approval_secret_name" {
 
 # ── Runbook Lookup Lambda ────────────────────────────────────────
 
+variable "action_state_secret_name" {
+  description = <<-EOT
+    조치 상태 머신 Lambda 가 실행 시점에 읽는 **Secrets Manager 시크릿 이름**.
+
+    값이 아니라 이름만 참조한다. 시크릿은 apply 전에 손으로 한 번 만든다.
+    키 하나가 필요하다:
+
+      action-state-api-key   임의로 정하는 값. Dify 의 ACTION_STATE_API_KEY
+                              환경변수와 반드시 같아야 한다
+
+      aws secretsmanager create-secret --name o2/dev/action-state \
+        --secret-string '{"action-state-api-key":"..."}' \
+        --region ap-northeast-2
+
+    runbook_lookup 과 시크릿을 공유하지 않는다 — 한쪽 키를 돌릴 때 다른 쪽이
+    같이 끊긴다(lambda_o2.tf 상단에 같은 사고 기록이 있다).
+  EOT
+  type        = string
+  default     = "o2/dev/action-state"
+}
+
 variable "runbook_lookup_secret_name" {
   description = <<-EOT
     Runbook Lookup Lambda 가 실행 시점에 읽는 **Secrets Manager 시크릿 이름**.
