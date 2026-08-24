@@ -145,6 +145,36 @@ resource "datadog_dashboard" "pipeline_native" {
           request { q = "sum:o2.app.fanout.items{env:${var.environment}} by {result}.as_rate()" }
         }
       }
+
+      widget {
+        timeseries_definition {
+          title = "DB pool connections by service / pod / role"
+          request { q = "max:o2.app.db.pool.active{env:${var.environment}} by {service,pod_name,operation}" }
+          request { q = "max:o2.app.db.pool.idle{env:${var.environment}} by {service,pod_name,operation}" }
+          request { q = "max:o2.app.db.pool.overflow{env:${var.environment}} by {service,pod_name,operation}" }
+        }
+      }
+
+      widget {
+        timeseries_definition {
+          title = "Order batch size by pod"
+          request { q = "avg:o2.app.batch.size{env:${var.environment},service:order-worker} by {pod_name}" }
+        }
+      }
+
+      widget {
+        timeseries_definition {
+          title = "Order batch duration p95 by pod"
+          request { q = "p95:o2.app.operation.duration{env:${var.environment},service:order-worker,operation:order.batch} by {pod_name}" }
+        }
+      }
+
+      widget {
+        timeseries_definition {
+          title = "Inventory read duration p95 by pod"
+          request { q = "p95:o2.app.operation.duration{env:${var.environment},service:api,operation:inventory.read} by {pod_name}" }
+        }
+      }
     }
   }
 
