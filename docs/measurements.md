@@ -31,6 +31,7 @@
 | M-016 | APM trace 지표의 태그 축 (파드 축이 있는가) | `ddtrace` 버전 변경 · Datadog Agent 설정 변경 · 통합 서비스 태깅 도입 |
 | M-017 | Incident Correlator 합성 E2E와 처리시간 | Correlator 코드·메모리·DynamoDB index·Queue 설정 변경 · 실제 source Adapter 연결 |
 | M-018 | Agent Invocation Worker 첫 Shadow E2E와 fail-closed | Worker IAM·ledger finalize·Dify 계약·Queue 설정 변경 |
+| M-019 | 파드 Ready 시간 (사전 확장 리드타임) | `readinessProbe` 설정 변경 · 이미지 크기 변경 · 인스턴스 타입 변경 · 노드 여유 부족으로 Karpenter 개입 시 |
 
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
@@ -1282,3 +1283,76 @@ Worker와 Agent Invocation Queue mapping을 기본 비활성 상태로 적용했
 ledger·lock·Incident State는 합성 marker와 owner를 확인하는 하나의 조건부 transaction으로
 정리했다. 종료 시 Queue·DLQ와 세 DynamoDB key는 모두 비어 있었다. fix를 main에 병합·적용한
 뒤 새 Incident ID로 재측정하며 기존 ID는 재사용하지 않는다.
+
+---
+
+## M-019. 파드 Ready 시간 (사전 확장 리드타임)
+
+큐시트 기반 사전 확장(D-041)이 "몇 초 전에 늘릴지"를 정하려면 파드가 Ready 가
+되는 데 걸리는 시간이 필요하다. 그 값을 쟀다.
+
+기존 Deployment 를 건드리지 않고 **일회용 파드 하나**를 띄웠다 지웠다. api
+Deployment 의 파드 스펙을 그대로 복사하되 라벨을 `app.kubernetes.io/name:
+api-readytest` 로 바꿔 **Service selector 에 안 걸리게** 했다 — 트래픽을 받지
+않으므로 지표도 모니터도 움직이지 않는다.
+
+**조건 (2026-08-24)** — c6i.large, `role=general` 노드에 `nodeSelector` 로 고정 /
+api 이미지가 **그 노드에 이미 캐시돼 있었다**(api 파드가 두 노드에 모두 상주) /
+노드 여유 안이라 Karpenter 미개입 / `readinessProbe` 는 api 매니페스트 그대로
+(`periodSeconds: 10`, `initialDelaySeconds` 없음, `timeoutSeconds: 5`) /
+측정은 `kubectl apply` 직후부터 `kubectl wait --for=condition=Ready` 반환까지.
+
+| 날짜 | run | apply → Ready |
+|---|---|---|
+| 2026-08-24 | 1 | 12.45s |
+| 2026-08-24 | 2 | **4.06s** |
+| 2026-08-24 | 3 | 13.12s |
+| 2026-08-24 | 4 | 13.10s |
+| 2026-08-24 | 5 | 14.02s |
+| 2026-08-24 | 6 | 13.11s |
+| 2026-08-24 | 7 | **4.09s** |
+| 2026-08-24 | 8 | 13.07s |
+
+**해석 1 — 값이 양분된다. 중간이 없다.**
+
+4초 또는 13~14초이고 8회 중 6회가 후자였다. 분포가 아니라 두 개의 점이다.
+
+**해석 2 — 앱은 3초에 준비된다. 나머지 10초는 probe 주기다.**
+
+같은 파드에서 컨테이너 시작 시각과 `Ready` 전이 시각을 직접 비교하면 3초다.
+`initialDelaySeconds` 가 없어 첫 probe 가 컨테이너 시작 직후 도착하는데, 그때
+앱이 아직 3초를 못 채웠으면 실패하고 **다음 probe 는 `periodSeconds` 만큼 뒤**다.
+
+| 구간 | 시간 |
+|---|---|
+| apply → 스케줄 | 약 1초 |
+| 컨테이너 시작 → 앱 준비 | **3초** |
+| probe 주기 대기 | **0 또는 10초** |
+| 합계 | 4초 또는 13~14초 |
+
+**리드타임은 최악값으로 잡는다 — 14초 + 여유.** 6/8 이 그쪽이다.
+
+**해석 3 — 리드타임의 70% 가 probe 설정이다.**
+
+앱이 3초에 뜨는데 10초를 기다린다. `periodSeconds` 를 3~5초로 낮추면 리드타임이
+절반 이하가 된다. probe 호출이 잦아지는 대가가 있지만 3초 주기면 파드당
+0.33 RPS 수준이라 300 RPS 천장(M-009)에 무시할 만하다.
+
+S2 의 canary 는 반대로 `timeoutSeconds`·`failureThreshold` 를 **올려서** 창을
+넓힌다(`scenario-readiness.md` 4절 6). 대상이 달라 서로 부딪히지 않는다 —
+main 은 짧게, canary 는 길게.
+
+**안 잰 것 둘.** 둘 다 값이 나오면 이 절의 표에 행을 추가한다.
+
+| 무엇 | 왜 못 쟀나 |
+|---|---|
+| 이미지 캐시가 **없는** 노드에서의 Ready | 새 노드가 필요하다. M-008 의 39초는 `pause` 이미지(수백 KB) 기준이라 실제 앱 이미지는 그보다 크다 |
+| 노드 프로비저닝을 **포함한** Ready | Karpenter 가 노드를 띄우는 경우. 요금이 발생하므로 따로 재야 한다 |
+
+노드를 새로 띄워야 하는 경로는 분 단위가 되므로, 큐시트 계획 단계에서 **증설
+슬롯이 기존 노드 안에 있는지 먼저 확인**해야 한다(`scenario-experiment.md` 6절의
+Karpenter 항과 같은 조건).
+
+**다시 재야 할 때** — `readinessProbe` 의 `periodSeconds`·`initialDelaySeconds` 를
+바꿀 때, 이미지 크기가 크게 변할 때, 인스턴스 타입을 바꿀 때, 노드 여유가 없어
+Karpenter 가 개입하게 될 때.
