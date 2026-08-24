@@ -107,18 +107,27 @@ RUNBOOKS = [
         #   재는 건 이 작업 범위 밖이라 자리만 채워 둔다(사용자 지시로
         #   임시값 허용). 실측 나오면 이 표를 실측값으로 덮어쓸 것 —
         #   숫자를 지어내지 않는다는 AGENTS.md 원칙의 예외이므로 굵게 표시.
-        #   metric 이름(chat_propagation_p95_ms)도 Datadog/warm path 쪽
-        #   실제 필드명과 맞는지 담당자 확인 필요 — o2warm/metrics.py 에는
-        #   아직 채팅 전파 지표가 없다.
+        #
+        #   2026-08-24 데이터팀 회신(specification/2026-08-24-AIAgent-
+        #   시나리오테스트.md)으로 필드명 정리됨:
+        #   - block_rate → channel_block_rate 로 개명 확정. chat.send 의
+        #     failure_code=CHANNEL_LIMITED 로 데이터팀이 계산해 Warm API에
+        #     노출할 예정 — 아직 미구현이라 threshold 는 여전히 임시값이다.
+        #   - chat_propagation_p95_ms 는 원본 이벤트에 전달 완료 시각이
+        #     없어 집계만으로 못 만든다. 데이터팀 제안 후보는 서버측
+        #     chat_fanout_p95_ms(수락→fanout publish) 인데, chat-gateway
+        #     담당과 계측 계약이 아직 미확정이라 필드명 자체를 못 바꾼다.
+        #     실제 end-to-end 전파는 별도(합성 카나리아) 지표로 간다고 함.
         "rca_type": "chat_channel_overload",
         "success_criteria": {
             "conditions": [
-                # TEMP: 채팅 전파 계약 기준이 문서에 없다(2.1). read-path 계약
-                # (800ms, architecture.md 12.1)을 자리채움으로 그대로 썼다.
+                # TEMP: 위 주석 참고 — chat-gateway 계측 계약 확정 전까지는
+                # 필드명도 값도 자리채움이다. read-path 계약(800ms,
+                # architecture.md 12.1)을 그대로 빌려 썼다.
                 {"metric": "chat_propagation_p95_ms", "comparison": "<=", "threshold": 800},
-                # TEMP: "이 값이 없으면 성공 판정이 성립 안 함"이라고 문서가
-                # 못박은 바로 그 값. 5% 는 근거 없는 임시 상한이다.
-                {"metric": "block_rate", "comparison": "<=", "threshold": Decimal("0.05")},
+                # TEMP: 이름은 확정(channel_block_rate), 아직 Warm API 미구현.
+                # 5% 는 근거 없는 임시 상한이다.
+                {"metric": "channel_block_rate", "comparison": "<=", "threshold": Decimal("0.05")},
                 # 실측값 — M-010 2파드 안전선(2026-08-21). 파드 수를 바꾸면
                 # 다시 재야 한다(측정 조건, measurements.md M-010).
                 {"metric": "items_per_sec", "comparison": "<=", "threshold": 20000},
@@ -194,11 +203,35 @@ RUNBOOKS = [
         # 절차가 없다, 후보가 원래 1개다.
         "rca_type": "other",
         "success_criteria": {
-            # TEMP: block_rate는 아직 warm path에 없는 지표다(o2warm/metrics.py
-            # 확인 필요) — S1의 chat_propagation_p95_ms와 같은 처지, 자리만
-            # 채워 둔다. 실측/실제 필드명 확인 후 덮어쓸 것.
+            # 2026-08-24 데이터팀 회신(specification/2026-08-24-AIAgent-
+            # 시나리오테스트.md 4.3)으로 원래 있던 block_rate<=0 조건을
+            # 뺐다 — 이 조치는 설계상 사용자를 절대 차단하지 않으므로
+            # (D-062) block_rate는 조치 성패와 무관하게 항상 0이라 아무것도
+            # 검증하지 못한다는 지적. 대신 데이터팀이 제안한 조합으로
+            # 바꿨다: 조치 플래그가 실제로 켜져 있는지 + 부가 이벤트가
+            # 줄었는지 + 응답 지연·오류율이 악화되지 않았는지.
+            #
+            # TEMP: 2026-08-24 직접 코드 확인(infra/06-datastream/warm/src/
+            # o2warm/metrics.py) 결과 — latency_p95·overall_failure_rate는
+            # 이미 derive() 가 계산해 내놓는 실재 필드다(문서의 "미구현"
+            # 설명과 달리 이 둘은 이미 있음). 진짜 없는 건
+            # read_path_degraded_active, inventory_check_rate 둘뿐 —
+            # metrics.py 전체에 두 이름 다 없다. 필드명은 문서가 제안한
+            # 이름을 그대로 썼고, 실제 구현 시 이름이 다르면 여기도 맞춰
+            # 고칠 것.
+            # 또한 baseline_conditions 자체가 Dify Verify 노드 코드에서
+            # 아직 읽히지 않는다(o2-aiops-workflow.yml 확인, D-058 스키마는
+            # 있지만 평가 로직 미연결) — 이 조건들은 현재 데이터가 있어도
+            # 실행 시 무시된다. 별도로 고쳐야 함.
+            # "재고·가격 응답 계약 유지"는 수치 조건이 아니라 액션 자체의
+            # 설계(응답 내용 불변, D-062)로 이미 보장돼 별도 조건을 안 뒀다.
             "conditions": [
-                {"metric": "block_rate", "comparison": "<=", "threshold": 0},
+                {"metric": "read_path_degraded_active", "comparison": "==", "threshold": True},
+            ],
+            "baseline_conditions": [
+                {"metric": "inventory_check_rate", "comparison": "<=", "relative_to": "baseline_inventory_check_rate"},
+                {"metric": "latency_p95", "comparison": "<=", "relative_to": "baseline_latency_p95"},
+                {"metric": "overall_failure_rate", "comparison": "<=", "relative_to": "baseline_overall_failure_rate"},
             ],
             "logic": "AND",
         },
