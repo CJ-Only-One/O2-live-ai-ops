@@ -1272,6 +1272,29 @@ ms 계약을 유지한다. `pod_name:N/A`는 신규 Downward API/`DD_TAGS` 배�
 기능 브랜치 상태에서 클러스터를 직접 덮어쓰지 않았으므로 앱 네 항목은 실제 이미지가
 정식 CI 경로로 배포된 뒤 같은 query로 다시 측정한다.
 
+### DogStatsD hostPort 수정 후 앱 recent point (2026-08-24 22:19 KST)
+
+`dogstatsd.useHostPort=true` 적용과 GitOps `DD_ENTITY_ID=metadata.uid` 배포 후 API 정상
+요청 20건 및 파드 내부 단일 진단 전송으로 수집 경로를 확인했다. 신규 metric/tag의
+Datadog index 전파 전에는 query가 잠시 0 series였으며, `all-tags`에 태그가 나타난 뒤
+같은 query가 값을 반환했다.
+
+| 항목 | query | series · 마지막 non-zero point (UTC) | 판정 |
+|---|---|---|---|
+| inventory success | `sum:o2.app.business_event{service:api,env:dev,event:inventory.check,result:success} by {pod_name}.as_count()` | 1 · `2026-08-24T13:14:50Z` · `1` · `api-7dd8f759cb-hf478` | `COLLECTED_AND_USED` |
+| cache access | `sum:o2.app.cache_access{service:api,env:dev} by {pod_name,result}.as_count()` | 태그 완전 series 1 · `2026-08-24T13:14:50Z` · `1` · `result:hit` | `COLLECTED_AND_USED`; 최소 태그 진단 series 1은 `N/A`로 별도 존재 |
+| inventory duration | `avg:o2.app.operation.duration{service:api,env:dev} by {pod_name,operation}` | 1 · `2026-08-24T13:14:50Z` · `3.5ms` · `operation:inventory.read` | `COLLECTED_NOT_USED` — inventory.read 소비 위젯 미연결 |
+| DB pool active | `max:o2.app.db.pool.active{*} by {service,pod_name,operation}` | 최신 API 파드별 series 확인 · `2026-08-24T13:13:30Z` · `1` | `COLLECTED_NOT_USED` — 소비 위젯 미연결 |
+| order batch size | `avg:o2.app.batch.size{*} by {service,pod_name}` | order-worker 파드별 series 확인 · 최신 `2026-08-24T13:13:20Z` · `0` | `COLLECTED_NOT_USED` — 빈 poll의 정상값, 소비 위젯 미연결 |
+| API APM hits | `sum:trace.fastapi.request.hits{service:api,env:dev} by {pod_name}.as_count()` | 1 · `2026-08-24T13:11:10Z` · `pod_name:N/A` | APM recent point는 있으나 pod 분해 미완료 |
+
+Datadog trace metric은 기본 태그와 조직에 설정된 additional primary tag만 집계 축으로
+노출한다. 현재 `trace.fastapi.request/all-tags`에는 `service`와 `version`만 있고
+`pod_name`은 없다. custom metric의 pod 분해는 정상이나 APM pod 분해는 Datadog APM
+Settings에서 container-based additional primary tag로 `pod_name`을 활성화한 뒤 다시
+측정해야 한다. 이 설정은 반영에 최대 2시간이 걸릴 수 있으므로 현재 값을 완료 증거로
+바꾸지 않는다.
+
 ### 채팅 이벤트는 이미 Kinesis 로 흐른다 (2026-08-24)
 
 `monitor.tf` 가 `chat_ingest_surge` 를 껐던 사유(*"목적지가 stdout 뿐이라
@@ -1460,6 +1483,21 @@ api 이미지가 **그 노드에 이미 캐시돼 있었다**(api 파드가 두 
 | 2026-08-24 | 6 | 13.11s |
 | 2026-08-24 | 7 | **4.09s** |
 | 2026-08-24 | 8 | 13.07s |
+
+같은 날 order-worker의 큐시트 사전 확장도 실제 클러스터에서 확인했다. 기존 큐시트를
+덮어쓰지 않도록 계약에 맞는 합성 ID `bc_99990824`를 사용했고, JSON Schema 검증 후
+`SALE_OPEN`의 `order_rate=200/s`를 적재했다. M-014의 47 msg/s/pod를 적용한 목표는
+`ceil(200/47)=5`다.
+
+| 날짜 · 조건 | ScaledObject min | Deployment spec | Ready | 결과 |
+|---|---:|---:|---:|---|
+| 2026-08-24 · 적재 전 | 1 | 1 | 1 | baseline |
+| 2026-08-24 13:08:48 UTC · 합성 큐시트 적재 후 | **5** | **5** | **5** | 사전 확장 성공 |
+| 2026-08-24 13:09:59 UTC · 합성 행 삭제 후 | **1** | 5 | 5 | 바닥값 원복 성공; 파드 축소는 KEDA 300초 cooldown 뒤 수행 |
+
+cue-warmer 로그에는 `13:08:40 UTC 사전 확장: order-worker 1 -> 5`와
+`13:09:51 UTC 원복: order-worker 5 -> 1`이 남았다. 합성 큐시트 행은 삭제했고
+ScaledObject의 baseline도 1로 복구했다.
 
 **해석 1 — 값이 양분된다. 중간이 없다.**
 
