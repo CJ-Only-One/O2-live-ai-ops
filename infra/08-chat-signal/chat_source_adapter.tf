@@ -101,10 +101,11 @@ resource "aws_lambda_function" "chat_source_adapter" {
 
   environment {
     variables = {
-      # Phase 2 하드 게이트. event source를 실수로 켜도 Queue에 쓰지 않는다.
-      CHAT_SOURCE_ADAPTER_ENABLED          = "false"
-      CHAT_SOURCE_ADAPTER_NOT_BEFORE_EPOCH = "4102444800" # 2100-01-01 UTC
-      AGENT_TRIGGER_QUEUE_URL              = data.aws_sqs_queue.agent_trigger.url
+      # 기본값은 false다. 활성화하더라도 합성 broadcast 1개 외에는 Queue에 쓰지 않는다.
+      CHAT_SOURCE_ADAPTER_ENABLED               = tostring(var.chat_source_adapter_execution_enabled)
+      CHAT_SOURCE_ADAPTER_ALLOWED_BROADCAST_IDS = join(",", sort(tolist(var.chat_source_adapter_allowed_broadcast_ids)))
+      CHAT_SOURCE_ADAPTER_NOT_BEFORE_EPOCH      = tostring(var.chat_source_adapter_not_before_epoch)
+      AGENT_TRIGGER_QUEUE_URL                   = data.aws_sqs_queue.agent_trigger.url
     }
   }
 
@@ -112,6 +113,22 @@ resource "aws_lambda_function" "chat_source_adapter" {
     aws_iam_role_policy.chat_source_adapter,
     aws_cloudwatch_log_group.chat_source_adapter,
   ]
+
+  lifecycle {
+    precondition {
+      condition = (
+        (!var.chat_source_adapter_execution_enabled &&
+          !var.chat_source_adapter_event_source_enabled &&
+          length(var.chat_source_adapter_allowed_broadcast_ids) == 0 &&
+        var.chat_source_adapter_not_before_epoch == 4102444800) ||
+        (var.chat_source_adapter_execution_enabled &&
+          var.chat_source_adapter_event_source_enabled &&
+          length(var.chat_source_adapter_allowed_broadcast_ids) == 1 &&
+        var.chat_source_adapter_not_before_epoch < 4102444800)
+      )
+      error_message = "Chat Adapter는 disabled+empty allowlist+2100 cutoff 또는 enabled+합성 broadcast 1개+명시 cutover 조합만 허용한다."
+    }
+  }
 }
 
 resource "aws_lambda_event_source_mapping" "chat_source_adapter" {
@@ -119,8 +136,8 @@ resource "aws_lambda_event_source_mapping" "chat_source_adapter" {
   function_name     = aws_lambda_function.chat_source_adapter.arn
   starting_position = "LATEST"
 
-  # Phase 2에서는 production Candidate를 절대 소비하지 않는다.
-  enabled = false
+  # 기본값은 false다. Phase 3에서도 합성 allowlist와 cutover 없이는 plan이 실패한다.
+  enabled = var.chat_source_adapter_event_source_enabled
 
   batch_size                         = 10
   maximum_batching_window_in_seconds = 0

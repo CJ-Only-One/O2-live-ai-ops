@@ -80,6 +80,7 @@ class ChatSourceAdapterTest(unittest.TestCase):
         self.environment = {
             "CHAT_SOURCE_ADAPTER_ENABLED": "true",
             "CHAT_SOURCE_ADAPTER_NOT_BEFORE_EPOCH": "0",
+            "CHAT_SOURCE_ADAPTER_ALLOWED_BROADCAST_IDS": "bc_1042",
             "AGENT_TRIGGER_QUEUE_URL": "https://example.invalid/agent-trigger",
         }
 
@@ -144,6 +145,61 @@ class ChatSourceAdapterTest(unittest.TestCase):
             result = adapter.handler({"Records": [stream_record()]}, None)
 
         self.assertEqual(result, {"batchItemFailures": []})
+        self.assertEqual(client.messages, [])
+
+    def test_unlisted_broadcast_is_ignored_without_queue_write(self):
+        candidate = load_candidate()
+        candidate["broadcast_id"] = "bc_9999"
+        client = FakeSqs()
+        adapter._clients["sqs"] = client
+
+        with mock.patch.dict(os.environ, self.environment, clear=False):
+            result = adapter.handler(
+                {"Records": [stream_record(candidate=candidate)]}, None
+            )
+
+        self.assertEqual(result, {"batchItemFailures": []})
+        self.assertEqual(client.messages, [])
+
+    def test_empty_broadcast_allowlist_fails_closed_without_queue_write(self):
+        client = FakeSqs()
+        adapter._clients["sqs"] = client
+
+        with mock.patch.dict(
+            os.environ,
+            {**self.environment, "CHAT_SOURCE_ADAPTER_ALLOWED_BROADCAST_IDS": ""},
+            clear=False,
+        ):
+            result = adapter.handler(
+                {"Records": [stream_record(sequence="allowlist-empty")]}, None
+            )
+
+        self.assertEqual(
+            result,
+            {"batchItemFailures": [{"itemIdentifier": "allowlist-empty"}]},
+        )
+        self.assertEqual(client.messages, [])
+
+    def test_multiple_broadcast_allowlist_fails_closed_without_queue_write(self):
+        client = FakeSqs()
+        adapter._clients["sqs"] = client
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                **self.environment,
+                "CHAT_SOURCE_ADAPTER_ALLOWED_BROADCAST_IDS": "bc_1042,bc_9999",
+            },
+            clear=False,
+        ):
+            result = adapter.handler(
+                {"Records": [stream_record(sequence="allowlist-multiple")]}, None
+            )
+
+        self.assertEqual(
+            result,
+            {"batchItemFailures": [{"itemIdentifier": "allowlist-multiple"}]},
+        )
         self.assertEqual(client.messages, [])
 
     def test_candidate_with_user_key_is_rejected_and_retried(self):

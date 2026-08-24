@@ -197,6 +197,32 @@ variable "agent_entry_idempotency_ttl_seconds" {
   }
 }
 
+variable "agent_entry_execution_enabled" {
+  description = "Phase 3 합성 Queue E2E에서만 true로 바꾸는 Generic Worker 실행 게이트"
+  type        = bool
+  default     = false
+}
+
+variable "agent_entry_event_source_enabled" {
+  description = "Phase 3 합성 Queue E2E에서만 true로 바꾸는 SQS event source 게이트"
+  type        = bool
+  default     = false
+}
+
+variable "agent_entry_allowed_idempotency_keys" {
+  description = "Phase 3에서 Dify 호출을 허용할 합성 Chat idempotency key. 활성화 시 정확히 1개"
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for value in var.agent_entry_allowed_idempotency_keys :
+      can(regex("^chat:cand_[0-9A-HJKMNP-TV-Z]{26}$", value))
+    ])
+    error_message = "Phase 3 allowlist는 chat:cand_<ULID> 형식만 허용한다."
+  }
+}
+
 # ── Slack 승인 중계 Lambda ───────────────────────────────────────
 
 variable "slack_approval_secret_name" {

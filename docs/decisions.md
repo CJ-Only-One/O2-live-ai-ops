@@ -67,6 +67,7 @@
 | D-050 | Agent 앞에서 source별 JSON을 공통 envelope로 정규화한다 | agent.trigger.v1, discriminator, custom_alert_json, idempotency, read-only |
 | D-051 | Karpenter·KEDA 는 안전망이지 주력이 아니다 | D-037 조건 충족, NodePool 을 좁힌 이유, IAM 태그 조건, ScaledObject 는 배포 저장소 |
 | D-052 | 파이프라인 생존은 합성 카나리로 감시한다 | 실패를 삼키는 설계, `logs.enabled=false`, 트래픽 의존 no-data 의 한계, `service:o2-canary` |
+| D-053 | Phase 3 Agent E2E는 이중 합성 allowlist로 격리한다 | broadcast_id, idempotency_key, fail-closed, paired gates, rollback |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3262,3 +3263,33 @@ M-014 에서 확인했다). `enable_queue_backlog_monitor` 와 같은 처리다.
 이벤트 이름 `canary.ping` 은 계약에 없는 이름이라 `event_rate` 태그로 안
 펼쳐지고, 비즈니스 이벤트로 세어져 `rps`·`event_count` 에만 잡힌다.
 **생존 확인에 필요한 것만 남기고 나머지 지표는 건드리지 않는다.**
+
+---
+
+## D-053. Phase 3 Agent E2E는 이중 합성 allowlist로 격리한다
+
+Phase 2의 Chat Source Adapter는 Candidate key만 필터링한다. 이 상태에서 Stream event
+source를 켜면 cutover 이후 생성된 운영 Candidate도 Agent Trigger Queue로 갈 수 있다.
+Agent Worker도 Queue에 들어온 모든 유효 envelope를 처리하므로 Queue E2E 중 예상하지 못한
+메시지가 들어오면 전용 Dify 테스트 앱을 호출할 수 있다.
+
+따라서 Phase 3은 실행 게이트 외에 두 개의 합성 식별자 allowlist를 둔다.
+
+| 경계 | 허용값 | 허용되지 않은 입력 |
+|---|---|---|
+| Chat Source Adapter | 정확히 한 합성 `broadcast_id` | 정상 제외, Queue 전송 없음 |
+| Generic Agent Worker | 정확히 한 합성 `idempotency_key` | 실패 처리, Secret·ledger·Dify 접근 없음 |
+
+운영 broadcast는 테스트 중에도 들어올 수 있으므로 Adapter에서 정상 제외한다. 반대로 Queue의
+미허용 메시지는 경로 오염 증거이므로 Worker에서 성공으로 삼키지 않고 재시도·DLQ 관측이
+가능한 실패로 처리한다. 빈 allowlist, 복수 값, 형식 오류는 구성 오류이며 양쪽 모두
+fail-closed한다.
+
+Terraform은 다음 두 상태만 허용한다.
+
+1. 비활성: event source `false`, 실행 플래그 `false`, allowlist empty, Adapter cutoff 2100년
+2. 합성 E2E: event source `true`, 실행 플래그 `true`, allowlist 정확히 1개, 명시 cutover
+
+한 게이트만 켜거나 allowlist 없이 활성화하는 plan은 precondition에서 실패한다. 매 테스트는
+새 Candidate ULID와 idempotency key를 사용하고, 종료 즉시 비활성 상태로 되돌린다. 기존 팀
+workflow, 기존 Datadog 입력, 운영 Chat source를 테스트 대상으로 사용하지 않는다.

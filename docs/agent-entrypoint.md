@@ -13,6 +13,7 @@ implementation_state:
   agent_trigger_queue: DEPLOYED_EMPTY
   chat_candidate_adapter: DEPLOYED_EXECUTION_DISABLED
   generic_dify_worker: DEPLOYED_EXECUTION_DISABLED
+  phase3_synthetic_guard: IMPLEMENTED_NOT_APPLIED
   idempotency_ledger: DEPLOYED_EMPTY
   dedicated_test_workflow: PUBLISHED_CODE_ONLY
   dedicated_test_workflow_ui_contract_tests: PASS
@@ -23,6 +24,7 @@ implementation_state:
   datadog_migration: NOT_STARTED
   production_agent_handoff: DISABLED
 activation_blockers:
+  - PHASE_3_SYNTHETIC_GUARD_NOT_APPLIED
   - PHASE_3_SHADOW_E2E_EXECUTION_GATES_DISABLED
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
@@ -357,6 +359,29 @@ Stream만 켜는 `0 add, 1 change, 0 destroy`였고, 적용 후 table `ACTIVE`, 
 
 따라서 Phase 2 상태는 `DEPLOYED_EXECUTION_DISABLED`다. Agent/Dify 호출 경로는 열리지
 않았으며, Phase 3 합성 Shadow E2E 전에는 어떤 실행 게이트도 변경하지 않는다.
+
+### 6.4 Phase 3 합성 입력 격리 준비
+
+Phase 3은 운영 Candidate나 기존 팀 workflow를 대상으로 하지 않는다. Queue contract-only
+E2E와 Chat Candidate E2E 모두 매 실행마다 새 합성 식별자 한 개만 허용한다(D-053).
+
+| 경계 | 합성 입력 제한 |
+|---|---|
+| Chat Source Adapter | 정확히 한 `broadcast_id`만 Agent Trigger Queue 전송 허용 |
+| Generic Agent Worker | 정확히 한 `idempotency_key`만 Secret·ledger·Dify 접근 허용 |
+| Terraform 기본값 | 두 계층의 event source와 실행 플래그 모두 `false`, allowlist는 빈 집합 |
+| 활성화 plan | 두 게이트 `true`와 allowlist 1개가 함께 있어야 통과 |
+| Adapter cutover | 명시한 test epoch 이후 Candidate만 허용; 비활성 기본값은 2100-01-01 |
+| 종료 상태 | 두 게이트 `false`, allowlist 빈 집합, Adapter cutoff 2100-01-01로 복귀 |
+
+허용되지 않은 production broadcast는 정상 제외해 재시도·DLQ를 만들지 않는다. 반면 빈 값,
+복수 값, 형식 오류 같은 allowlist 구성 오류는 fail-closed하고 Queue 전송이나 Dify 호출을
+하지 않는다. Worker의 allowlist 검사는 Secret 조회와 idempotency ledger 획득보다 먼저
+실행한다.
+
+현재 변경은 코드·Terraform·테스트에만 구현했으며 아직 배포하지 않았다. 병합 후에도 먼저
+두 Lambda에 비활성 guard만 제한 적용하고, 실환경 게이트가 계속 `false`인지 확인한다.
+그 다음 별도 저장 plan에서만 Queue contract-only E2E를 활성화한다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 

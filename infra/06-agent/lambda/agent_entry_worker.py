@@ -4,7 +4,8 @@ Phase 1B ships this worker with two independent execution gates disabled:
 the Terraform event source mapping is disabled and
 AGENT_ENTRY_EXECUTION_ENABLED=false. The handler deliberately returns every
 record as failed while that flag is false, so an accidental mapping enablement
-still cannot call Dify.
+still cannot call Dify. Phase 3 also requires exactly one synthetic
+idempotency key before secret lookup, ledger acquisition, or Dify execution.
 
 Logs contain only message ids, source names, sanitized error codes, and a short
 hash of the idempotency key. The envelope and Dify response are never logged.
@@ -260,6 +261,14 @@ def _enabled() -> bool:
     return os.environ.get("AGENT_ENTRY_EXECUTION_ENABLED", "false").lower() == "true"
 
 
+def _allowed_idempotency_key() -> str:
+    raw = os.environ.get("AGENT_ENTRY_ALLOWED_IDEMPOTENCY_KEYS", "")
+    values = raw.split(",") if raw else []
+    if len(values) != 1 or not re.fullmatch(r"[^,]{1,256}", values[0]):
+        raise WorkerError("SYNTHETIC_IDEMPOTENCY_ALLOWLIST_INVALID")
+    return values[0]
+
+
 def _fingerprint(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
@@ -443,6 +452,8 @@ def _process_record(record: dict[str, Any]) -> dict[str, str]:
     except (KeyError, TypeError, json.JSONDecodeError):
         raise ContractError("CONTRACT_REJECTED:INVALID_JSON") from None
     payload = validate_envelope(payload)
+    if payload["idempotency_key"] != _allowed_idempotency_key():
+        raise WorkerError("SYNTHETIC_IDEMPOTENCY_KEY_NOT_ALLOWED")
     serialized_payload = _serialize_payload(payload)
     now = int(time.time())
     fingerprint = _fingerprint(payload["idempotency_key"])
