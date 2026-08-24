@@ -109,6 +109,11 @@ aws sqs get-queue-attributes --queue-url "$(terraform output -raw agent_entry_qu
 0건인 것이다. 2026-08-23 실환경에서 이 조건을 모두 확인했다. Phase 3 전에는 event
 source나 실행 플래그를 켜지 않는다.
 
+Phase 3 합성 Queue E2E는 D-053에 따라 event source와 실행 플래그를 함께 켜고, 매 실행의
+합성 Chat `idempotency_key` 정확히 1개만 허용한다. 기본값은 두 게이트 `false`와 빈
+allowlist다. 미허용 key는 Secret 조회·ledger 획득·Dify 호출 전에 실패한다. 상세 상태와
+적용 순서는 `docs/agent-entrypoint.md` 6.4를 따른다.
+
 ### 1. 버전 고정
 
 ```bash

@@ -38,6 +38,11 @@ state에 생기기 전에는 Adapter plan을 만들 수 없다. 세부 gate와 �
 source와 실행 플래그는 모두 비활성이고, Agent Trigger Queue·Adapter DLQ·Adapter 로그
 스트림은 모두 0이다. Phase 3 합성 Shadow E2E 전까지 이 상태를 유지한다.
 
+Phase 3에서는 D-053의 합성 `broadcast_id` 정확히 1개와 명시 cutover가 있어야 event source와
+실행 플래그를 함께 켤 수 있다. 허용되지 않은 운영 broadcast는 Queue로 보내지 않고 정상
+제외하며, 빈 값·복수 값·형식 오류는 fail-closed한다. 기본값은 두 게이트 `false`, 빈
+allowlist, 2100-01-01 cutoff다.
+
 2026-08-23 현재 `03-data`의 SQS·DynamoDB와 이 스택의 Lambda·IAM은 적용됐다.
 최초 외부 E2E는 Worker 5초 timeout과 SQS in-flight 지연으로 Candidate를 만들지 못했고,
 생산자 `off`와 event source Disabled로 롤백했다(T-020, M-011). 수정 적용 후 생산자

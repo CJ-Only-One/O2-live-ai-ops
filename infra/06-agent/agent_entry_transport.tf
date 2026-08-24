@@ -1,8 +1,8 @@
 # agent.trigger.v1 공통 진입점의 비활성 transport 기반이다.
 #
-# Phase 1B 안전 경계:
-#   - SQS -> Lambda event source mapping 은 생성하지만 enabled=false 다.
-#   - Worker 환경변수 AGENT_ENTRY_EXECUTION_ENABLED=false 를 하드코딩한다.
+# Phase 1B/3 안전 경계:
+#   - SQS -> Lambda event source mapping 과 Worker 실행 플래그의 기본값은 false 다.
+#   - Phase 3 활성화 시 정확히 한 합성 idempotency key만 Dify 호출을 허용한다.
 #   - 따라서 queue 에 메시지를 넣어도 자동 소비·Dify 호출은 0건이다.
 #
 # Phase 3에서 E2E를 시작하려면 event source와 실행 플래그를 각각 별도 변경해야 한다.
@@ -174,8 +174,9 @@ resource "aws_lambda_function" "agent_entry_worker" {
 
   environment {
     variables = {
-      # Phase 1B 하드 게이트. event source를 실수로 켜도 Dify를 호출하지 않는다.
-      AGENT_ENTRY_EXECUTION_ENABLED = "false"
+      # 기본값은 false다. 활성화하더라도 합성 key 1개 외에는 Dify를 호출하지 않는다.
+      AGENT_ENTRY_EXECUTION_ENABLED        = tostring(var.agent_entry_execution_enabled)
+      AGENT_ENTRY_ALLOWED_IDEMPOTENCY_KEYS = join(",", sort(tolist(var.agent_entry_allowed_idempotency_keys)))
 
       DIFY_URL             = "http://${aws_instance.dify.private_ip}/v1/workflows/run"
       AGENT_ENTRY_SECRET   = var.agent_entry_secret_name
@@ -192,6 +193,20 @@ resource "aws_lambda_function" "agent_entry_worker" {
     aws_iam_role_policy_attachment.agent_entry_worker_vpc,
     aws_cloudwatch_log_group.agent_entry_worker,
   ]
+
+  lifecycle {
+    precondition {
+      condition = (
+        (!var.agent_entry_execution_enabled &&
+          !var.agent_entry_event_source_enabled &&
+        length(var.agent_entry_allowed_idempotency_keys) == 0) ||
+        (var.agent_entry_execution_enabled &&
+          var.agent_entry_event_source_enabled &&
+        length(var.agent_entry_allowed_idempotency_keys) == 1)
+      )
+      error_message = "Agent Entry는 disabled+empty allowlist 또는 enabled+합성 key 1개 조합만 허용한다."
+    }
+  }
 }
 
 # 리소스 관계와 IAM은 validate하되 polling은 하지 않는다.
@@ -199,7 +214,7 @@ resource "aws_lambda_event_source_mapping" "agent_entry" {
   event_source_arn = aws_sqs_queue.agent_entry.arn
   function_name    = aws_lambda_function.agent_entry_worker.arn
 
-  enabled = false
+  enabled = var.agent_entry_event_source_enabled
 
   batch_size                         = 1
   maximum_batching_window_in_seconds = 0

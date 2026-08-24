@@ -50,6 +50,46 @@ variable "agent_alarm_topic_name" {
   default     = "o2-dev-dify-alert-relay-alarm"
 }
 
+variable "chat_source_adapter_execution_enabled" {
+  description = "Phase 3 합성 Candidate E2E에서만 true로 바꾸는 Adapter 실행 게이트"
+  type        = bool
+  default     = false
+}
+
+variable "chat_source_adapter_event_source_enabled" {
+  description = "Phase 3 합성 Candidate E2E에서만 true로 바꾸는 DynamoDB Stream 게이트"
+  type        = bool
+  default     = false
+}
+
+variable "chat_source_adapter_allowed_broadcast_ids" {
+  description = "Phase 3에서 Agent Queue 전송을 허용할 합성 broadcast_id. 활성화 시 정확히 1개"
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for value in var.chat_source_adapter_allowed_broadcast_ids :
+      can(regex("^bc_[0-9]+$", value))
+    ])
+    error_message = "Phase 3 allowlist는 bc_<digits> 형식만 허용한다."
+  }
+}
+
+variable "chat_source_adapter_not_before_epoch" {
+  description = "Phase 3 합성 Candidate cutover epoch. 비활성 기본값은 2100-01-01 UTC"
+  type        = number
+  default     = 4102444800
+
+  validation {
+    condition = (
+      var.chat_source_adapter_not_before_epoch >= 0 &&
+      floor(var.chat_source_adapter_not_before_epoch) == var.chat_source_adapter_not_before_epoch
+    )
+    error_message = "cutover epoch는 0 이상의 정수여야 한다."
+  }
+}
+
 variable "enable_event_source" {
   description = <<-EOT
     Chat Signal SQS가 Lambda Worker를 호출하게 한다.
