@@ -88,6 +88,7 @@
 | D-071 | 조치 상태 머신의 결정론적 절반만 Lambda 로 뺀다 — 대기는 Dify 가 한다 | 실행 락, 기준값, 재분석 1회, 세 갈래 판정, `incident_state` 재사용 |
 | D-072 | READ_PATH 상관관계에는 시나리오 4 page composite monitor 하나만 매핑한다 | role:page, role:sub, cache absorption, order path, duplicate signal |
 | D-073 | READ_PATH 초기 correlation window는 운영 5분 창과 Datadog tail 상한을 합친 420초다 | event time, full window, 420초, Shadow, false merge |
+| D-074 | 원복에 쓸 값은 응답이 아니라 조치 기록에 남긴다 | `record_restore`, 먼저 쓴 값이 이긴다, Argo replica 예외, 실행기 권한 경계 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4399,3 +4400,58 @@ Incident 구분 차원을 추가한다.
 `scripts/validate-incident-correlation-window.py`가 05-datadog의 5분 기본값, Chat Worker의 15초,
 06-agent `terraform.tfvars`의 420초가 계산 근거와 같은지 CI에서 검증한다. 이 단계에서는
 Correlator·Worker·Source Adapter와 production Agent handoff를 활성화하지 않는다.
+## D-074. 원복에 쓸 값은 응답이 아니라 조치 기록에 남긴다
+
+Argo CD 에 api `/spec/replicas` 동기화 예외를 걸면(`04-platform/argocd.tf`)
+Argo 가 파드 수를 강제하지 않는다. 그게 예외의 목적이다 — 실험 중에 Argo 가
+조치를 되돌리면 안 되니까.
+
+Git 에는 정상 기준값(2)이 남는다. 그래서 "되돌릴 값이 아예 없다" 는 아니다.
+**문제는 그것이 조치 직전 값이 아니라는 것이다.** S2 는 2 → 3(증설) →
+0(격리) → 3(격리 검증) → 2(최종 원복) 로 간다. 격리를 되돌릴 곳은 Git 의 2 가
+아니라 **관측된 3** 이다. Git 값으로 되돌리면 중간 단계를 건너뛰고, 그러면
+"증설분을 원복한 뒤에도 유지되는가" 라는 S2 의 최종 재검증
+(`scenario-experiment.md` 2.2)이 성립하지 않는다.
+
+관측된 값을 아는 곳은 하나뿐이다. `lambda/scale_deployment.py` 가 patch 직전에
+읽어 `previous_replicas` 로 돌려준다. **응답뿐이다.** Dify 실행이 끊기거나 노드가
+타임아웃하면 그 값은 없어진다. `seed_runbook.py` 의
+`rollback_method: previous_value` 가 가리키는 "이전 값" 에 소유자가 없었다.
+
+### 정한 것
+
+`action_state` 에 `record_restore` op 를 둔다. 조치 기록
+(`ACTION#{incident_id}#{action_id}`)에 `restore` 를 붙이고, `judge` 응답이
+그 값을 같이 돌려준다. `ROLLBACK_NOW` 판정과 되돌릴 값이 한 응답에 있다.
+
+    baseline        락 · 기준값
+    조치 실행       실행기가 previous_replicas 를 응답에 실어 준다
+    record_restore  그 값을 조치 기록에 붙인다
+    judge           판정 + restore 를 함께 돌려준다
+
+### 왜 `baseline` 에 같이 안 넣나
+
+**값을 아는 시점이 다르다.** Deployment 의 이전 replicas 는 실행기가 patch
+직전에 읽어야 알 수 있고, 그때는 `baseline` 이 이미 끝난 뒤다. 노브 셋 중
+채널 총량·읽기 저하는 호출자가 미리 알 수 있지만 replicas 는 아니다.
+셋을 같은 방식으로 다루려면 op 를 나누는 편이 맞다.
+
+### 왜 실행기가 직접 안 쓰나
+
+`scale_deployment` 에 DynamoDB 쓰기 권한을 주면 `deployments/scale` 만 준
+경계(D-059)가 넓어진다. 실행기는 계속 k8s 만 만지고, 상태는 상태를 소유한
+쪽이 쓴다.
+
+### 먼저 쓴 값이 이긴다
+
+같은 op 를 두 번 부르면 **첫 값을 지킨다.** 조치 뒤의 재시도가 그때 읽은 값을
+보내면 그것은 이미 조치 후 값이라, 덮어쓰면 원복이 조치 상태로 되돌린다 —
+되돌렸다고 기록까지 남기므로 사람이 알아채기 어렵다. `baseline` 이 기준값을
+안 덮어쓰는 것과 같은 이유다. 다른 값이 오면 409 로 거절하고 기록된 값을
+같이 돌려준다.
+
+### 안 한 것
+
+`restore` 를 실제로 적용하는 것은 여기 없다. 이 op 는 **값을 잃지 않게만**
+한다. 되돌리는 실행은 기존 실행기를 replicas 값만 바꿔 다시 부르는 것이고,
+그것을 부르는 것은 워크플로의 몫이다.

@@ -5,6 +5,7 @@
 정한다.
 
   Baseline   실행 락 · 기준값 기록 · 멱등 키 · 런북 반복 금지
+  Restore    원복에 쓸 조치 직전 설정값 보관
   Judging    검증 판정 · 세 갈래 · 재분석 1회 상한
 
 왜 나눴나. 게이트 진입을 노브 카탈로그 조회로 정하기로 한 것(D-067)과 같은
@@ -252,6 +253,40 @@ def _op_judge(body):
     return _ok({**result, **_public(record)})
 
 
+def _op_record_restore(body):
+    """원복에 쓸 조치 직전 설정값을 조치 기록에 붙인다.
+
+    왜 `baseline` 과 따로인가. 값을 아는 시점이 다르다 — Deployment 의 이전
+    replicas 는 조치 실행기가 patch 직전에 읽어야 알 수 있고, 그때는 이미
+    `baseline` 이 끝난 뒤다. 실행기가 직접 쓰게 하면 그쪽에 DynamoDB 권한을
+    줘야 해서 `deployments/scale` 만 주기로 한 경계(D-059)가 넓어진다.
+
+    **먼저 쓴 값이 이긴다.** 조치 뒤에 재시도가 같은 op 를 다시 부르면 그때
+    읽은 값은 이미 조치 후 값이라, 덮어쓰면 원복이 조치 상태로 되돌린다.
+    `baseline` 의 기준값을 안 덮어쓰는 것과 같은 이유다.
+    """
+    incident_id = body["incident_id"]
+    action_id = body["action_id"]
+    restore = body["restore"]
+    if not isinstance(restore, dict) or not restore:
+        return _err(400, "RESTORE_MUST_BE_NON_EMPTY_OBJECT")
+
+    key = _action_key(incident_id, action_id)
+    record = _table.get_item(Key={"pk": key}).get("Item")
+    if not record:
+        return _err(409, "NO_BASELINE", action_id=action_id)
+
+    existing = record.get("restore")
+    if existing:
+        if existing != restore:
+            return _err(409, "RESTORE_ALREADY_RECORDED", recorded=existing)
+        return _ok({"status": "ALREADY_RECORDED", **_public(record)})
+
+    record["restore"] = restore
+    _table.put_item(Item=record)
+    return _ok({"status": "RESTORE_RECORDED", **_public(record)})
+
+
 def _public(record):
     return {
         "incident_id": record.get("incident_id"),
@@ -260,12 +295,15 @@ def _public(record):
         "idempotency_key": record.get("idempotency_key"),
         "action_status": record.get("status"),
         "baseline": record.get("baseline"),
+        # 원복 경로가 읽는 값. 없으면 되돌릴 대상을 모른다는 뜻이라,
+        # 호출자가 키의 부재로 그것을 구분할 수 있어야 한다.
+        "restore": record.get("restore"),
         "reanalysis_count": int(record.get("reanalysis_count") or 0),
         "max_reanalysis": MAX_REANALYSIS,
     }
 
 
-_OPS = {"baseline": _op_baseline, "judge": _op_judge}
+_OPS = {"baseline": _op_baseline, "record_restore": _op_record_restore, "judge": _op_judge}
 
 
 def lambda_handler(event, context):

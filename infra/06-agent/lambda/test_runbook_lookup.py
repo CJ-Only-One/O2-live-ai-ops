@@ -125,7 +125,11 @@ def test_knob_partition_lists_catalog():
 
 
 if __name__ == "__main__":
-    test_action_carries_knob()
-    test_missing_knob_does_not_break_lookup()
-    test_knob_partition_lists_catalog()
-    print("✓ 노브 카탈로그 조회 3건 통과")
+    # 건수를 하드코딩하지 않는다. 시험을 늘렸는데 출력이 그대로면
+    # 늘어난 줄 모르고 지나간다(T-027 이 그 사고였다).
+    ran = 0
+    for _name, _fn in sorted(globals().items()):
+        if _name.startswith("test_"):
+            _fn()
+            ran += 1
+    print(f"✓ 노브 카탈로그 조회 {ran}건 통과")

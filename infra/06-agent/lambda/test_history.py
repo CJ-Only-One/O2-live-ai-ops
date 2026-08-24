@@ -43,6 +43,7 @@ os.environ.setdefault("ALERT_SECRET_NAME", "dummy")
 os.environ.setdefault("DIFY_URL", "http://127.0.0.1/v1/workflows/run")
 os.environ.setdefault("WORKER_FUNCTION", "dummy")
 
+
 import ingress  # noqa: E402
 import worker  # noqa: E402
 
