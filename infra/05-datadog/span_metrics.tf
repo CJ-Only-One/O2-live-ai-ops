@@ -27,6 +27,16 @@ resource "datadog_spans_metric" "api_request_duration" {
   }
 
   group_by {
+    path     = "service"
+    tag_name = "service"
+  }
+
+  group_by {
+    path     = "env"
+    tag_name = "env"
+  }
+
+  group_by {
     path     = "version"
     tag_name = "version"
   }
@@ -48,6 +58,16 @@ resource "datadog_spans_metric" "api_db_duration" {
   group_by {
     path     = "pod_name"
     tag_name = "pod_name"
+  }
+
+  group_by {
+    path     = "service"
+    tag_name = "service"
+  }
+
+  group_by {
+    path     = "env"
+    tag_name = "env"
   }
 
   group_by {
