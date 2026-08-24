@@ -46,6 +46,7 @@
 | T-028 | 로컬에서는 통과한 `test_history.py`가 CI에서 `NoRegionError`로 죽는다 | boto3 import-time client, AWS_DEFAULT_REGION, EC2 metadata, hermetic test |
 | T-029 | Chat Source Adapter는 성공했는데 DLQ가 늘어난다 | disabled DynamoDB Stream, maximum record age, on-failure destination, cutover는 handler 안쪽 |
 | T-030 | 앱은 정상인데 `o2.app.*`가 전부 No Data다 | DogStatsD, `useHostPort`, `DD_AGENT_HOST`, UDP 8125 |
+| T-031 | distribution 값은 보이는데 p95 위젯만 No Data다 | `include_percentiles`, metric tag configuration, custom metric 비용, `avg` |
 
 
 ---
@@ -1503,3 +1504,25 @@ recent point를 다시 확인한다.
 **왜 늦게 찾았나** — `portEnabled`라는 이름과 UDP `sendto`의 성공 때문에 수신 포트가
 노드에도 열렸다고 오해했다. UDP는 목적지 listener가 없어도 송신 성공으로 보이며,
 Datadog Agent 자체에는 다른 소스의 DogStatsD 패킷이 계속 들어와 전체 상태도 정상처럼 보였다.
+
+---
+
+## T-031. distribution 값은 보이는데 p95 위젯만 No Data다
+
+**증상** — `o2.app.operation.duration`을 DogStatsD distribution(`|d`)으로 보냈고
+`avg:` 쿼리에는 파드별 값이 보이는데, 같은 범위의 `p95:` 쿼리는 series가 0이었다.
+대시보드 위젯과 Terraform은 오류 없이 생성되어 구성 자체는 정상처럼 보였다.
+
+**원인** — Datadog distribution metric의 percentile 집계는 기본으로 활성화되지 않는다.
+`datadog_metric_tag_configuration`에서 `include_percentiles=true`를 관리하지 않는 metric은
+평균을 조회할 수 있어도 p95 시계열이 만들어지지 않는다.
+
+**조치** — percentile이 명시 요구사항이 아닌 운영 현황 위젯은 실제 존재하는 `avg:`로
+연결했다. p95가 필요한 monitor나 SLO를 추가할 때만 queryable tag 목록과
+`include_percentiles=true`를 Terraform으로 함께 관리하고, 늘어나는 custom metric 비용을
+먼저 확인한다. 데이터 주입 검증에서는 대시보드와 같은 tag filter로 recent point를 조회한다.
+
+**왜 늦게 찾았나** — distribution 타입이면 percentile도 자동 생성된다고 생각했고,
+Terraform validate와 dashboard apply가 유효한 쿼리의 데이터 존재 여부까지 검사하지 않는다.
+단일 진단값도 정상 수집되어 `avg`에는 보였기 때문에 p95 쿼리를 따로 실행하기 전까지
+수집 실패와 집계 설정 누락을 구분할 수 없었다.
