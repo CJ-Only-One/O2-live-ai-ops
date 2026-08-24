@@ -67,6 +67,8 @@
 | D-050 | Agent 앞에서 source별 JSON을 공통 envelope로 정규화한다 | agent.trigger.v1, discriminator, custom_alert_json, idempotency, read-only |
 | D-051 | Karpenter·KEDA 는 안전망이지 주력이 아니다 | D-037 조건 충족, NodePool 을 좁힌 이유, IAM 태그 조건, ScaledObject 는 배포 저장소 |
 | D-052 | 파이프라인 생존은 합성 카나리로 감시한다 | 실패를 삼키는 설계, `logs.enabled=false`, 트래픽 의존 no-data 의 한계, `service:o2-canary` |
+| D-053 | 안 쓰는 Monitor 는 지우지 않고 알림 경로만 끊는다 | `role:sub`, 알림 핸들 없음, composite 참조, `state mv` |
+| D-054 | 파드별 지연은 새 메트릭이 아니라 `latency_p95` 의 태그로 낸다 | `pod_name` 태그, `cache_hit_rate` 패턴, 최소 표본, APM 우회 불가 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3262,3 +3264,167 @@ M-014 에서 확인했다). `enable_queue_backlog_monitor` 와 같은 처리다.
 이벤트 이름 `canary.ping` 은 계약에 없는 이름이라 `event_rate` 태그로 안
 펼쳐지고, 비즈니스 이벤트로 세어져 `rps`·`event_count` 에만 잡힌다.
 **생존 확인에 필요한 것만 남기고 나머지 지표는 건드리지 않는다.**
+
+---
+
+## D-053. 안 쓰는 Monitor 는 지우지 않고 알림 경로만 끊는다
+
+**맥락** — 시나리오 명세가 v4 로 바뀌면서 Monitor 열넷 중 일부가 대응
+시나리오를 잃었다. 적합성 검토(F-9)가 셋을 지적했다.
+
+1. 서브 Monitor 넷(`cache_hit_rate_low` · `latency_p95_high` ·
+   `order_create_active` · `order_confirm_inactive`)은 `count` 게이트가 없어
+   **지금도 계정에 생성돼 있다**
+2. 시나리오 4(`cache_absorption_failure`)와 시나리오 6은 새 명세에 대응
+   항목이 없다
+3. 데모 중 시나리오와 무관한 알림이 같이 울리면 사고다
+
+"유지 / 보류 / 폐기를 지금 정하라" 가 요청이었다.
+
+### 먼저 사실관계를 확인했다 — 걱정 하나는 근거가 없었다
+
+Monitor 정의를 전수 조사했다(2026-08-24, `monitor.tf` · `monitor_pipeline.tf`).
+
+| Monitor | `count` 게이트 | `@webhook` | role |
+|---|---|---|---|
+| `cache_hit_rate_low` | 없음 | **없음** | sub |
+| `latency_p95_high` | 없음 | **없음** | sub |
+| `order_create_active` | 없음 | **없음** | sub |
+| `order_confirm_inactive` | 없음 | **없음** | sub |
+| `cache_absorption_failure` | 없음 | 있음 | page |
+| `order_latency_p95` · `warm_pipeline_stalled` | 없음 | 있음 | page |
+| 나머지 일곱 | 있음 | 있음 | page |
+
+**서브 Monitor 넷에는 알림 핸들이 없다.** Datadog 은 메시지에 `@` 핸들이
+없으면 어디로도 보내지 않는다. 상태는 계산하지만 아무도 안 깨운다.
+
+즉 F-9 가 걱정한 "안 쓰는 알림이 같이 울린다" 는 **그 넷에는 해당하지 않는다.**
+게이트가 없는 것과 우는 것은 다른 문제였다.
+
+실제로 게이트 없이 우는 것은 셋이고, 그중 새 명세에 대응이 없는 것은
+`cache_absorption_failure` 하나다.
+
+### 결정
+
+**① 서브 Monitor 넷은 유지한다. 게이트를 붙이지 않는다.**
+
+붙일 수 없다 — composite 의 `query` 가 `datadog_monitor.cache_hit_rate_low.id`
+로 **직접 참조**한다. `count` 를 걸면 주소가 `[0].id` 가 되고, 게이트를 끄면
+참조 대상이 사라져 plan 이 깨진다. 게이트를 붙이려면 composite 도 같이
+게이트해야 하는데, 그러면 변수 하나가 리소스 셋을 묶어 **서브만 남기거나
+composite 만 남기는 선택지가 사라진다.**
+
+붙일 이유도 없다. 울지 않으므로 남아 있는 비용이 Monitor 목록 네 줄뿐이다.
+
+**② 게이트는 우는 쪽에 붙인다 — `cache_absorption_failure` 에만.**
+
+`enable_cache_absorption_monitor` 를 신설하고 **기본값을 `true`** 로 뒀다.
+지금 동작은 바뀌지 않는다. 끌 상황은 하나뿐이다 — 데모 중 시나리오와
+무관한 알림이 에이전트를 깨우는 것을 막을 때.
+
+**③ 폐기(리소스 삭제)는 하지 않는다.**
+
+"새 명세에 대응 시나리오가 없다" 는 **"그 장애가 안 일어난다" 를 뜻하지
+않는다.** 캐시 흡수 실패는 이 시스템에 실재하는 실패 모드이고, 명세가
+다루지 않는 이유는 발표 시나리오 셋을 고른 것이지 나머지를 안전하다고
+판정한 것이 아니다.
+
+지우면 다시 만들 때 임계·메시지·판별 실험 안내를 처음부터 다시 쓴다.
+`cache_absorption_failure` 의 메시지에는 "(a) 무효화 폭주와 (b) 콜드 미스를
+가르는 안전한 실험" 이 적혀 있는데, 그건 Monitor 정의보다 만들기 어려운
+자산이다.
+
+### 대가
+
+`count` 가 붙으면서 `cache_absorption_failure` 의 Terraform 주소가 바뀐다.
+그냥 apply 하면 **삭제 후 재생성**되어 Datadog Monitor ID 와 알림 이력이
+바뀐다. apply 전에 상태를 옮겨야 한다.
+
+```bash
+terraform state mv 'datadog_monitor.cache_absorption_failure'                    'datadog_monitor.cache_absorption_failure[0]'
+```
+
+이 한 줄을 빠뜨리면 조용히 잘못되지는 않는다 — plan 에 destroy/create 가
+그대로 보인다. 다만 **보고도 지나치기 쉬운 종류**라 여기 적어 둔다.
+
+### 남긴 것
+
+`order_confirm_backlog_age` 는 이 결정의 대상이 아니다. 게이트가 이미 있고
+(`enable_queue_backlog_monitor`), SQS 지표 수집도 확인됐다(M-015). 새 명세에
+대응 시나리오가 없다는 점은 같지만, **끌 수 있는 상태이므로 지금 정할 것이
+없다.**
+
+---
+
+## D-054. 파드별 지연은 새 메트릭이 아니라 `latency_p95` 의 태그로 낸다
+
+**맥락** — 명세 S2(느린 파드 하나가 서비스 전체 꼬리를 끌어올린다)의 자기
+교정 루프는 1차 조치가 듣지 않았을 때 **재분석**으로 내려간다. 그때 필요한
+증거가 "어느 파드인가" 인데, 그 축이 어디에도 없었다.
+
+### 먼저 우회로를 확인했다 — 없었다
+
+`apps/api/Dockerfile` 이 `ddtrace-run` 으로 기동하고 APM 이 켜져 있다.
+trace 지표에 `pod_name` 이 이미 붙어 있으면 이 작업 전체가 불필요하다.
+
+확인 결과(M-016) `trace.fastapi.request` 의 태그 아홉 개에 파드 축이 없다.
+`.hits` 에 붙는 `kube_node` · `host` 는 호스트 태그가 상속된 것이지 파드
+단위가 아니다. 대조군으로 `kubernetes.cpu.usage.total` 은 `pod_name` 으로
+146 갈래로 갈린다 — **APM trace 지표에만 없다.**
+
+우회 불가. 06-datastream 에서 만든다.
+
+### 결정 ① — 메트릭 이름을 새로 만들지 않는다
+
+`o2.warm.latency_p95_by_pod` 같은 이름을 만들지 않고, 기존
+`o2.warm.latency_p95` 에 `pod_name` 태그만 얹어 한 번 더 보낸다.
+
+`cache_hit_rate_by_pod` 가 이미 그렇게 하고 있다. 같은 모양의 문제
+("파드 하나가 service 평균에 묻힌다")를 같은 방식으로 푼다.
+
+이유는 셋이다.
+
+- **outlier 쿼리가 그대로 복사된다.** `outliers(avg:...latency_p95{...} by
+  {pod_name}, 'DBSCAN', 2.5)` — 캐시 쪽 쿼리에서 지표 이름만 바뀐다
+- 대시보드에서 service 선과 파드 선을 **같은 위젯**에 겹칠 수 있다.
+  이름이 다르면 위젯이 둘로 갈리고, 갈리면 아무도 겹쳐 보지 않는다
+- 커스텀 메트릭 이름이 하나 안 는다
+
+**대가** — `avg:o2.warm.latency_p95{*} by {pod_name}` 을 치면 파드 시계열
+외에 `pod_name:N/A` 가 하나 더 나온다. service 단위로 보낸 값이 태그가 없어
+그렇게 잡힌다. 캐시 쪽도 같고, 알고 쓰면 문제가 되지 않는다.
+
+### 결정 ② — 표본이 적은 파드는 파드 축에 싣지 않는다
+
+`LATENCY_POD_MIN_SAMPLES = 5`. 10초 윈도우에서 표본이 5건 미만인 파드는
+`latency_p95_by_pod` 에서 뺀다.
+
+`LogHistogram.quantile()` 은 표본 한 건에도 값을 낸다. 그 값을 그대로
+내보내면 **방금 스케일아웃한 정상 파드가 DBSCAN 에 이상치로 잡힌다** —
+첫 요청은 콜드 스타트라 원래 느리다. 재분석이 지목해야 하는 것은
+"느린 파드" 이지 "새 파드" 가 아니다.
+
+**뺀 사실 자체는 남긴다.** `latency_samples_by_pod` 에 표본 수가 그대로
+들어가므로, 에이전트는 그 파드가 왜 빠졌는지 알 수 있다. 이 맵은 Datadog
+으로 보내지 않는다(맵은 메트릭이 될 수 없다 — `datadog.py` 머리말의 경계).
+
+### 결정 ③ — outlier Monitor 는 방향을 구분하지 않는다. 알고 쓴다
+
+`outliers()` 의 DBSCAN 은 "무리에서 떨어진 것" 을 잡지 "느린 것" 을 잡지
+않는다. **파드 하나가 유독 빠를 때도 걸린다.**
+
+방향을 넣으려면 별도 임계가 필요한데 그 임계의 근거가 없다 — 파드별 지연의
+정상 분산을 아직 안 쟀다(M-015 "안 잰 것"). 근거 없는 숫자를 넣는 것보다
+없는 채로 두고 메시지에서 안내하는 편이 낫다고 판단했다. 오탐 방향이
+"느리지 않은데 깨웠다" 라 위험하지 않다.
+
+`cache_hit_rate_pod_outlier` 가 이미 같은 성질을 갖고 있다. 실측이 생기면
+둘 다 같이 조인다.
+
+### 전제
+
+이 결정은 **T-023 이 고쳐진 위에 선다.** 봉투의 `pod_name` 이
+`ENVELOPE_FIELDS` 에서 빠져 있으면 파드 축이 통째로 빈다. 그때 위젯은
+오류가 아니라 **시계열 하나(service 단위 값)** 만 보여주고, 그건 정상과
+구분되지 않는다.
+

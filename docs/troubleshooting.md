@@ -39,6 +39,7 @@
 | T-021 | timeout은 없어졌는데 15초 안의 네 채팅으로 Candidate가 안 생긴다 | tumbling window 경계, epoch 정렬, 3+1 분리, rolling window 오해 |
 | T-022 | 저장소의 Dify 입력 계약과 실제 게시 앱이 다르다 | DSL 미내보내기, `/v1/info`, `/v1/parameters`, `custom_alert_json`, API key 앱 매핑 |
 | T-023 | SDK 가 봉투 필드를 늘렸는데 드리프트 시험이 안 깬다 | `ENVELOPE_FIELDS`, `pod_name`, 상수 없는 계약, 늘어난 쪽 감지 |
+| T-024 | 없는 메트릭을 조회했는데 404 가 아니라 빈 태그 목록이 온다 | `/api/v2/metrics/.../all-tags`, 200+`tags:[]`, `/api/v1/search`, `trace.fastapi.request` |
 
 
 ---
@@ -1272,3 +1273,59 @@ unknown = actual - C.ENVELOPE_FIELDS - C.ENVELOPE_FIELDS_UNUSED  # 봉투에 생
 보였고, 그래서 "SDK 쪽 작업이 아직 안 끝났다" 는 정반대 결론을 냈다.
 실제로는 그 커밋이 이미 배포에 고정돼(`SDK_REF`) 돌고 있었다.
 **남의 저장소 상태를 말하기 전에 fetch 부터 한다.**
+
+---
+
+## T-024. 없는 메트릭을 조회했는데 404 가 아니라 빈 태그 목록이 온다
+
+**증상** — APM trace 지표에 `pod_name` 태그가 있는지 확인하려고 태그 목록을
+조회했다.
+
+```
+GET /api/v2/metrics/trace.fastapi.request.duration/all-tags
+→ 200 OK
+→ {"data": {"attributes": {"tags": []}}}
+```
+
+빈 배열을 **답**으로 읽었다 — "이 지표에는 태그가 없구나". 그래서 "APM 에
+파드 축이 없다" 는 결론까지는 맞게 갔지만, **근거가 틀린 채로** 갔다.
+
+**원인** — `trace.fastapi.request.duration` **이라는 메트릭이 애초에 없다.**
+실제 이름은 `trace.fastapi.request` 다. Datadog 의 `all-tags` 엔드포인트는
+없는 메트릭 이름에 404 를 주지 않고 **200 과 빈 목록**을 준다.
+
+그래서 이 응답만 보면 두 상황이 구분되지 않는다.
+
+| 실제 상황 | 응답 |
+|---|---|
+| 메트릭은 있는데 태그가 하나도 없다 | `200` · `tags: []` |
+| **메트릭 자체가 없다** | `200` · `tags: []` |
+
+**해결** — 이름을 먼저 확인한다. 태그를 묻기 전에 그 메트릭이 존재하는지부터
+묻는다.
+
+```
+GET /api/v1/search?q=metrics:trace.fastapi
+→ trace.fastapi.request, trace.fastapi.request.hits, trace.fastapi.request.errors ...
+```
+
+또는 `/api/v1/query` 로 직접 조회해 `series` 가 비는지 본다. **빈 series 도
+같은 함정이 있지만**(없는 메트릭도 빈 series 를 준다), `by {tag}` 를 붙여
+scope 를 보면 `pod_name:N/A` 처럼 "지표는 있는데 그 태그가 없다" 가 드러난다.
+
+**왜 늦게 찾았나** — `.duration` 이 관례상 그럴듯한 이름이라 **존재 자체를
+의심하지 않았다.** 그리고 빈 배열이 오류가 아니라 정상 응답이라, 무언가
+잘못됐다는 신호가 어디에도 없었다. 확인한 줄 알고 다음 단계로 넘어갔다.
+
+**이 저장소에서 같은 모양을 이미 두 번 겪었다.**
+
+| 어디 | 같은 모양 |
+|---|---|
+| `05-datadog/variables.tf` (`metric_prefix` 주석) | *"존재하지 않는 메트릭을 조회해도 Datadog 은 오류가 아니라 빈 series 를 준다"* |
+| 이 문서 T-023 | 봉투 필드가 빠져도 시험이 안 깨진다 — 없는 것이 오류가 아니라 **빈 값**으로 나온다 |
+
+**규칙** — Datadog 에서 빈 응답을 받으면 "없다" 로 읽기 전에 **이름이 맞는지를
+먼저 확인한다.** 빈 응답은 답이 아니라 질문이다.
+
+실측 결과 자체는 M-016 에 있다.
+

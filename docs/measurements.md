@@ -28,6 +28,7 @@
 | M-013 | 전용 Agent entry contract workflow UI 검증 | DSL·입력 계약·Code 검증 로직 변경 |
 | M-014 | 주문 확정 워커 처리량 (order-worker) | requests·replicas 변경 · 인스턴스 변경 · RDS 등급 변경 · delete 방식 변경 |
 | M-015 | warm 경로 인입·집계 실측과 집계기 지연 | 샤드 수·`parallelization_factor` 변경 · 부하 패턴 변경 |
+| M-016 | APM trace 지표의 태그 축 (파드 축이 있는가) | `ddtrace` 버전 변경 · Datadog Agent 설정 변경 · 통합 서비스 태깅 도입 |
 
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
@@ -969,11 +970,114 @@ D-041 이 KEDA 를 2차 보정으로 둔 것과 같은 방향이라 설계를 �
 그래서 `05-datadog` 의 `aggregator_lag_critical_seconds` 기본값을 검증 대기
 시간과 같은 **90초**로 뒀다. 임의로 고른 값이 아니라 그 루프가 깨지는 지점이다.
 
+### Datadog 수집 확인 (2026-08-24) — 위 "안 잰 것" 첫 항목의 답
+
+**조건** — Datadog API `/api/v1/query` 직접 조회, US5, 24시간 구간.
+App Key 는 Secrets Manager `o2/dev/datadog-new` 에 있다. 콘솔이 아니라 API 로
+확인한 이유는 재현 가능해야 하기 때문이다.
+
+```powershell
+$raw = aws secretsmanager get-secret-value --secret-id o2/dev/datadog-new `
+         --profile o2-data --query SecretString --output text
+$j = $raw | ConvertFrom-Json
+$h = @{ "DD-API-KEY" = $j.'api-key'; "DD-APPLICATION-KEY" = $j.'app-key' }
+$raw = $null; $j = $null
+
+$to = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); $from = $to - 86400
+$enc = [uri]::EscapeDataString("avg:aws.lambda.iterator_age{*} by {functionname}")
+Invoke-RestMethod "https://api.us5.datadoghq.com/api/v1/query?from=$from&to=$to&query=$enc" -Headers $h
+```
+
+`Get-Date -UFormat %s` 는 쓰지 않는다 — Windows PowerShell 5.1 에서 로컬 시각
+기준이라 Datadog 이 `query start is in the future` 로 거절한다.
+
+| 쿼리 | 결과 |
+|---|---|
+| `sum:aws.lambda.invocations{*} by {functionname}` | series **12** — `o2-agg` · `o2-warm-api` · `o2-hot-api` · `o2-dev-chat-signal-worker` 등 |
+| `avg:aws.lambda.iterator_age{*} by {functionname}` | `functionname:o2-agg` **있음** |
+| `sum:aws.lambda.errors{*} by {functionname}` | series **12** |
+| `sum:aws.kinesis.incoming_records{*} by {streamname}` | `streamname:stream-business` **있음** |
+| `avg:aws.firehose.delivery_to_s_3data_freshness{*} by {deliverystreamname}` | `o2-business-to-s3` **있음** |
+| `avg:aws.sqs.approximate_age_of_oldest_message{*} by {queuename}` | 큐 **9개** (각 286 포인트) — `o2-dev-order` 포함 |
+
+**수집된다.** `enable_aggregator_lag_monitor` 와 `enable_queue_backlog_monitor`
+의 비활성 사유가 이것으로 해소됐다.
+
+### 데이터포인트 밀도가 지표마다 다르다 — Monitor 설계에 영향을 준다
+
+같은 24시간 구간인데 포인트 수가 갈린다.
+
+| 지표 | 포인트 수 | 해석 |
+|---|---|---|
+| `aws.lambda.invocations` · `errors` | 288 | 5분 간격이 꽉 찼다 |
+| `aws.lambda.iterator_age` | **18** | 스트림이 움직일 때만 나온다 |
+| `aws.kinesis.incoming_records` | **17** | 위와 같다 |
+
+CloudWatch 가 스트림이 실제로 움직일 때만 이 지표를 내보내기 때문이고,
+위 "인입은 간헐적이다" 의 분포와 정확히 일치한다.
+
+**그래서 `iterator_age` 기반 Monitor 의 `notify_no_data` 는 반드시 `false` 여야
+한다.** `min(last_5m)` 이 빈 창을 만나면 No Data 로 가고, 한산한 밤마다 울린다 —
+`order_latency_p95` 가 사흘 만에 꺼진 것과 같은 경로다. 생존 감시는 카나리가
+하고, 이 Monitor 는 "밀린다" 만 잡는다.
+
 ### 안 잰 것
 
-- Datadog AWS 통합이 `aws.lambda.*` 네임스페이스를 실제로 수집하는지.
-  **CloudWatch 원본에 값이 있는 것과 Datadog 에 들어오는 것은 다른 문제다.**
-  Metrics Explorer 확인이 필요하고, 그때까지
-  `enable_aggregator_lag_monitor` 는 `false` 다
+- ~~Datadog AWS 통합이 `aws.lambda.*` 를 실제로 수집하는지~~ →
+  **위에서 확인했다 (2026-08-24).** `enable_aggregator_lag_monitor` 기본값을
+  `true` 로 바꿨다
 - 부하 종료 후 따라잡는 데 걸리는 시간
 - 집계 Lambda `Duration` — 같은 구간 조회에서 데이터포인트가 안 나왔다
+- **파드별 지연의 정상 분산.** `pod_latency_outlier_tolerance` 를 캐시 쪽과
+  같은 2.5 로 둔 것은 근거가 있어서가 아니라 다른 값을 고를 근거가 없어서다.
+  파드가 2개 이상 뜬 상태에서 재고 그 Monitor 를 켠다
+
+---
+
+## M-016. APM trace 지표의 태그 축 (파드 축이 있는가)
+
+`latency_by_pod` 를 06-datastream 에 직접 만들기 전에, **그 작업이 통째로
+불필요한지** 먼저 확인한 것이다. `apps/api/Dockerfile` 이 `ddtrace-run` 으로
+기동하고 APM 이 켜져 있으므로(`apm.portEnabled = true`), trace 지표에 이미
+`pod_name` 이 붙어 있다면 계측을 새로 만들 이유가 없다.
+
+**조건 (2026-08-24)** — Datadog API `/api/v1/query`, US5, 24시간 구간.
+M-015 의 "Datadog 수집 확인" 과 같은 세션·같은 방법이다.
+
+| 쿼리 | 결과 |
+|---|---|
+| `sum:trace.fastapi.request.hits{*} by {pod_name}` | series 1 · scope `pod_name:N/A` |
+| `sum:trace.fastapi.request.hits{*} by {kube_node}` | series 1 — 노드가 하나뿐이라 갈리지 않는다 |
+| `avg:kubernetes.cpu.usage.total{*} by {pod_name}` | series **146** |
+
+`trace.fastapi.request` 가 갖는 태그 키는 아홉 개다 — `env` · `error` ·
+`http.status_code` · `is_trace_root` · `resource` · `resource_name` ·
+`service` · `span.kind` · `version`. **파드 축이 없다.**
+
+`.hits` 쪽에 `kube_node` · `host` 가 붙지만 이는 **호스트 태그가 상속된
+것**이지 파드 단위가 아니다. 노드 하나에 파드가 여럿 뜨면 전부 같은 값이 된다.
+
+마지막 행이 대조군이다 — **K8s 통합에는 `pod_name` 이 정상적으로 붙는다.**
+즉 "Datadog 전체에 파드 축이 없다" 가 아니라 **APM trace 지표에만 없다.**
+그래서 인프라 지표(CPU·메모리)와 비즈니스 지표(지연)를 같은 파드 축에서
+비교하려면 비즈니스 쪽을 우리가 만들어야 한다.
+
+### 결론
+
+우회 불가. `latency_p95` 의 파드 축은 06-datastream 의 3단
+(`sketch.py` → `metrics.py` → `datadog.py`)에서 만든다. 이 실측이 그 작업의
+근거다.
+
+### 다시 재야 할 때
+
+- `ddtrace` 버전을 올렸을 때 — 통합 서비스 태깅이 파드 축을 붙이기 시작하면
+  이 계측이 중복이 된다
+- Datadog Agent 의 `DD_TAGS` · `podLabelsAsTags` 설정을 바꿨을 때
+- 노드가 둘 이상이 되었을 때 — `kube_node` 로 갈리는지 다시 본다
+  (파드 축의 대용은 못 되지만 어느 노드가 아픈지는 갈린다)
+
+### 안 잰 것
+
+- `trace.fastapi.request.duration` — **이 이름의 지표는 존재하지 않는다.**
+  관례상 그럴듯해서 한동안 이걸로 조회하다 시간을 버렸다. 경위는 T-024
+
