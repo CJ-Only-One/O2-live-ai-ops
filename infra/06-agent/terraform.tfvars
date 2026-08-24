@@ -29,3 +29,13 @@ enable_bedrock_access = true
 manage_session_preferences   = true
 session_idle_timeout_minutes = 60
 session_max_duration_minutes = 360
+
+# 시나리오 4의 role:page composite만 READ_PATH Incident에 연결한다(D-072).
+# 하위 sub monitor 두 개와 주문 지연 monitor는 중복·오분류를 피하려고 제외한다.
+incident_datadog_monitor_map = {
+  "21940250" = {
+    symptom_family    = "LATENCY"
+    suspected_surface = "READ_PATH"
+    service           = "api"
+  }
+}
