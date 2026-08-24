@@ -42,16 +42,32 @@ cpu_throttling_warning  = 25
 chat_rps_ratio_warning  = 5
 cache_hit_rate_critical = 0.5
 
-# 시나리오 6 Monitor는 기본 비활성이다 — SQS 지표(aws.sqs.*)가 이 조직에
-# 실제로 수집되는지 확인 전까지는 켜지 않는다. 확인되면 true 로 바꾼다.
+# 시나리오 6 Monitor. SQS 지표(aws.sqs.*)가 이 조직에 실제로 수집되는지
+# 2026-08-24 에 확인했다(M-015) — `approximate_age_of_oldest_message` 가
+# `o2-dev-order` 를 포함해 큐 9개에 각 286 포인트로 들어온다.
 enable_queue_backlog_monitor       = true
 order_confirm_queue_name           = "o2-dev-order"
 queue_backlog_age_warning_seconds  = 60
 queue_backlog_age_critical_seconds = 300
 
-# Phase 2 — 신규 계측이 먼저 필요해 전부 기본 비활성이다. 각 Monitor 정의
-# 위 주석(monitor.tf)에 활성화 전 필요한 코드 변경이 적혀 있다.
+# Phase 2 — 신규 계측이 먼저 필요했던 것들이다. 각 Monitor 정의 위
+# 주석(monitor.tf)에 활성화 전 필요했던 코드 변경이 적혀 있다.
 enable_chat_ingest_monitor         = true
 enable_pod_cache_outlier_monitor   = true
 pod_cache_outlier_tolerance        = 2.5
 enable_order_confirm_stall_monitor = true
+
+# 파드 단위 지연 이상치(시나리오 5 재분석). **계측은 들어갔지만 아직 끈다.**
+#
+# 켜기 전에 확인할 것 하나 — 파드가 2개 이상 떠 있는 상태에서
+# `avg:o2.warm.latency_p95{*} by {pod_name}` 이 파드 수만큼 갈리는지 본다.
+# 갈리지 않으면 3단(sketch → metrics → datadog) 중 어딘가에서 태그가 빠진
+# 것이고, 그 상태로 켜면 시계열이 하나뿐이라 DBSCAN 이 이상치를 못 낸다 —
+# **영구히 조용한 Monitor 가 된다.** 오탐보다 나쁘다.
+enable_pod_latency_outlier_monitor = false
+pod_latency_outlier_tolerance      = 2.5
+
+# 파이프라인 구간별 Monitor(monitor_pipeline.tf). `aws.lambda.*` 수집을
+# 2026-08-24 에 확인해(M-015) 기본값이 true 로 바뀌었다 — 여기서 명시적으로
+# 한 번 더 적어 둔다. 끌 일이 생기면 그 사유를 이 줄에 같이 남긴다.
+enable_aggregator_lag_monitor = true
