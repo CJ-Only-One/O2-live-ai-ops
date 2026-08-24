@@ -71,6 +71,8 @@ services:
       O2_SERVICE_VERSION: ${O2_SERVICE_VERSION:-local}
       O2_EVENTS_SINK: ${O2_EVENTS_SINK:-stdout}
       O2_EVENTS_SALT: ${O2_EVENTS_SALT:-local-dev-only}
+      # cue-warmer 가 보내는 값과 같아야 한다 — 다르면 워머가 계속 403 을 받는다.
+      CUE_WARMER_ADMIN_KEY: ${CUE_WARMER_ADMIN_KEY:-local-dev-only}
     depends_on:
       - valkey
       - mysql
@@ -92,6 +94,24 @@ services:
       - "8090:8080"
     depends_on:
       - valkey
+
+  # 큐시트 사전 확장 — 캐시 워밍만(D-041 3번, D-065). order-worker 와 달리
+  # SQS 가 필요 없어 로컬에서 그대로 돈다 — api 와 MySQL 만 보면 된다.
+  cue-warmer:
+    build:
+      context: ./apps/cue-warmer
+    volumes:
+      - ./apps/cue-warmer/warmer:/app/warmer
+    environment:
+      DB_HOST: ${DB_HOST:-mysql}
+      DB_USER: ${DB_USER:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-o2local}
+      DB_NAME: ${DB_NAME:-o2}
+      API_BASE_URL: http://api:8000
+      CUE_WARMER_ADMIN_KEY: ${CUE_WARMER_ADMIN_KEY:-local-dev-only}
+    depends_on:
+      - mysql
+      - api
 
   frontend:
     image: node:22-alpine

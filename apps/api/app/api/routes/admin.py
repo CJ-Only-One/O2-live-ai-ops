@@ -15,12 +15,12 @@ apps/chat-gateway 의 `/ws/admin/channel-limit`(S1, D-061)과 같은 이유로
   읽기 쪽은 못 찾는 조용한 불일치가 생긴다.
 """
 
-import hmac
 from typing import Literal
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header
 from pydantic import BaseModel
 
+from app.core.admin_auth import require_admin_key
 from app.core.config import settings
 from app.db.valkey import valkey
 from app.schemas.common import BroadcastId
@@ -40,18 +40,12 @@ class ReadPathDegradedOut(BaseModel):
     previously_degraded: bool
 
 
-def _authorize(x_admin_key: str | None) -> None:
-    expected = settings.READ_PATH_DEGRADED_ADMIN_KEY
-    if not expected or not x_admin_key or not hmac.compare_digest(x_admin_key, expected):
-        raise HTTPException(status_code=403, detail="forbidden")
-
-
 @router.post("/admin/read-path-degraded", response_model=ReadPathDegradedOut)
 def set_read_path_degraded(
     body: ReadPathDegradedIn,
     x_admin_key: str | None = Header(default=None),
 ):
-    _authorize(x_admin_key)
+    require_admin_key(settings.READ_PATH_DEGRADED_ADMIN_KEY, x_admin_key)
 
     key = degraded_key(body.broadcast_id)
     # Precheck 재확인 — patch 전에 현재 값을 다시 읽어 응답에 같이 싣는다.

@@ -1,0 +1,211 @@
+"""큐시트 사전 확장 — 캐시 워밍만(D-041 3번, D-065).
+
+방송 시작·게스트 등장처럼 **신규 진입**이 몰리는 세그먼트(`expected.
+entry_window_s` 가 있는 세그먼트) 앞에서, 그리고 그 진입이 이어지는
+동안(`at` 부터 `entry_window_s` 만큼) `bcast:{id}:meta` 를 계속 데운다.
+`entry_window_s` 가 끝나면 멈춘다 — 그때부터는 신규 진입이 끝났다는
+뜻이므로 더 때릴 필요가 없다.
+
+`entry_window_s` 가 없는 세그먼트(EVENT_ANNOUNCE·SALE_CLOSING처럼 이미 들어와
+있는 시청자만 움직이는 경우)는 신규 진입이 없으므로 대상이 아니다. 파드
+증설·노드 확보는 다음 단계다 — 이 파일은 캐시만 본다.
+
+`GET /api/broadcasts/{id}` 를 직접 부르지 않는다. 그건 재고 조회와
+`inventory.check` 발행까지 같이 하고, 후자는 "트래픽 폭증과 캐시 미스
+폭주를 가르는 유일한 근거"(contracts.md 5.1)라 워머의 폴링이 매 tick 마다
+가짜 히트로 그 지표를 오염시킨다. 대신 캐시만 채우는 내부 전용 경로
+(`POST /api/internal/warm/{broadcast_id}`)를 쓴다.
+"""
+
+import logging
+import signal
+import time
+from datetime import datetime, timedelta, timezone
+
+import httpx
+from sqlalchemy import and_, create_engine, or_, select
+from sqlalchemy.orm import Session, sessionmaker
+
+from warmer.config import settings
+from warmer.models import CueSheet
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("cue-warmer")
+
+engine = create_engine(
+    settings.database_url,
+    pool_pre_ping=True,
+    pool_size=2,
+    max_overflow=2,
+    connect_args={"connect_timeout": 5},
+)
+SessionLocal = sessionmaker(bind=engine)
+
+_running = True
+
+
+def _stop(signum, _frame):
+    global _running
+    logger.info("종료 신호 수신(%s). 이번 tick 을 끝내고 종료한다.", signum)
+    _running = False
+
+
+signal.signal(signal.SIGTERM, _stop)
+signal.signal(signal.SIGINT, _stop)
+
+
+def _to_naive_utc(value: str) -> datetime:
+    """오프셋을 요구하고 UTC 로 바꾼다.
+
+    save_cue_sheet()(apps/api/app/services/cue_sheet.py)가 강제하는 오프셋
+    검증은 body 최상위의 scheduled_at·ends_at 에만 걸린다 — segments[].at
+    은 body 를 통째로 JSON 컬럼에 저장할 때 그 검증을 안 거친다(D-065). 그래서
+    이 재검증은 군더더기가 아니라 여기서만 걸리는 유일한 방어선이다. 안 하면
+    오프셋 없는 세그먼트 시각이 이 프로세스가 도는 서버의 로컬 시간대로
+    조용히 해석돼 몇 시간이 어긋난다."""
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError(f"offset is required: {value!r}")
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def candidate_broadcasts(db: Session, now: datetime) -> list[dict]:
+    """지금부터 CACHE_LEAD_S 안에 시작하거나 이미 진행 중인 방송의 큐시트
+    body 를 가져온다. SQL 단계에서는 방송 단위로만 거른다 — 세그먼트 단위
+    판정(entry_window_s 유무·at 시각)은 필요한 컬럼이 JSON 안에만 있어
+    파이썬에서 한다.
+
+    ends_at 은 선택 필드다(cue-sheet-v1 스키마). ends_at 이 없는 행에
+    scheduled_at 하한을 안 두면, 끝난 지 오래된 데모·취소된 방송이 매 tick
+    영원히 후보로 다시 뽑혀 DB 조회와 JSON 파싱 비용이 서비스 수명 내내
+    계속 늘어난다. ends_at 이 있는 행은 그 값이 이미 상한이므로 이 하한을
+    안 건다 — 오래 전 시작해 아직도 진행 중인 방송을 잘못 걸러내지 않기
+    위해서다."""
+    horizon = now + timedelta(seconds=settings.CACHE_LEAD_S)
+    lookback = now - timedelta(seconds=settings.STALE_LOOKBACK_S)
+    rows = db.execute(
+        select(CueSheet).where(
+            CueSheet.scheduled_at <= horizon,
+            or_(
+                and_(CueSheet.ends_at.is_not(None), CueSheet.ends_at >= now),
+                and_(CueSheet.ends_at.is_(None), CueSheet.scheduled_at >= lookback),
+            ),
+        )
+    ).scalars().all()
+    return [row.body for row in rows]
+
+
+def needs_warming(body: dict, now: datetime) -> bool:
+    """entry_window_s 가 있는 세그먼트 중 하나라도
+    [at - CACHE_LEAD_S, at + entry_window_s) 구간에 지금이 들어와 있으면
+    워밍 대상이다.
+
+    at 은 진입이 "끝나는" 시각이 아니라 "시작되는" 시각이다(스키마의
+    entry_window_s 설명 — "이 인원이 몇 초에 걸쳐 진입하는가"). 그래서
+    at 에서 끊지 않고 entry_window_s 만큼 더 데운다. at 이후를 진입
+    트래픽 자신이 유지한다는 가정은 진입 밀도가 높을 때만(예: 12,000명이
+    60초에 걸쳐) 성립한다 — concurrent 가 작고 entry_window_s 가 길면
+    (예: 50명이 1시간에 걸쳐, 평균 72초 간격) 30초 TTL 안에 자연 히트가
+    안 나 at 직후 캐시가 다시 식는다. 그 가정에 기대지 않고 entry_window_s
+    값 자체를 구간에 넣어 밀도와 무관하게 맞춘다.
+
+    segments 자체는 검증되지 않은 채 들어올 수 있다(D-065 — save_cue_sheet
+    는 세그먼트 형태를 검사하지 않는다). segment 나 expected 가 dict 가
+    아닌 경우까지 방어한다 — 여기서 예외가 나면 이 함수를 부른 쪽에서
+    tick 전체가 아니라 이 방송 하나만 걸러져야 하는데, 그 경계를 여기서
+    지켜야 다른 방송의 워밍이 이 방송 때문에 밀리지 않는다."""
+    segments = body.get("segments")
+    if not isinstance(segments, list):
+        segments = []
+
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+
+        expected = segment.get("expected")
+        if not isinstance(expected, dict):
+            continue
+
+        entry_window_s = expected.get("entry_window_s")
+        if not isinstance(entry_window_s, (int, float)) or entry_window_s < 0:
+            continue
+
+        try:
+            at = _to_naive_utc(segment["at"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("세그먼트 at 파싱 실패, 건너뜀: %r", segment.get("at"))
+            continue
+
+        window_start = at - timedelta(seconds=settings.CACHE_LEAD_S)
+        window_end = at + timedelta(seconds=entry_window_s)
+        if window_start <= now < window_end:
+            return True
+
+    return False
+
+
+def warm(client: httpx.Client, broadcast_id: str) -> bool:
+    """실제로 워밍됐을 때만 True. 호출부(tick)가 이 값으로 warmed 건수를
+    세므로, 여기서 실패를 삼키고 항상 성공한 것처럼 두면 CUE_WARMER_ADMIN_KEY
+    불일치 같은 사고가 "이번 tick 워밍: N건" INFO 로그 뒤에 영원히 숨는다
+    — 워밍이 계속 안 되고 있는데 로그만 정상으로 보인다."""
+    try:
+        res = client.post(
+            f"{settings.API_BASE_URL}/api/internal/warm/{broadcast_id}",
+            headers={"x-admin-key": settings.CUE_WARMER_ADMIN_KEY},
+            timeout=5.0,
+        )
+    except httpx.HTTPError:
+        logger.exception("워밍 요청 실패: %s", broadcast_id)
+        return False
+
+    if res.status_code == 200:
+        logger.info("워밍: %s", broadcast_id)
+        return True
+
+    # 404 는 큐시트의 broadcast_id 오타나 편성 누락일 수 있다.
+    # 403 은 CUE_WARMER_ADMIN_KEY 가 api 쪽과 안 맞는다는 뜻이다.
+    logger.warning("워밍 실패(%s): %s", res.status_code, broadcast_id)
+    return False
+
+
+def tick(db: Session, client: httpx.Client) -> int:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    warmed = 0
+    for body in candidate_broadcasts(db, now):
+        try:
+            if needs_warming(body, now) and warm(client, body["broadcast_id"]):
+                warmed += 1
+        except Exception:
+            # 방송 하나의 큐시트가 깨져 있어도 나머지 방송은 이번 tick 에
+            # 그대로 처리돼야 한다 — 한 건의 문제로 전체가 밀리면 안 된다.
+            logger.exception("세그먼트 판정 실패, 건너뜀: %r", body.get("broadcast_id") if isinstance(body, dict) else body)
+    return warmed
+
+
+def main() -> None:
+    if not settings.CUE_WARMER_ADMIN_KEY:
+        logger.error("CUE_WARMER_ADMIN_KEY 가 비어 있다. api 가 요청을 전부 거부한다.")
+
+    logger.info("워머 시작: tick=%ss lead=%ss", settings.TICK_S, settings.CACHE_LEAD_S)
+
+    with httpx.Client() as client:
+        while _running:
+            try:
+                with SessionLocal() as db:
+                    warmed = tick(db, client)
+                    if warmed:
+                        logger.info("이번 tick 워밍: %d건", warmed)
+            except Exception:
+                logger.exception("tick 실패")
+
+            time.sleep(settings.TICK_S)
+
+    logger.info("워머 종료")
+
+
+if __name__ == "__main__":
+    main()

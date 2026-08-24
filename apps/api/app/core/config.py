@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     # 요청을 전부 거부한다.
     READ_PATH_DEGRADED_ADMIN_KEY: str = ""
 
+    # cue-warmer(D-041 사전 확장)가 POST /api/internal/warm/{broadcast_id} 를
+    # 부를 때 쓰는 인증 키. READ_PATH_DEGRADED_ADMIN_KEY 와 같은 이유로 별도
+    # 값을 쓴다 — 이 키가 새면 캐시 워밍만 되고, 그 키가 새면 S3 조치 노브가
+    # 같이 뚫린다. 비어 있으면 라우트가 요청을 전부 거부한다.
+    CUE_WARMER_ADMIN_KEY: str = ""
+
     @property
     def allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
