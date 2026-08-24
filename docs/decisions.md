@@ -74,6 +74,7 @@
 | D-057 | 파드별 지연은 새 메트릭이 아니라 `latency_p95` 의 태그로 낸다 | `pod_name` 태그, `cache_hit_rate` 패턴, 최소 표본, APM 우회 불가 |
 | D-058 | Runbook success_criteria 에 기준선 상대 조건을 추가한다 | `baseline_conditions`, D-054, `Baseline` 상태의 기록값 |
 | D-059 | 조치 실행기는 Deployment replicas patch 하나, 원복도 같은 걸 쓴다 | EKS Access Entry, `deployments/scale` RBAC, canary 격리, 06-agent/04-platform 스택 분리 |
+| D-060 | `chat.send` 의 거부 사유는 `result` + `failure_code` 로 싣는다 | `rejected_code` 개명, 성공에도 `result`, 집계가 이름으로 찾는다, SDK 등록 안 함 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3651,3 +3652,98 @@ botocore 만으로 직접 구현했다.
 
 관련: `docs/scenario-experiment.md` 0.6·4.2·6, D-008, D-043(SigV4 못 하는
 Dify HTTP 노드라 Lambda 릴레이를 쓰는 이유, runbook_lookup 과 같음).
+## D-060. `chat.send` 의 거부 사유는 `result` + `failure_code` 로 싣는다
+
+**초안이다. 합의 전이고 코드는 아직 안 고쳤다.**
+
+`contracts.md` 5.3 이 `chat.send` payload 에 `rejected_code` 를 두기로 했고
+`apps/chat-gateway` 가 그대로 구현했다. 계약과 코드는 일치한다. **어긋난 곳은
+집계다.**
+
+warm 집계는 payload 에서 `result` 와 `failure_code` 라는 이름을 찾는다
+(`o2warm/contract.py` 의 `F_RESULT` · `F_FAILURE_CODE`). `rejected_code` 는
+그 어느 쪽도 아니라서 `_add_business` 가 그냥 지나간다. 결과는 이렇다.
+
+- `chat.send` 이벤트 자체는 들어온다 — `by_event` · `rps` 에 잡힌다
+- **거부 건수만 사라진다.** 실패율도, 사유 분포도 만들어지지 않는다
+- 아무 에러도 안 난다. 필드가 없는 것과 구분이 안 된다
+
+5.3 이 "거부된 발화도 발행한다. 안 하면 레이트 리밋에 걸린 매크로가 통계에서
+사라진다" 고 적어둔 바로 그 일이, 필드 이름 하나 때문에 실제로 일어나고 있다.
+**의도가 아니라 이름이 틀렸다.**
+
+시나리오 S1 의 성공 판정은 "전파가 회복됐는가" 와 "정상 사용자를 얼마나
+막았는가" 를 함께 요구한다(`scenario-experiment.md` 1.2 정확 축). 차단 비율을
+못 재면 **성공 판정 자체가 성립하지 않는다** — 절반을 막아서 빨라진 것을
+성공으로 적게 된다.
+
+### 정한 것
+
+`chat.send` payload 를 `coupon.issue` 와 같은 모양으로 맞춘다.
+
+| 필드 | 언제 | 값 |
+|---|---|---|
+| `result` | **항상** | `SUCCESS` · `FAILED` |
+| `failure_code` | `result=FAILED` 일 때만 | `TOO_LONG` · `RATE_LIMITED` · `CHANNEL_LIMITED` |
+
+`CHANNEL_LIMITED` 는 D-059 의 채널 총량 제한(`main.ts` 의 `overChannelLimit`)이
+거부한 경우다. S1 의 주 조치가 만드는 거부라 **차단 비율을 재야 하는 대상이
+정확히 이것**이다.
+
+`rejected_code` 는 없앤다.
+
+**성공에도 `result` 를 싣는 이유.** 실패율이
+`실패 / result 를 실은 전체` 로 계산된다(`metrics.py` 의 `failure_breakdown`).
+실패에만 실으면 분모가 실패 건수와 같아져 비율이 항상 1.0 이 된다.
+
+### 왜 반대 방향(집계가 `rejected_code` 를 읽게)이 아닌가
+
+집계 쪽을 고치면 `_add_business` · `_add_segments` · `failure_breakdown` 세 곳에
+`chat.send` 전용 분기가 생긴다. 이벤트 하나 때문에 공용 경로에 예외를 파는 것이고,
+다음에 같은 실수가 나면 분기가 또 는다. **이름을 맞추면 집계는 코드 한 줄도
+안 바뀐다.**
+
+### 무엇이 깨지나 — 아무것도 안 깨진다
+
+`rejected_code` 를 읽는 곳이 저장소 전체에 없다.
+
+| 곳 | 상태 |
+|---|---|
+| warm 집계 | 안 읽는다. 그게 이 문제다 |
+| Glue ETL | payload 를 평탄화하지 않고 JSON 문자열로 그대로 적재한다 |
+| hot path | `chat.send` 를 안 본다 |
+| Athena | 이 필드로 만든 질의가 없다 |
+
+S3 에 쌓인 과거 데이터는 `rejected_code` 인 채로 남는다. 되읽는 질의가 없으므로
+소급 변환하지 않는다. 필요해지면 그때 두 이름을 함께 보는 질의를 쓴다.
+
+### SDK 와 warm 계약에는 등록하지 않는다
+
+`chat.send` 는 Node 얇은 클라이언트가 내고 Python SDK 에는 emit 함수가 없다.
+SDK 의 `EVENT_NAMES` 와 warm 의 `PAYLOAD_FIELDS` 는 **SDK `emit` 함수와 1:1 로
+묶여 있고 시험이 그 대응을 검사한다**(`warm/tests/test_contract.py` 의
+`test_event_names_exist_in_contract` · `test_payload_fields_match_emit_signature`).
+`chat.send` 를 넣으면 시험이 깨진다.
+
+대가는 `event_rate{event:chat.send}` 가 안 나오는 것 하나다. 인입량은
+`rps{service:chat-gateway}` 로 보고, "채팅 인입 급증" Monitor 가 이미 그 값을 쓴다.
+
+SDK 에 `chat.send` 를 등록하는 것은 별도 결정으로 남긴다 — 백데이터 파트 소관이고,
+지금 필요가 없다.
+
+### 합의가 필요한 이유
+
+`AGENTS.md` 가 합의 없이 못 바꾼다고 못박은 넷 중 **둘**에 걸린다 —
+이벤트 스키마, 오류 `code` 체계.
+
+### 뒤따르는 작업
+
+계약이 합의되면 코드를 맞춘다. `AGENTS.md` "계약이 구현보다 우선한다" 순서다.
+
+| 파일 | 무엇 |
+|---|---|
+| `apps/chat-gateway/src/events.ts` | `ChatSendPayload` 에서 `rejected_code` 제거, `result` · `failure_code` 추가 |
+| `apps/chat-gateway/src/chat-ingress.ts` | 발행 네 곳 — 정상은 `result: 'SUCCESS'`, 거부 셋은 `FAILED` + 코드 |
+| `apps/chat-gateway/src/chat-ingress.test.ts` | 단언 네 개를 새 필드로. 정상 경로에 `result=SUCCESS` 단언을 더한다 |
+
+warm 은 안 고친다.
