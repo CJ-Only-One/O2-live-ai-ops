@@ -220,13 +220,20 @@ variable "chat_early_warning_window_minutes" {
 
 variable "enable_chat_ingest_monitor" {
   description = <<-EOT
-    시나리오 2 조기 경보(`chat_ingest_surge`) 활성화 여부. 기본 `false`.
+    시나리오 2 조기 경보(`chat_ingest_surge`) 활성화 여부.
+    **`terraform.tfvars` 에서 `true` 로 켜져 있다.**
 
-    `apps/chat-gateway/src/events.ts` 를 실측한 결과 `chat.send` 발행은 지금
-    (1) `EMIT_CHAT_EVENTS` 기본값이 false 라 꺼져 있고, (2) 켜더라도 목적지가
-    Kinesis 가 아니라 `process.stdout.write` 뿐이라 Datadog까지 오지 않는다
-    (monitor.tf 의 이 리소스 위 주석 참고). 이 상태로 Monitor를 켜면 영구
-    No Data 다. chat-gateway 를 Kinesis 로 잇고 배포한 뒤 `true` 로 켠다.
+    기본값은 `false` 로 남겨 둔다 — 이 스택을 새 조직에 처음 세울 때는
+    chat-gateway 가 아직 이벤트를 안 보내는 것이 정상이고, 그때 켜져 있으면
+    영구 No Data 로 조용히 죽는다.
+
+    켤 조건은 `o2.warm.rps{service:chat-gateway}` 에 시계열이 있는 것이고,
+    **이 조직에서는 이미 충족됐다**(2026-08-24 확인). `events.ts` 가
+    `PutRecordCommand` 로 Kinesis 에 직접 넣고 배포 환경변수도 설정돼 있다.
+
+    2026-08-24 이전 이 자리에는 "목적지가 `process.stdout.write` 뿐이라
+    Datadog 까지 오지 않는다" 가 적혀 있었다. **그 사이 사실이 아니게 됐는데
+    주석만 남아 있었다** — 경위는 monitor.tf 의 이 리소스 위 주석.
   EOT
   type        = bool
   default     = false
@@ -236,8 +243,16 @@ variable "chat_rps_ratio_warning" {
   description = <<-EOT
     시나리오 2(특가 오픈 캐스케이드) 조기 경보 임계.
     `o2.warm.rps_ratio{service:chat-gateway}` 가 평시 대비 몇 배로 뛰면
-    경고할지. 트랜스크립트 예시는 20→210 msg/s(10.5배)다 — 절반 정도인
-    5배를 잠정치로 둔다.
+    경고할지.
+
+    **실측이 아니다.** 트랜스크립트 예시(20→210 msg/s, 10.5배)의 절반을
+    잠정치로 둔 것이고, 새 명세의 채널 포화점과는 무관하다. 재고 나면
+    `measurements.md` 에 남기고 여기를 고친다. 안 쟀으면 "안 쟀다" 고 한다.
+
+    **한 가지 더 — 이 지표는 즉시 생기지 않는다.** `rps_ratio` 는 EWMA
+    표본 30개(약 5분)가 쌓여야 값이 나온다. 방송 시작 직후에는 조기 경보가
+    안 나오므로, S1 이 "특가 오픈 순간" 을 노린다면 그 워밍업 시간을
+    진행 순서에 넣어야 한다.
   EOT
   type        = number
   default     = 5

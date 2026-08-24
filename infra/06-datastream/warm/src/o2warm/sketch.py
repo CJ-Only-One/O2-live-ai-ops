@@ -681,7 +681,7 @@ class WindowSketch:
         **집계기가 밀릴 때 `parallelization_factor` 로 푸는 것은 그래서 안
         됩니다. 샤드 수를 늘려야 합니다** — 샤드가 다르면 `source` 키가
         갈리고(`_source_of()` 가 스트림+샤드로 만듭니다) 번호를 서로
-        독립적으로 비교하므로 안전합니다. 근거와 실측은 D-058.
+        독립적으로 비교하므로 안전합니다. 근거와 실측은 D-063.
 
         `tests/test_sequence_guard.py` 가 이 성질을 고정해 둡니다.
         """
@@ -702,7 +702,7 @@ class WindowSketch:
                 print(
                     f"[o2warm] 순서가 뒤바뀐 배치를 버립니다 — source={src} "
                     f"기록={cur} 도착={hi}. parallelization_factor 가 1보다 "
-                    f"크면 이 일이 상시로 일어나고 집계가 조용히 줄어듭니다(D-058).",
+                    f"크면 이 일이 상시로 일어나고 집계가 조용히 줄어듭니다(D-063).",
                     file=sys.stderr,
                 )
             return True

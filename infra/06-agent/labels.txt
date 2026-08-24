@@ -25,9 +25,14 @@ db_connection_pool_exhaustion
 db_lock_contention
 
 # 노드·파드
+# pod_load_skew 는 S2(docs/scenario-experiment.md 0.6) 최종 진단이 떨어지는
+# 라벨이다 — 문서의 RB-API-POD-RESOURCE-SKEW 가 이 라벨을 가리킨다.
 pod_load_skew
 node_memory_insufficient
 cpu_credit_exhausted
+
+# 채팅 — S1(docs/scenario-experiment.md 0.5). 총량이 채널 감당 선 초과
+chat_channel_overload
 
 # 알림 자체가 문제인 경우
 monitor_false_alarm

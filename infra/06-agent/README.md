@@ -114,6 +114,55 @@ Phase 3 합성 Queue E2E는 D-053에 따라 event source와 실행 플래그를 
 allowlist다. 미허용 key는 Secret 조회·ledger 획득·Dify 호출 전에 실패한다. 상세 상태와
 적용 순서는 `docs/agent-entrypoint.md` 6.4를 따른다.
 
+## Incident Correlator Phase 3B
+
+D-055에 따라 `agent.trigger.v1`은 Agent 호출이 아니라 상관관계 전 source 신호다.
+Phase 3B는 기존 `agent-trigger` Queue의 물리 이름을 유지하면서 다음 비활성 경로를 추가한다.
+
+```text
+agent.trigger.v1 Signal Queue
+  -> disabled Incident Correlator
+  -> Incident State DynamoDB
+  -> agent.incident.v1 Agent Invocation Queue
+  -> consumer 없음
+```
+
+| 게이트 | 기본값 |
+|---|---|
+| Correlator event source | `false` |
+| `INCIDENT_CORRELATOR_EXECUTION_ENABLED` | `false` |
+| correlation window | `0` |
+| 합성 source allowlist | empty |
+| Datadog monitor mapping | empty |
+
+window `0`은 미설정 상태다. Phase 3C에서 두 source 도착 지연을 측정하기 전에는 값을
+지어내지 않는다. event source와 실행 플래그를 켜더라도 window가 0이거나 합성 allowlist가
+1-3개가 아니면 Terraform precondition이 실패한다. 기존 Agent Worker event source와
+Correlator도 동시에 활성화할 수 없다.
+
+Chat은 현재 S3 범위인 `READ_PATH → LATENCY/api` mapping만 갖는다. Datadog은 alert 제목이나
+본문을 해석하지 않고 명시한 monitor ID mapping만 사용한다. mapping이 없거나 같은 조건의
+OPEN Incident가 둘 이상이면 `AMBIGUOUS`로 기록하고 강제 병합하지 않는다.
+
+Phase 3B apply만으로는 Signal Queue를 소비하지 않고 Agent Invocation Queue에도 consumer가
+없으므로 Dify 호출은 0건이어야 한다. 적용·검증 순서는 `docs/agent-entrypoint.md` 6.5가
+원본이다.
+
+2026-08-24 병합본에서 Phase 3B 대상 저장 plan `13 add, 0 change, 0 destroy`만 적용했다.
+적용 후 Correlator와 기존 Generic Worker event source는 모두 `Disabled`, Correlator 실행
+플래그는 `false`, window는 `0`, 합성 allowlist와 Datadog mapping은 비어 있었다. Signal
+Queue/DLQ와 Invocation Queue/DLQ는 모두 0건이고, Invocation Queue consumer와 Correlator
+Log Stream도 0개였다. Incident State는 `ACTIVE`, `PAY_PER_REQUEST`, SSE·TTL·PITR enabled,
+GSI `ACTIVE`, item 0이었다. 전체 stack 재-plan의 기존 `5 change`는 별도 검토 대상으로
+남겼으며 적용하지 않았다.
+
+2026-08-24 Phase 3C-A에서 test-only window 300초와 실행별 합성 key 두 개만 허용해
+Signal Queue 직접 E2E를 수행했다. Chat→Datadog과 Datadog→Chat 모두 revision 1
+`PROVISIONAL`에서 같은 Incident의 revision 2 `CORRELATED`로 전환됐다. Invocation Queue
+consumer는 0개라 Dify 실행은 없었다. 종료 후 실행 gate·window·allowlist·Datadog mapping을
+기본 비활성값으로 복귀하고 합성 DynamoDB 항목과 Queue 메시지만 개별 삭제했다. 운영
+correlation window는 실제 source Adapter 전달 지연을 재기 전까지 미확정이다.
+
 ### 1. 버전 고정
 
 ```bash

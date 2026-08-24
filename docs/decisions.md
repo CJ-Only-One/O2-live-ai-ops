@@ -72,7 +72,12 @@
 | D-055 | source 신호를 먼저 Incident로 병합한 뒤 Agent를 호출한다 | correlator, agent.incident.v1, revision, ambiguity, single action lock |
 | D-056 | 안 쓰는 Monitor 는 지우지 않고 알림 경로만 끊는다 | `role:sub`, 알림 핸들 없음, composite 참조, `state mv` |
 | D-057 | 파드별 지연은 새 메트릭이 아니라 `latency_p95` 의 태그로 낸다 | `pod_name` 태그, `cache_hit_rate` 패턴, 최소 표본, APM 우회 불가 |
-| D-058 | 집계기 지연은 샤드 수로 푼다 — `parallelization_factor` 는 쓸 수 없다 | sequence number 가드, 순서 뒤바뀜, 조용한 유실, `source` 키 |
+| D-058 | Runbook success_criteria 에 기준선 상대 조건을 추가한다 | `baseline_conditions`, D-054, `Baseline` 상태의 기록값 |
+| D-059 | 조치 실행기는 Deployment replicas patch 하나, 원복도 같은 걸 쓴다 | EKS Access Entry, `deployments/scale` RBAC, canary 격리, 06-agent/04-platform 스택 분리 |
+| D-060 | `chat.send` 의 거부 사유는 `result` + `failure_code` 로 싣는다 | `rejected_code` 개명, 성공에도 `result`, 집계가 이름으로 찾는다, SDK 등록 안 함 |
+| D-061 | S1 채널 총량 조치는 chat-gateway 라우트 하나다 — 실행기 Lambda 를 안 만든다 | `cfg:channel_limit`, 과도한 D-059 복제 되돌림, `kubectl create secret`, 임시 임계값 |
+| D-062 | S3 조치는 api 라우트 하나 — runbook 카탈로그에는 안 넣는다 | `cfg:read_path_degraded`, `inventory.check` 생략, 원인 라벨 없음, 행동 기준 |
+| D-063 | 집계기 지연은 샤드 수로 푼다 — `parallelization_factor` 는 쓸 수 없다 | sequence number 가드, 순서 뒤바뀜, 조용한 유실, `source` 키 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3566,7 +3571,271 @@ trace 지표에 `pod_name` 이 이미 붙어 있으면 이 작업 전체가 불�
 
 ---
 
-## D-058. 집계기 지연은 샤드 수로 푼다 — `parallelization_factor` 는 쓸 수 없다
+## D-058. Runbook success_criteria 에 기준선 상대 조건을 추가한다
+
+D-054 가 "SLO 복귀 AND 기준선 대비 개선" 을 요구했는데, `runbook.tf` 의
+`success_criteria` 스키마는 고정 임계값(`conditions: [{metric, comparison,
+threshold}]`) 하나뿐이었다. 기준선 대비를 표현할 자리가 없어서, S1·S2·S3
+셋 다 D-054 를 만족하는 런북 항목을 못 쓰는 상태였다.
+
+**고정 임계값 목록(`conditions`)은 그대로 두고, 옆에 새 목록을 하나
+얹는다.**
+
+```
+success_criteria = {
+  conditions: [ {metric, comparison, threshold}, ... ],          # 기존, 절대 SLO
+  baseline_conditions: [ {metric, comparison, relative_to}, ... ] # 신규, 기준선 대비
+}
+```
+
+`relative_to` 는 고정 숫자가 아니라 `"baseline_p95_ms"` 처럼 `Baseline`
+상태에서 이미 기록해 둔 값의 이름을 가리킨다(0.4 절 불변조건 — `Baseline`
+없이 `Acting` 으로 못 간다, 이 기록이 그 값이다). 둘 다 있으면 AND, 어느
+한쪽이 빈 배열이면 그 축은 통과로 친다 — S3 처럼 절대 임계가 없는 시나리오도
+그대로 쓸 수 있어야 하기 때문이다.
+
+**허용 오차(tolerance)는 여기서 정하지 않는다.** "기준선과 같아야 하는지,
+얼마나 더 나빠도 되는지"는 시나리오마다 다르고 아직 실측이 없어서, 지어내는
+대신 `docs/scenario-experiment.md` §2 에 시나리오별로 "안 쟀다" 로 남겨둔다.
+
+**스키마 변경 없음.** DynamoDB 는 스키마리스고 `runbook_lookup.py` 는 아이템을
+그대로 JSON 직렬화해 돌려주므로, `runbook.tf`·Lambda 코드 둘 다 안 건드려도
+된다. `scripts/seed_runbook.py` 의 시딩값에서 새 키를 쓰기 시작하면 그걸로
+끝이다.
+
+관련: `docs/scenario-experiment.md` 0.4(`Baseline`), 1.1(원칙 ①), D-054.
+
+---
+
+## D-059. 조치 실행기는 Deployment replicas patch 하나, 원복도 같은 걸 쓴다
+
+S2(scenario-experiment.md 0.6) "느린 파드 격리"를 실제로 실행할 방법이
+없었다 — `ACTION_API_BASE_URL`이 가리키는 실제 Action Handler가 저장소
+어디에도 없고, 지금까지는 전부 시뮬레이션이었다.
+
+**Pod 를 직접 지우지 않는다.** Deployment 가 즉시 같은 스펙으로 재생성하기
+때문에 격리가 안 된다. **Deployment 자체의 replicas 를 0 으로 patch한다.**
+그리고 "원복"을 별도 메커니즘으로 안 만든다 — 격리(0으로)와 원복(원래
+값으로)은 같은 patch 를 다른 replicas 값으로 부르는 것뿐이다. 조치
+실행기(`infra/06-agent/action_executor.tf`,
+`lambda/scale_deployment.py`) 하나가 둘 다 처리한다.
+
+**클러스터 접근은 EKS Access Entry(02-eks 가 이미 authentication_mode=
+"API") + 이 실행기 전용 IAM Role.** 권한은 o2-dev 네임스페이스의
+`deployments/scale` 서브리소스, get·patch 뿐이다. `cluster_admin_arns`
+(04-platform variables.tf)와 이름이 비슷해 보이지만 성격이 다르다 — 그쪽은
+이미 AdministratorAccess 를 가진 사람들이라 EKS 권한을 좁혀도 보안 경계가
+아니라고 그 변수 설명에 적혀 있다. 이 Role 은 다른 AWS 권한이 없는 Lambda
+실행 역할이므로, 여기서 좁히는 것이 처음으로 진짜 보안 경계가 된다 —
+실행기가 잘못된 인자를 받아도(프롬프트 인젝션 포함) o2-dev 의 스케일 조정
+말고는 클러스터에서 할 수 있는 게 없다.
+
+**IAM Role(06-agent)과 RBAC(04-platform)이 스택을 가른다.** "클러스터 안
+권한은 04-platform 이 코드로 갖는다"(D-008)는 기존 규칙을 그대로 따른
+것이고, `app_data_access.tf`가 03-data 를 remote state 로 읽는 것과 같은
+모양으로 04-platform 이 06-agent 를 읽는다(`agent_state_key`). apply
+순서는 06-agent(Role 생성)가 04-platform(그 Role 을 access entry 에
+매핑)보다 먼저이므로 AGENTS.md 의 기존 apply 순서와 어긋나지 않는다.
+
+**Lambda 는 VPC 밖에 둔다.** EKS 엔드포인트가 퍼블릭이라(02-eks
+`endpoint_public_access=true`) `runbook_lookup.tf`와 같은 이유로 ENI 가
+필요 없다. 인증은 kubectl/aws-iam-authenticator 바이너리 없이, STS
+GetCallerIdentity 를 presign 해 `k8s-aws-v1.` 토큰으로 감싸는 표준 스펙을
+botocore 만으로 직접 구현했다.
+
+**Precheck 은 실행기가 직접 다시 확인한다.** Dify 의 Precheck 노드가 이미
+한 번 확인했더라도, 실행기는 patch 전에 현재 replicas 를 다시 GET 해서
+이미 목표치면 patch 를 건너뛴다(멱등) — 시간차로 상태가 바뀌었을 가능성을
+실행기 스스로 방어한다.
+
+**시나리오 문서 4.2 절의 canary Deployment(장애 주입용)와는 다른
+것이다.** 그건 실험 셋업이고, 이 결정은 Agent 가 실제로 무언가를
+조치한다고 판단했을 때 실행되는 쪽이다. 둘을 혼동하면 "canary"라는
+이름 하나로 같은 것을 가리킨다고 착각하기 쉽다.
+
+관련: `docs/scenario-experiment.md` 0.6·4.2·6, D-008, D-043(SigV4 못 하는
+Dify HTTP 노드라 Lambda 릴레이를 쓰는 이유, runbook_lookup 과 같음).
+## D-060. `chat.send` 의 거부 사유는 `result` + `failure_code` 로 싣는다
+
+**초안이다. 합의 전이고 코드는 아직 안 고쳤다.**
+
+`contracts.md` 5.3 이 `chat.send` payload 에 `rejected_code` 를 두기로 했고
+`apps/chat-gateway` 가 그대로 구현했다. 계약과 코드는 일치한다. **어긋난 곳은
+집계다.**
+
+warm 집계는 payload 에서 `result` 와 `failure_code` 라는 이름을 찾는다
+(`o2warm/contract.py` 의 `F_RESULT` · `F_FAILURE_CODE`). `rejected_code` 는
+그 어느 쪽도 아니라서 `_add_business` 가 그냥 지나간다. 결과는 이렇다.
+
+- `chat.send` 이벤트 자체는 들어온다 — `by_event` · `rps` 에 잡힌다
+- **거부 건수만 사라진다.** 실패율도, 사유 분포도 만들어지지 않는다
+- 아무 에러도 안 난다. 필드가 없는 것과 구분이 안 된다
+
+5.3 이 "거부된 발화도 발행한다. 안 하면 레이트 리밋에 걸린 매크로가 통계에서
+사라진다" 고 적어둔 바로 그 일이, 필드 이름 하나 때문에 실제로 일어나고 있다.
+**의도가 아니라 이름이 틀렸다.**
+
+시나리오 S1 의 성공 판정은 "전파가 회복됐는가" 와 "정상 사용자를 얼마나
+막았는가" 를 함께 요구한다(`scenario-experiment.md` 1.2 정확 축). 차단 비율을
+못 재면 **성공 판정 자체가 성립하지 않는다** — 절반을 막아서 빨라진 것을
+성공으로 적게 된다.
+
+### 정한 것
+
+`chat.send` payload 를 `coupon.issue` 와 같은 모양으로 맞춘다.
+
+| 필드 | 언제 | 값 |
+|---|---|---|
+| `result` | **항상** | `SUCCESS` · `FAILED` |
+| `failure_code` | `result=FAILED` 일 때만 | `TOO_LONG` · `RATE_LIMITED` · `CHANNEL_LIMITED` |
+
+`CHANNEL_LIMITED` 는 D-059 의 채널 총량 제한(`main.ts` 의 `overChannelLimit`)이
+거부한 경우다. S1 의 주 조치가 만드는 거부라 **차단 비율을 재야 하는 대상이
+정확히 이것**이다.
+
+`rejected_code` 는 없앤다.
+
+**성공에도 `result` 를 싣는 이유.** 실패율이
+`실패 / result 를 실은 전체` 로 계산된다(`metrics.py` 의 `failure_breakdown`).
+실패에만 실으면 분모가 실패 건수와 같아져 비율이 항상 1.0 이 된다.
+
+### 왜 반대 방향(집계가 `rejected_code` 를 읽게)이 아닌가
+
+집계 쪽을 고치면 `_add_business` · `_add_segments` · `failure_breakdown` 세 곳에
+`chat.send` 전용 분기가 생긴다. 이벤트 하나 때문에 공용 경로에 예외를 파는 것이고,
+다음에 같은 실수가 나면 분기가 또 는다. **이름을 맞추면 집계는 코드 한 줄도
+안 바뀐다.**
+
+### 무엇이 깨지나 — 아무것도 안 깨진다
+
+`rejected_code` 를 읽는 곳이 저장소 전체에 없다.
+
+| 곳 | 상태 |
+|---|---|
+| warm 집계 | 안 읽는다. 그게 이 문제다 |
+| Glue ETL | payload 를 평탄화하지 않고 JSON 문자열로 그대로 적재한다 |
+| hot path | `chat.send` 를 안 본다 |
+| Athena | 이 필드로 만든 질의가 없다 |
+
+S3 에 쌓인 과거 데이터는 `rejected_code` 인 채로 남는다. 되읽는 질의가 없으므로
+소급 변환하지 않는다. 필요해지면 그때 두 이름을 함께 보는 질의를 쓴다.
+
+### SDK 와 warm 계약에는 등록하지 않는다
+
+`chat.send` 는 Node 얇은 클라이언트가 내고 Python SDK 에는 emit 함수가 없다.
+SDK 의 `EVENT_NAMES` 와 warm 의 `PAYLOAD_FIELDS` 는 **SDK `emit` 함수와 1:1 로
+묶여 있고 시험이 그 대응을 검사한다**(`warm/tests/test_contract.py` 의
+`test_event_names_exist_in_contract` · `test_payload_fields_match_emit_signature`).
+`chat.send` 를 넣으면 시험이 깨진다.
+
+대가는 `event_rate{event:chat.send}` 가 안 나오는 것 하나다. 인입량은
+`rps{service:chat-gateway}` 로 보고, "채팅 인입 급증" Monitor 가 이미 그 값을 쓴다.
+
+SDK 에 `chat.send` 를 등록하는 것은 별도 결정으로 남긴다 — 백데이터 파트 소관이고,
+지금 필요가 없다.
+
+### 합의가 필요한 이유
+
+`AGENTS.md` 가 합의 없이 못 바꾼다고 못박은 넷 중 **둘**에 걸린다 —
+이벤트 스키마, 오류 `code` 체계.
+
+### 뒤따르는 작업
+
+계약이 합의되면 코드를 맞춘다. `AGENTS.md` "계약이 구현보다 우선한다" 순서다.
+
+| 파일 | 무엇 |
+|---|---|
+| `apps/chat-gateway/src/events.ts` | `ChatSendPayload` 에서 `rejected_code` 제거, `result` · `failure_code` 추가 |
+| `apps/chat-gateway/src/chat-ingress.ts` | 발행 네 곳 — 정상은 `result: 'SUCCESS'`, 거부 셋은 `FAILED` + 코드 |
+| `apps/chat-gateway/src/chat-ingress.test.ts` | 단언 네 개를 새 필드로. 정상 경로에 `result=SUCCESS` 단언을 더한다 |
+
+warm 은 안 고친다.
+
+---
+
+## D-061. S1 채널 총량 조치는 chat-gateway 라우트 하나다 — 실행기 Lambda 를 안 만든다
+
+S1(scenario-experiment.md 0.5) "채널 총량 제한" 조치를 실제로 실행할
+방법이 없었다 — `apps/chat-gateway`의 `overChannelLimit()`(main.ts)이
+`cfg:channel_limit:{broadcast_id}` 를 읽긴 하지만, 그 키를 SET 하는
+쪽이 없었다.
+
+**처음엔 D-059(scale_deployment)를 그대로 복제해 새 Lambda + 새 VPC
+보안 그룹 + RESP2 프로토콜 직접 구현을 만들었다 — 실제로 03-data 에
+apply 까지 했다가 되돌렸다.** 잘못이었다. D-059 는 EKS API 서버라는
+**새로운 인증 수단**(IAM Access Entry)이 필요해서 외부 Lambda 중계가
+정당했다. S1 은 다르다 — 대상이 Valkey 하나뿐이고, `chat-gateway` 가
+**이미** 그 Valkey 에 TLS 로 연결돼 있고(같은 `pub` 커넥션),
+**이미** 일반 HTTP 서버를 갖고 있다(`/healthz`). 없는 인증 수단도,
+없는 네트워크 경로도 아니었다 — 있는 것 위에 라우트 하나만 얹으면
+끝나는 일을 별도 인프라 스택으로 다시 지었다.
+
+**최종: `POST /ws/admin/channel-limit` 라우트 하나가 조치(`action:
+"set"`)와 원복(`"clear"`)을 둘 다 맡는다.** ALB 인그레스가 `/ws` 를
+prefix 로 이미 chat-gateway 에 매핑해 뒀으므로(`O2-live-deploy`
+frontend-ingress.yaml) `/ws/admin/*` 도 새 인그레스 설정 없이 바로
+도달한다. Precheck 재확인은 SET/DEL 전에 현재 값을 GET 해서 응답에
+같이 실어 보내는 것으로 대신한다.
+
+**인증은 Secrets Manager/ExternalSecret 을 안 거친다.** 새 시크릿
+파이프라인(Secrets Manager 시크릿 + ExternalSecret + IAM 정책)을
+만드는 비용이 이 조치의 가치에 안 맞다는 판단 — 이 계정은 팀 전원이
+이미 AdministratorAccess 를 가진 개인 계정이라(04-platform
+variables.tf `cluster_admin_arns` 설명과 같은 전제) 이 키 하나가
+새는 것보다 더 큰 권한을 다들 이미 갖고 있다. 대신 `kubectl create
+secret`으로 `o2-dev`에 `chat-gateway-admin`을 직접 넣고, 배포
+매니페스트는 `secretKeyRef`로 **이름만** 참조한다 — **값은 git에
+올리지 않는다.** 시크릿을 새로 만들 때마다 사람이 한 번 더 명령을
+쳐야 하지만, 그 대가로 시크릿 관리 인프라 자체가 없다.
+
+**success_criteria 의 threshold 는 임시값이다.** 2.1 절이 "정상 사용자
+차단률 상한이 없으면 성공 판정 자체가 성립하지 않는다"고 명시했지만,
+그 값을 재는 부하테스트는 이 작업 범위 밖이다(Datadog·부하테스트는
+별도 담당). 숫자를 지어내지 않는다는 원칙(AGENTS.md)의 명시적 예외로,
+`seed_runbook.py`에 실측 전 자리값임을 크게 표시해 뒀다 — 실측 나오면
+그 값으로 덮어쓴다.
+
+관련: `docs/scenario-experiment.md` 0.5·2.1·4.1, D-059(대조 — 언제
+Lambda 중계가 정당한지), D-058.
+
+---
+
+## D-062. S3 조치는 api 라우트 하나 — runbook 카탈로그에는 안 넣는다
+
+S3(scenario-experiment.md 0.7) "읽기 요청당 CPU 감소"를 실행할 방법이
+없었다(scenario-readiness.md 2.4 — S3 의 유일한 조치인데 없음).
+
+**D-061 과 같은 이유로 api 서비스에 라우트 하나만 추가한다** — 새
+Lambda 를 안 만든다. `POST /api/admin/read-path-degraded` 가
+`cfg:read_path_degraded:{broadcast_id}` 를 SET·DEL 한다.
+`app/services/broadcast.py` 의 `get_snapshot()` 이 이 키가 켜져 있으면
+`inventory.check` 이벤트 발행만 건너뛴다 — 응답(재고·가격)은 전혀 안
+바뀌므로 사용자 차단은 항상 0 이다(S3 성공 기준의 "정확" 축).
+발행 자체가 이미 "실패해도 요청을 안 막는" 부가 작업으로 설계돼 있어
+(`_emit_inventory_check` 기존 주석) 건드려도 안전하다.
+
+**노브 조회에 로컬 캐시(1초)를 쓴다.** `cache.get_or_load` 는 loader 가
+`None` 을 돌려주면 캐시하지 않는 설계라(존재 안 함과 미확인을 구분하려는
+목적, `cache.py`), 노브가 꺼진 평시에 그대로 쓰면 캐시가 항상 비어
+매 요청 Valkey 를 친다. 그래서 loader 가 `None` 대신 빈 문자열을 돌려
+"꺼짐"도 캐시되게 했다.
+
+**runbook 카탈로그(seed_runbook.py)에는 안 넣는다.** 그 테이블은
+`rca_type`(진단된 원인) 축으로 조회된다. S3 는 원인이 확정되기 전에
+정보 게이트에서 바로 HoldAction 으로 가는 조치라 애초에 원인 라벨이
+없다 — labels.txt 자신이 "라벨은 원인이다" 라고 못박아서, 여기 쓰려고
+가짜 원인을 만들면 그 불변조건을 깬다. S3 의 success_criteria 도
+지금 스키마(절대/기준선 임계값)와 안 맞는다 — 1순위 기준이 "정상 사용자
+차단 0"·"Agent 가 한쪽으로 단정 안 함" 같은 행동 판정이라 메트릭
+비교식으로 못 담는다. 이 조치를 언제 부를지는 Dify 워크플로우의
+HoldAction 분기에 직접 박는 것이 맞고, 그건 Dify 쪽 작업이라 이 범위
+밖이다.
+
+관련: `docs/scenario-experiment.md` 0.7·2.3, D-061.
+
+---
+
+## D-063. 집계기 지연은 샤드 수로 푼다 — `parallelization_factor` 는 쓸 수 없다
 
 **맥락** — M-015 에서 부하 중 `o2-agg` 의 `IteratorAge` 가 **102초**까지
 올라가는 것을 관측했다. 오류는 0 이었다. 실패가 아니라 밀림이다.

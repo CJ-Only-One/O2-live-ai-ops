@@ -21,7 +21,11 @@ export type ChatSendPayload = {
   msg_length: number;
   msg_hash: string;
   is_duplicate: boolean;
-  rejected_code?: string;
+  // contracts.md 5.3 — warm 은 payload 에서 result·failure_code 라는 이름을
+  // 찾는다(o2warm/contract.py F_RESULT·F_FAILURE_CODE). result 는 성공에도
+  // 싣는다 — 실패율 = 실패 / result 를 실은 전체 로 계산하기 때문이다.
+  result: 'SUCCESS' | 'FAILED';
+  failure_code?: string;
 };
 
 /**

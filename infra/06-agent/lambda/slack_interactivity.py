@@ -46,14 +46,18 @@ def _verify_slack_signature(headers, raw_body, signing_secret):
     return hmac.compare_digest(computed, sig)
 
 
-def _update_slack_message(response_url, result_text):
+def _update_slack_message(response_url, result_text, original_text=""):
     if not response_url:
         return
     # response_url 은 별도 토큰 없이도 원본 메시지를 고칠 수 있게 Slack 이
-    # 매번 새로 발급해주는 임시 주소다. 여기서는 버튼을 없애고 결과만 남긴다.
+    # 매번 새로 발급해주는 임시 주소다. 여기서는 버튼을 없애고 원본 내용(어떤
+    # 인시던트의 어떤 조치였는지) 아래에 결과를 덧붙인다 — 원본 text를 그냥
+    # result_text로 덮어쓰면(replace_original) 뭘 승인/거부했는지가 화면에서
+    # 사라져서 사람이 다시 스크롤해서 찾아야 했다.
+    text = f"{original_text}\n\n{result_text}" if original_text else result_text
     req = urllib.request.Request(
         response_url,
-        data=json.dumps({"replace_original": "true", "text": result_text}).encode(),
+        data=json.dumps({"replace_original": "true", "text": text}).encode(),
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -88,6 +92,9 @@ def lambda_handler(event, context):
     approval_id, _, decision = action.get("value", "").partition("|")
     user = payload.get("user", {}).get("username", "unknown")
     response_url = payload.get("response_url")
+    # 원본 승인 요청 메시지 텍스트(인시던트/원인/조치/위험도/영향범위) — Slack이
+    # 버튼 클릭 payload에 원본 메시지를 그대로 실어 보내준다.
+    original_text = (payload.get("message") or {}).get("text", "")
 
     if not approval_id or decision not in {"APPROVE", "REJECT", "RECONSIDER"}:
         print("bad button value:", action.get("value"))
@@ -111,10 +118,10 @@ def lambda_handler(event, context):
         # 이미 누가 눌렀거나(동시 클릭), 폴링이 시간 초과로 이미 끝난 뒤다.
         # 두 번째 클릭은 무시한다 — 최초 결정이 이긴다.
         print("already decided, ignoring second click:", approval_id)
-        _update_slack_message(response_url, "⚠️ 이미 처리된 요청입니다.")
+        _update_slack_message(response_url, "⚠️ 이미 처리된 요청입니다.", original_text)
         return {"statusCode": 200, "body": ""}
 
     label = {"APPROVE": "✅ 승인", "REJECT": "❌ 거부", "RECONSIDER": "🤔 재고"}[decision]
-    _update_slack_message(response_url, f"{label} — @{user}")
+    _update_slack_message(response_url, f"{label} — @{user}", original_text)
     print("decided:", approval_id, decision, "by", user)
     return {"statusCode": 200, "body": ""}

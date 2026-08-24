@@ -207,15 +207,32 @@ resource "datadog_dashboard" "infra" {
       widget {
         note_definition {
           # 실측(2026-08-19): 이 org 에 `kubernetes.cpu.cfs.*` 가 메트릭
-          # 메타데이터 검색에조차 안 잡힌다 — "아직 안 쌓임"이 아니라 한 번도
-          # 전송된 적이 없다는 뜻이다. cAdvisor 는 컨테이너에 CPU **limit**
-          # (CFS 쿼터)이 걸려 있어야 이 값을 만든다. 지금 클러스터의 파드는
-          # 전부 `kube_qos:burstable`(request 만 있고 limit 없음)이라 쿼터
-          # 자체가 없다 — 그래서 스로틀링을 측정할 대상이 없다.
+          # 메타데이터 검색에조차 안 잡혔다. cAdvisor 는 컨테이너에 CPU
+          # **limit**(CFS 쿼터)이 걸려 있어야 이 값을 만드는데, 당시 클러스터의
+          # 파드가 전부 `kube_qos:burstable`(request 만 있고 limit 없음)이라
+          # 쿼터 자체가 없었다.
+          #
+          # **갱신(2026-08-24): 지표는 이제 존재한다. 다만 이 위젯에는 여전히
+          # 안 잡힌다.** KEDA 를 넣으면서(D-051) 그 Helm 차트가 자기 파드에
+          # `limits.cpu` 를 걸었고, 그것만으로 시계열이 생겼다.
+          #
+          #   avg:kubernetes.cpu.cfs.throttled.periods{*} by {kube_namespace}
+          #     -> kube_namespace:keda        (series 7, 전부 KEDA 파드)
+          #     -> kube_namespace:o2-dev      (없음)
+          #
+          # 이 위젯의 scope 는 `$kube_namespace`(= o2-dev)이므로 결론은 안
+          # 바뀐다 — **비어 있는 것이 여전히 정상이다.** 바뀐 것은 사유다.
+          # "이 org 에 그런 지표가 없다" 가 아니라 "우리 앱 파드에 limit 이
+          # 없다" 가 맞다. 아래 note 의 문장도 같이 고쳤다.
+          #
+          # 이 구분이 중요한 이유 — 명세 S2 는 느린 파드를 **정상 파드와
+          # 비교**해서 찾는다. 그러려면 정상 파드에도 넉넉한 limit 이 있어야
+          # 분모가 생기고, 시계열이 둘 이상이어야 `outliers()` 가 이상치를
+          # 낼 수 있다. KEDA 파드는 그 비교의 대상이 아니다.
           #
           # Terraform(이 스택)에서 고칠 수 있는 문제가 아니다. 매니페스트
-          # 저장소(O2-live-deploy)에서 컨테이너에 `resources.limits.cpu` 를
-          # 넣는 순간부터 아래 위젯이 채워진다. 그 전까지 비어 있는 것이 정상.
+          # 저장소(O2-live-deploy)에서 앱 컨테이너에 `resources.limits.cpu` 를
+          # 넣는 순간부터 아래 위젯이 채워진다.
           background_color = "gray"
           font_size        = "12"
           text_align       = "left"
@@ -224,9 +241,11 @@ resource "datadog_dashboard" "infra" {
 
           content = <<-EOT
             **아래 위젯은 지금 항상 비어 있다 — 쿼리 문제가 아니다.**
-            컨테이너에 CPU `limit` 이 하나도 없어서 cAdvisor 가 CFS 쿼터
-            지표를 만들 수 없다. `O2-live-deploy` 매니페스트에 `resources.
-            limits.cpu` 가 생기면 그때부터 값이 잡힌다.
+            이 네임스페이스의 컨테이너에 CPU `limit` 이 없어서 cAdvisor 가
+            CFS 쿼터 지표를 만들 수 없다. (`keda` 네임스페이스에는 값이
+            있다 — 그쪽 Helm 차트가 limit 을 걸어 둔다.)
+            `O2-live-deploy` 매니페스트에 `resources.limits.cpu` 가 생기면
+            그때부터 값이 잡힌다.
           EOT
         }
       }

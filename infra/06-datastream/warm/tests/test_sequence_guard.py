@@ -9,7 +9,7 @@
 줄이려고 `parallelization_factor` 를 올릴 때 이 파일이 왜 안 되는지를
 설명해 주는 것이 목적입니다.
 
-근거·결정은 D-058.
+근거·결정은 D-063.
 """
 
 from __future__ import annotations
@@ -61,9 +61,9 @@ def test_out_of_order_batch_on_the_same_shard_is_silently_lost():
     이 동작을 고치려면 번호를 구간이나 집합으로 들어야 하는데, 그러면
     저장 형식이 바뀌고 마이그레이션이 필요하다. 그래서 **고치는 대신
     이 상황을 만들지 않는 쪽**을 택했다 — parallelization_factor 를 1로
-    두고, 지연은 샤드 수로 푼다(D-058).
+    두고, 지연은 샤드 수로 푼다(D-063).
 
-    이 시험이 깨진다면 누군가 가드를 고쳤다는 뜻이고, 그때는 D-058 의
+    이 시험이 깨진다면 누군가 가드를 고쳤다는 뜻이고, 그때는 D-063 의
     제약도 같이 풀렸는지 확인해야 한다.
     """
     acc = WindowSketch("order-api", W)

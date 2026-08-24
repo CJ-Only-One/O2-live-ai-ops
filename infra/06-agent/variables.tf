@@ -223,6 +223,82 @@ variable "agent_entry_allowed_idempotency_keys" {
   }
 }
 
+# ── Incident Correlator (Phase 3B: 비활성) ───────────────────────
+
+variable "incident_correlator_max_concurrency" {
+  description = "Signal Queue를 직렬에 가깝게 처리하는 Correlator 예약 동시성 상한"
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.incident_correlator_max_concurrency >= 2 && var.incident_correlator_max_concurrency <= 10
+    error_message = "Lambda SQS scaling 하한과 상태 경합 상한을 고려해 2 이상 10 이하로 둔다."
+  }
+}
+
+variable "incident_correlator_execution_enabled" {
+  description = "Phase 3C 합성 상관관계 E2E에서만 true로 바꾸는 Correlator 실행 게이트"
+  type        = bool
+  default     = false
+}
+
+variable "incident_correlator_event_source_enabled" {
+  description = "Phase 3C 합성 상관관계 E2E에서만 true로 바꾸는 Signal Queue event source 게이트"
+  type        = bool
+  default     = false
+}
+
+variable "incident_correlation_window_seconds" {
+  description = "두 source event time을 같은 OPEN Incident 후보로 볼 시간창. Phase 3C 실측 전 기본값 0"
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.incident_correlation_window_seconds >= 0 && floor(var.incident_correlation_window_seconds) == var.incident_correlation_window_seconds
+    error_message = "correlation window는 0 이상의 정수 초여야 한다. 0이면 Correlator를 활성화할 수 없다."
+  }
+}
+
+variable "incident_correlator_allowed_idempotency_keys" {
+  description = "Phase 3C에서 상태 접근을 허용할 합성 source idempotency key. 활성화 시 1~3개"
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for value in var.incident_correlator_allowed_idempotency_keys :
+      can(regex("^(chat:cand_[0-9A-HJKMNP-TV-Z]{26}|datadog:[^,:]{1,128}:(Triggered|Re-Triggered|Recovered|Warn|No Data|Renotify))$", value))
+    ])
+    error_message = "Correlator allowlist는 합성 chat:cand_<ULID> 또는 datadog:<cycle>:<transition> 형식만 허용한다."
+  }
+}
+
+variable "incident_chat_surface_map" {
+  description = "Chat suspected_surface를 source 독립 상관관계 차원으로 바꾸는 고정 mapping"
+  type = map(object({
+    symptom_family    = string
+    suspected_surface = string
+    service           = string
+  }))
+  default = {
+    READ_PATH = {
+      symptom_family    = "LATENCY"
+      suspected_surface = "READ_PATH"
+      service           = "api"
+    }
+  }
+}
+
+variable "incident_datadog_monitor_map" {
+  description = "Datadog monitor_id를 상관관계 차원으로 바꾸는 명시 mapping. Phase 3B 기본값은 비어 있음"
+  type = map(object({
+    symptom_family    = string
+    suspected_surface = string
+    service           = string
+  }))
+  default = {}
+}
+
 # ── Slack 승인 중계 Lambda ───────────────────────────────────────
 
 variable "slack_approval_secret_name" {
@@ -264,6 +340,27 @@ variable "runbook_lookup_secret_name" {
   EOT
   type        = string
   default     = "o2/dev/runbook-lookup"
+}
+
+# ── 조치 실행기 (Scale Executor) ───────────────────────────────────
+
+variable "scale_executor_secret_name" {
+  description = <<-EOT
+    조치 실행기(action_executor.tf) Lambda 가 실행 시점에 읽는
+    **Secrets Manager 시크릿 이름**.
+
+    값이 아니라 이름만 참조한다. 시크릿은 apply 전에 손으로 한 번 만든다.
+    키 하나가 필요하다:
+
+      scale-executor-api-key   임의로 정하는 값. Dify 의
+                                SCALE_EXECUTOR_API_KEY 환경변수와 반드시 같아야 한다
+
+      aws secretsmanager create-secret --name o2/dev/scale-executor \
+        --secret-string '{"scale-executor-api-key":"..."}' \
+        --region ap-northeast-2
+  EOT
+  type        = string
+  default     = "o2/dev/scale-executor"
 }
 
 # ── Session Manager ──────────────────────────────────────────────
