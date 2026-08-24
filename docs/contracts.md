@@ -501,6 +501,8 @@ Peak 20 msg/s × 3,600초 = 방송당 72,000건, 건당 400바이트면 약 29 M
 
 이렇게 두면 warm에 코드를 더하지 않아도 `failure_rate{event:chat.send}`와
 `failure_codes`가 그대로 나온다. `coupon.issue`가 쓰는 경로를 그대로 타기 때문이다.
+S1 복구 판정에는 실패 사유 내부 분포가 아니라 전체 발화 대비 채널 차단률이
+필요하므로, warm이 추가로 고정 스칼라 `channel_limited_rate`를 계산한다.
 
 `chat.send`는 SDK가 발행하지 않으므로(위 "Node에서의 발행") SDK의 `EVENT_NAMES`나
 warm의 `PAYLOAD_FIELDS`에는 넣지 않는다. 그 두 곳은 SDK `emit` 함수와 1:1로 묶여

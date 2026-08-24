@@ -40,12 +40,62 @@
 // 계층별 흡수율(12.2)은 k6 가 아니라 Datadog 쪽에서 본다.
 
 import http from 'k6/http';
-import { check } from 'k6';
+import { check, sleep } from 'k6';
+import exec from 'k6/execution';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8000';
 const BROADCAST_ID = __ENV.BROADCAST_ID || 'bc_1042'; // LIVE + ON_SALE 상품이 있는 것
 const RATE = Number(__ENV.RATE || 50);
 const DURATION = __ENV.DURATION || '60s';
+const PATTERN = __ENV.PATTERN || 'plain';
+const JITTER_MS = Number(__ENV.JITTER_MS || 0);
+const EMIT_CLIENT_EVENTS = __ENV.EMIT_CLIENT_EVENTS === 'true';
+
+if (!['plain', 'human', 'ambiguous'].includes(PATTERN)) {
+  throw new Error(`지원하지 않는 PATTERN=${PATTERN}`);
+}
+if (PATTERN !== 'plain') {
+  if (!__ENV.JITTER_MS || JITTER_MS <= 0) {
+    throw new Error(`${PATTERN} 패턴에는 -e JITTER_MS=... 입력이 필요합니다`);
+  }
+  if (!EMIT_CLIENT_EVENTS) {
+    throw new Error(`${PATTERN} 패턴에는 -e EMIT_CLIENT_EVENTS=true가 필요합니다`);
+  }
+}
+
+// 실제 브라우저가 보낼 법한 값만 섞는다. X-Scenario 같은 식별 헤더는 Agent가
+// 정답 라벨로 읽을 수 있으므로 만들지 않는다.
+const USER_AGENTS = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/127 Safari/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
+  'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/127 Mobile Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.5 Safari/605.1.15',
+];
+
+let humanEntered = false;
+
+function requestContext() {
+  if (PATTERN === 'plain') return { headers: {}, shouldEnter: false };
+
+  const vu = exec.vu.idInTest;
+  const iteration = exec.scenario.iterationInTest;
+  const fresh = `${Date.now()}-${vu}-${iteration}-${Math.floor(Math.random() * 1e9)}`;
+  const session = PATTERN === 'human' ? `viewer-${vu}` : `viewer-${fresh}`;
+  const uaIndex = PATTERN === 'human' ? vu % USER_AGENTS.length : Math.floor(Math.random() * USER_AGENTS.length);
+
+  // human은 VU별 세션을 유지하고 최초 진입만 발행한다. ambiguous는 자동화가
+  // 요청마다 새 세션·UA를 골라 사용자 집중도와 규칙성을 의도적으로 흐린다.
+  const shouldEnter = PATTERN === 'ambiguous' || !humanEntered;
+  if (PATTERN === 'human') humanEntered = true;
+
+  return {
+    headers: {
+      'x-session-key': session,
+      'user-agent': USER_AGENTS[uaIndex],
+    },
+    shouldEnter,
+  };
+}
 
 export const options = {
   scenarios: {
@@ -94,7 +144,25 @@ export const options = {
 };
 
 export default function () {
-  const res = http.get(`${BASE_URL}/api/broadcasts/${BROADCAST_ID}`);
+  const ctx = requestContext();
+  if (PATTERN !== 'plain') sleep((Math.random() * JITTER_MS) / 1000);
+
+  if (ctx.shouldEnter) {
+    const eventRes = http.post(
+      `${BASE_URL}/api/broadcasts/${BROADCAST_ID}/events`,
+      JSON.stringify({ events: [{ action: 'LIVE_ENTER' }] }),
+      {
+        headers: { ...ctx.headers, 'content-type': 'application/json' },
+        tags: { name: 'client_enter' },
+      },
+    );
+    check(eventRes, { 'client event accepted': (r) => r.status === 202 });
+  }
+
+  const res = http.get(`${BASE_URL}/api/broadcasts/${BROADCAST_ID}`, {
+    headers: ctx.headers,
+    tags: { name: 'read_snapshot' },
+  });
   check(res, {
     '200': (r) => r.status === 200,
     // 상태 코드만 보면 빈 껍데기 응답을 통과시킨다. 캐시가 깨졌을 때

@@ -67,10 +67,48 @@ const SOCKETS_PER_VU = Number(__ENV.SOCKETS_PER_VU || 50);
 // 임계 허용치. 인원의 0.5%, 최소 2건.
 const TOLERANCE = Math.max(2, Math.ceil(VIEWERS * 0.005));
 
+// baseline은 M-010 재측정용 고정 발화율, s1은 첫 파동 뒤 지속 고원을 만드는
+// 시나리오 주입용이다. s1에서 수치를 기본값으로 두면 미측정 값을 누군가
+// 그대로 운영 기준으로 오해하므로 전부 명시하게 한다.
+const PROFILE = __ENV.PROFILE || 'baseline';
+if (!['baseline', 's1'].includes(PROFILE)) throw new Error(`지원하지 않는 PROFILE=${PROFILE}`);
+
 const CHAT_RPS = Number(__ENV.CHAT_RPS || 10);
-// 발화자당 분당 10 건 = 상한 20 의 절반. 그래서 필요한 발화자 수는 CHAT_RPS×6.
+const SPIKE_RPS = Number(__ENV.SPIKE_RPS || 0);
+const SPIKE_S = Number(__ENV.SPIKE_S || 0);
+const PLATEAU_RPS = Number(__ENV.PLATEAU_RPS || CHAT_RPS);
+const MAX_RPS = PROFILE === 's1' ? Math.max(SPIKE_RPS, PLATEAU_RPS) : CHAT_RPS;
+
+if (PROFILE === 's1') {
+  for (const name of ['SENDERS', 'SPIKE_RPS', 'SPIKE_S', 'PLATEAU_RPS', 'CHAT_P95_MAX_MS']) {
+    if (!__ENV[name]) throw new Error(`PROFILE=s1에는 -e ${name}=... 입력이 필요합니다`);
+  }
+  if (SPIKE_S >= Number(__ENV.HOLD_S || 300)) {
+    throw new Error('SPIKE_S는 HOLD_S보다 작아야 지속 고원 구간이 남습니다');
+  }
+}
+
+// baseline 기본값은 과거 M-010과 비교하기 위해 유지한다. S1은 SENDERS를
+// 반드시 직접 주며, 아래 검증이 발화자별 분당 한도를 넘으면 시작 전에 막는다.
 const SENDERS = Number(__ENV.SENDERS || CHAT_RPS * 6);
-const SEND_PERIOD_MS = Math.round((SENDERS / CHAT_RPS) * 1000);
+const CHAT_RATE_PER_MIN = Number(__ENV.CHAT_RATE_PER_MIN || 20);
+if (!Number.isFinite(MAX_RPS) || MAX_RPS <= 0 || !Number.isInteger(SENDERS) || SENDERS <= 0) {
+  throw new Error('발화율은 양수, SENDERS는 양의 정수여야 합니다');
+}
+if (PROFILE === 's1' && (!Number.isFinite(SPIKE_S) || SPIKE_S <= 0)) {
+  throw new Error('SPIKE_S는 양수여야 합니다');
+}
+const CHAT_P95_MAX_MS = Number(__ENV.CHAT_P95_MAX_MS || 1000);
+if (!Number.isFinite(CHAT_P95_MAX_MS) || CHAT_P95_MAX_MS <= 0) {
+  throw new Error('CHAT_P95_MAX_MS는 양수여야 합니다');
+}
+if (SENDERS > VIEWERS) throw new Error(`SENDERS(${SENDERS})가 VIEWERS(${VIEWERS})보다 많습니다`);
+if (PROFILE === 's1' && (MAX_RPS * 60) / SENDERS >= CHAT_RATE_PER_MIN) {
+  throw new Error(
+    `발화자당 ${((MAX_RPS * 60) / SENDERS).toFixed(2)}회/분으로 ` +
+      `개인 한도 ${CHAT_RATE_PER_MIN} 미만이 아닙니다. SENDERS를 늘리세요`,
+  );
+}
 
 const RAMP_S = Number(__ENV.RAMP_S || 30); // 방송 시작 30초 내 만재 (12.1)
 const HOLD_S = Number(__ENV.HOLD_S || 300);
@@ -132,7 +170,7 @@ export const options = {
     ws_opened: [`count>=${VIEWERS - TOLERANCE}`],
     // 깨진 프레임은 조용히 넘기면 안 된다. 배치 포맷이 깨진 신호다.
     chat_bad_frames: [`count<${TOLERANCE}`],
-    chat_latency_ms: ['p(95)<1000'],
+    chat_latency_ms: [`p(95)<${CHAT_P95_MAX_MS}`],
   },
 };
 
@@ -208,16 +246,33 @@ export function viewer() {
 export function sender() {
   const holdMs = HOLD_S * 1000;
   const ws = open(holdMs, null);
+  const phaseStartedAt = Date.now();
+
+  function currentRate() {
+    if (PROFILE !== 's1') return CHAT_RPS;
+    return Date.now() - phaseStartedAt < SPIKE_S * 1000 ? SPIKE_RPS : PLATEAU_RPS;
+  }
+
+  function periodMs() {
+    return Math.max(1, Math.round((SENDERS / currentRate()) * 1000));
+  }
+
   // 발화자끼리 시각을 흩는다. 다 같이 쏘면 한 틱에 몰려 평시가 아니라
-  // 스파이크를 재게 된다.
-  const offset = Math.round(Math.random() * SEND_PERIOD_MS);
+  // 의도하지 않은 추가 스파이크가 생긴다. S1의 스파이크는 SPIKE_RPS로만 만든다.
+  const offset = Math.round(Math.random() * periodMs());
 
   function fire() {
+    // offset이 아주 짧으면 WebSocket handshake보다 먼저 도착할 수 있다. 기존
+    // 코드는 그 한 번에 return해 해당 발화자가 실행 내내 0건이 됐다.
+    if (ws.readyState === 0) {
+      setTimeout(fire, 50);
+      return;
+    }
     if (ws.readyState !== 1) return;
     // 앞자리가 발화 시각. 수신 쪽이 이걸로 전파 지연을 계산한다.
     ws.send(JSON.stringify({ t: 'chat', msg: `${Date.now()}|부하테스트 발화` }));
     chatSent.add(1);
-    setTimeout(fire, SEND_PERIOD_MS);
+    setTimeout(fire, periodMs());
   }
   setTimeout(fire, offset);
 }

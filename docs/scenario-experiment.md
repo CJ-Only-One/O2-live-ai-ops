@@ -19,6 +19,7 @@
 | 1 | 복구 판정 — 규칙 둘, 시나리오별 기준 |
 | 2 | 장애 주입 — 지켜야 할 것 넷, 시나리오별 설정 |
 | 3 | 실행 사이 초기화 |
+| 4 | 실행 Runbook — 주입·원복 명령과 입력값 안전장치 |
 
 ---
 
@@ -298,7 +299,7 @@ revision을 분석한다.
 |---|---|---|
 | **S1** | `broadcast.js` 로 `아이템/s = 시청자 × 발화율` 을 M-010 붕괴점 위로. **연결 축**으로 올린다 — 같은 총량이면 연결이 많을수록 확실히 무너진다(M-010 해석 2) | **발화자를 넓게 퍼뜨린다.** 기존 조건(`발화자 수 = 채팅율 × 6`)은 발화자가 좁아 **1인 도배로 보인다.** 전제는 *전원이 한도 안인데 인원이 많아 총량이 넘는다* 이므로, 발화자를 늘리고 1인당 발화율을 낮춰 **전원이 `CHAT_RATE_PER_MIN` 아래**가 되게 한다.<br>파형은 **첫 파동 + 지속 고원** — 지금은 고정 발화율이라 추가해야 한다 |
 | **S2** | canary Deployment 를 같은 Service 에 붙인다. main 과 **같은 이미지·같은 셀렉터, CPU 상한만** 낮게. 부하는 `read-path.js` 고정 도착률 | **CPU 상한 값 잡기** — 총 부하를 총 포화 아래로 두고, `파드당 RPS × M-009 기울기` 로 필요 CPU 를 구한 뒤 그보다 낮은 구간을 스윕해 **Ready 는 유지되면서 파드별 p95 가 이상치로 뜨는 값**을 고른다.<br>너무 낮으면 파드가 Service 에서 빠져 저절로 회복된다 — **canary 에만** `readinessProbe` 의 `timeoutSeconds`·`failureThreshold` 를 올려 창을 넓힌다 |
-| **S3** | 읽기 스크립트를 사람/자동화 두 갈래로. **가르는 신호를 지우는 방향**으로 — 요청마다 새 세션 키, 클릭 이벤트 동반, 간격에 지터, UA 섞기 | 두 패턴이 쉽게 갈리면 정보 게이트가 안 열린다. 지표 이름은 `o2warm/metrics.py` 가 원본이다 |
+| **S3** | `read-path.js`를 `human`/`ambiguous` 두 갈래로 실행한다. **가르는 신호를 지우는 방향**으로 — 요청마다 새 세션 키, 실제 계약의 `LIVE_ENTER` 이벤트, 간격 지터, UA 혼합 | 읽기 요청과 무관한 구매 클릭을 위조하지 않는다. 두 패턴이 쉽게 갈리면 정보 게이트가 안 열린다. 지표 이름은 `o2warm/metrics.py` 가 원본이다 |
 
 **파드별 지연 지표는 새로 만들지 않는다.** 봉투에 `pod_name` 이 이미 있고(T-023)
 warm path 가 이미 파드별로 집계한다(`sketch.py` 의 `cache_hit_by_pod`).
@@ -341,3 +342,109 @@ Argo 는 `selfHeal` 이 켜져 있어(`04-platform/argocd.tf`) 매니페스트�
 
 > Agent 가 replica 수를 **자유롭게 만들어 적용하지 않는다**(D-041).
 > 증설은 런북이 지정한 **한 단계**이고, 상한과 예산은 노브 카탈로그 조회로 정해진다.
+
+---
+
+## 4. 실행 Runbook
+
+아래 명령은 저장소 루트 `O2-live-ai-ops`에서 실행한다. `<M-0NN 값>`은
+`docs/measurements.md`에 기록된 값으로만 바꾼다. 자리표시자를 그대로 두거나 값이
+없으면 실행하지 않는다.
+
+### 4.1 공통 사전 검사
+
+```bash
+kubectl config current-context
+kubectl get deploy api chat-gateway -n o2-dev -o wide
+kubectl get endpointslice -n o2-dev -l kubernetes.io/service-name=api -o wide
+kubectl top nodes
+```
+
+측정 단계에서는 관련 Datadog 모니터를 Downtime으로 두고, 장애 주입 직전에
+Downtime을 해제한다. API 키나 모니터 ID를 저장소 스크립트에 넣지 않는다.
+
+### 4.2 S1 — 첫 파동과 지속 고원
+
+```bash
+PROFILE=s1 \
+WS_URL='wss://<현재-ALB>' \
+VIEWERS='<측정 프로필>' \
+SENDERS='<개인 한도 미만이 되는 발화자 수>' \
+SPIKE_RPS='<M-010 기반 첫 파동 RPS>' \
+SPIKE_S='<첫 파동 지속 초>' \
+PLATEAU_RPS='<M-010 붕괴점 위 지속 RPS>' \
+CHAT_P95_MAX_MS='<실측 복구 기준>' \
+k6 run -e PROFILE -e WS_URL -e VIEWERS -e SENDERS -e SPIKE_RPS -e SPIKE_S \
+  -e PLATEAU_RPS -e CHAT_P95_MAX_MS loadtest/broadcast.js
+```
+
+스크립트는 `SENDERS`, 파형, p95 기준을 생략하거나 발화자별 분당 발화가
+`CHAT_RATE_PER_MIN` 이상이면 시작 전에 실패한다. 채널 제한 원복은 다음과 같다.
+
+```bash
+curl -fsS -X POST "$CHAT_GATEWAY_ADMIN_URL" \
+  -H "x-admin-key: $CHANNEL_LIMIT_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"broadcast_id":"bc_1042","action":"clear"}'
+```
+
+### 4.3 S2 — CPU 제한 canary
+
+canary는 운영 `api-deployment.yaml`을 Kustomize base로 읽으므로 이미지·환경변수·
+ServiceAccount가 main과 같다. CPU와 probe 값은 실측 입력이 없으면 렌더링조차 막는다.
+
+```bash
+CANARY_CPU_LIMIT='<측정값>' \
+CANARY_READINESS_TIMEOUT_SECONDS='<측정값>' \
+CANARY_READINESS_FAILURE_THRESHOLD='<측정값>' \
+loadtest/s2-canary.sh render > /tmp/o2-s2-api-canary.yaml
+
+kubectl diff -f /tmp/o2-s2-api-canary.yaml
+kubectl apply -f /tmp/o2-s2-api-canary.yaml
+kubectl rollout status deploy/api-canary -n o2-dev --timeout=180s
+```
+
+원복은 canary 제거와 main 기준값 복원 둘 다 수행한다. Argo CD는 api의
+`/spec/replicas`를 무시하므로 자동 원복하지 않는다.
+
+```bash
+loadtest/s2-canary.sh remove
+kubectl scale deploy/api -n o2-dev --replicas=2
+kubectl rollout status deploy/api -n o2-dev --timeout=180s
+```
+
+### 4.4 S3 — 사람과 구별하기 어려운 읽기 부하
+
+```bash
+BASE_URL='https://<현재-ALB>' RATE='<M-009 아래 시작값>' DURATION='60s' \
+PATTERN=human JITTER_MS='<측정값>' EMIT_CLIENT_EVENTS=true \
+k6 run -e BASE_URL -e RATE -e DURATION -e PATTERN -e JITTER_MS \
+  -e EMIT_CLIENT_EVENTS loadtest/read-path.js
+
+BASE_URL='https://<현재-ALB>' RATE='<동일 RPS>' DURATION='60s' \
+PATTERN=ambiguous JITTER_MS='<동일 지터 범위>' EMIT_CLIENT_EVENTS=true \
+k6 run -e BASE_URL -e RATE -e DURATION -e PATTERN -e JITTER_MS \
+  -e EMIT_CLIENT_EVENTS loadtest/read-path.js
+```
+
+`human`은 VU별 세션을 유지하고, `ambiguous`는 요청마다 새 세션과 UA를 선택한다.
+둘 다 운영 계약의 `x-session-key`, `User-Agent`, `LIVE_ENTER`만 사용하며 정답을
+노출하는 커스텀 헤더를 넣지 않는다. 읽기 저하 노브 원복은 다음과 같다.
+
+```bash
+curl -fsS -X POST "$API_ADMIN_URL" \
+  -H "x-admin-key: $READ_PATH_DEGRADED_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"broadcast_id":"bc_1042","action":"clear"}'
+```
+
+### 4.5 다음 실행 전 확인
+
+```bash
+test "$(kubectl get deploy api -n o2-dev -o jsonpath='{.spec.replicas}')" = '2'
+test -z "$(kubectl get deploy api-canary -n o2-dev --ignore-not-found -o name)"
+kubectl get endpointslice -n o2-dev -l kubernetes.io/service-name=api -o wide
+```
+
+마지막으로 Datadog 모니터가 `OK`인지, k6 `dropped_iterations`가 허용 범위인지,
+Karpenter 임시 노드가 남지 않았는지 확인한 뒤 다음 시나리오로 넘어간다.

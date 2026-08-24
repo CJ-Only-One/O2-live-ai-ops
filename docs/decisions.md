@@ -82,6 +82,8 @@
 | D-065 | 큐시트 저장은 형식을 검증하지 않는다 — 쓰기 경로가 사람뿐일 때까지만 | `cue_sheet.py`, jsonschema 런타임 의존성 보류, API 라우트·AI 해석 붙일 때 재검토 |
 | D-066 | Datadog Shadow는 cycle key가 아니라 합성 monitor ID로 격리한다 | `$ALERT_CYCLE_KEY`, 사전 미확정 값, monitor allowlist, 실제 치환 검증 |
 | D-067 | 노브 카탈로그는 새 테이블이 아니라 runbook 테이블의 KNOB 파티션에 둔다 | 게이트 진입 결정론화, 노브 축, 런북 없는 조치, 안 잰 값은 `None`+`measured` |
+| D-068 | S2 canary는 Deployment selector가 아니라 전용 Service 멤버십 라벨로 합류한다 | selector 충돌 방지, sync wave, Kustomize base, 실측 입력 강제, Argo replica 예외 |
+| D-069 | S1 차단률은 failure_codes 분포가 아니라 전체 chat.send 시도에서 계산한다 | CHANNEL_LIMITED, 전체 시도 분모, 고정 스칼라, Datadog 검증 축 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4173,3 +4175,63 @@ S1 이 대가 게이트 시나리오인 것이 여기서 데이터로 나온다 
 
 ACTION 아이템의 `risk_level` 은 Node 11 이 이미 읽고 있어 지금은 그대로 둔다.
 Node 11 이 병합된 `knob` 을 읽게 되면 그때 ACTION 쪽 사본을 지운다.
+
+---
+
+## D-068. S2 canary는 Deployment selector가 아니라 전용 Service 멤버십 라벨로 합류한다
+
+S2는 main과 같은 Service에 느린 canary 하나를 붙여야 한다. 처음 설계 문구의
+"같은 셀렉터"를 Deployment selector까지 같다는 뜻으로 구현하면 두 ReplicaSet의
+selector가 겹친다. 컨트롤러가 서로의 Pod를 세거나 입양하는 조건이 생기므로 실험이
+아니라 컨트롤러 충돌을 주입하게 된다.
+
+Service가 고르는 축과 Deployment가 소유하는 축을 분리한다.
+
+| 대상 | selector/label |
+|---|---|
+| main Deployment | `app.kubernetes.io/name=api` |
+| canary Deployment | `app.kubernetes.io/name=api-canary` |
+| api Service | `o2.cj.io/api-service-member=true` |
+| main·canary Pod | 위 Service 멤버십 라벨을 둘 다 가짐 |
+
+기존 Service selector를 바꾸는 순간 새 라벨 Pod가 아직 없으면 Endpoint가 0이 된다.
+api Deployment를 Argo sync wave `-1`, Service를 `0`으로 두어 새 라벨 main Pod가
+Healthy가 된 뒤 Service를 전환한다.
+
+canary 매니페스트에 이미지를 복사하지 않는다. `O2-live-deploy/api-deployment.yaml`을
+Kustomize base로 읽어 이미지·환경변수·Secret·ServiceAccount를 항상 main과 맞춘다.
+실험 디렉터리는 Argo Application의 `recurse=false` 범위 밖이라 자동 배포되지 않는다.
+
+CPU limit과 readiness timeout/failure threshold는 실측 전이라 저장소에 기본값을 넣지
+않는다. `loadtest/s2-canary.sh`가 세 값을 모두 요구하고, 없으면 render/apply 전에
+실패한다. 따라서 자리값이 실험 기준으로 굳지 않는다.
+
+main의 정상 replicas `2`는 Git에 남긴다. 실험 중 `2 -> 3 -> 2`를 허용하려고
+Argo Application에 api `/spec/replicas`만 `ignoreDifferences`로 두고
+`RespectIgnoreDifferences=true`를 켠다. Argo가 원복하지 않으므로 최종 `2` 복원과
+재검증은 Runbook의 책임이다.
+
+---
+
+## D-069. S1 차단률은 failure_codes 분포가 아니라 전체 chat.send 시도에서 계산한다
+
+S1은 전파 지연이 회복돼도 정상 사용자 발화를 과도하게 막았으면 실패다. 기존
+`failure_codes`는 실패 사유끼리의 분포다. 모든 실패가 `CHANNEL_LIMITED`면 값이
+1.0이지만, 전체 발화 10,000건 중 1건만 실패했는지 9,000건이 실패했는지는 말하지
+못한다.
+
+복구 판정 지표는 다음처럼 계산한다.
+
+```text
+channel_limited_rate =
+  chat.send의 failure_code=CHANNEL_LIMITED 건수
+  / result를 실은 chat.send 전체 성공·실패 건수
+```
+
+`result`를 성공에도 싣는 D-060 계약이 이 분모를 만든다. 값은 입력 문자열을 태그로
+펼치지 않는 고정 스칼라 `o2.warm.channel_limited_rate`로 Datadog에 보낸다.
+Agent의 S1 `Verifying`과 차단률 Monitor는 이 값을 읽고, `failure_codes`는 상세 원인
+분포로만 DynamoDB에서 본다.
+
+상한값은 아직 실측하지 않았다. 지표를 만들었다고 허용 가능한 사용자 피해가 정해진
+것은 아니므로 `measurements.md`에 강도별 결과를 남긴 뒤 Runbook threshold를 채운다.

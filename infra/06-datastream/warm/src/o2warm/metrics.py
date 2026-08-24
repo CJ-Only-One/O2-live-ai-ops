@@ -121,6 +121,20 @@ def overall_failure(sk: WindowSketch) -> tuple[int, int]:
     return attempts, failed
 
 
+def failure_code_rate(sk: WindowSketch, event: str, code: str) -> float | None:
+    """특정 실패 사유 / 해당 이벤트 전체 시도.
+
+    `failure_codes`는 실패 사유끼리의 분포라 `CHANNEL_LIMITED=1.0`이어도 전체
+    발화 중 1%가 막힌 것인지 90%가 막힌 것인지 알 수 없습니다. S1 성공 판정은
+    정상 사용자 차단률 자체가 필요하므로 result 전체를 분모로 다시 계산합니다.
+    """
+    attempts = sum(
+        count for key, count in sk.results.items() if key.startswith(f"{event}|")
+    )
+    blocked = sk.failures.get(f"{event}|{code}", 0)
+    return _ratio(blocked, attempts)
+
+
 def segment_view(sk: WindowSketch) -> dict:
     """축별·값별 시도·실패·실패율."""
     out: dict[str, dict] = {}
@@ -302,6 +316,9 @@ def derive(
 
         "failure_rate": fail_rates,
         "failure_codes": fail_codes,
+        # S1 정확 축. failure_codes 맵은 실패 사유 내부 분포라 차단률이 아니다.
+        # 별도 scalar여야 Datadog Monitor와 Agent 검증 쿼리가 직접 읽을 수 있다.
+        "channel_limited_rate": failure_code_rate(sk, "chat.send", "CHANNEL_LIMITED"),
 
         "pg_latency_ratio": sk.pg_ratio.quantile(0.5),
         "pg_samples": sk.pg_ratio.count,
@@ -399,4 +416,5 @@ DATADOG_SCALARS = (
     "fallback_rate",
     "cancel_rate",
     "overall_failure_rate",
+    "channel_limited_rate",
 )

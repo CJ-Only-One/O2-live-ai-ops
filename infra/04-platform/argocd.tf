@@ -134,6 +134,19 @@ resource "helm_release" "argocd_apps" {
           server    = "https://kubernetes.default.svc"
           namespace = "o2-dev"
         }
+        # S2에서 api replicas를 런북이 일시적으로 2 -> 3 -> 2로 바꾼다.
+        # 정상 기준값 2는 Git에 남겨야 하므로 필드를 지우지 않고, 이 필드만
+        # selfHeal 대상에서 제외한다. 실험 종료 시 원복은 상태 머신/Runbook의
+        # 책임이다(docs/scenario-experiment.md 3절).
+        ignoreDifferences = [
+          {
+            group        = "apps"
+            kind         = "Deployment"
+            name         = "api"
+            namespace    = "o2-dev"
+            jsonPointers = ["/spec/replicas"]
+          },
+        ]
         syncPolicy = {
           automated = {
             # Git에 없는 리소스를 클러스터에서 지운다.
@@ -141,7 +154,8 @@ resource "helm_release" "argocd_apps" {
             # kubectl로 손댄 것을 되돌린다. Git을 유일한 진실로 만드는 스위치.
             selfHeal = true
           }
-          syncOptions = ["CreateNamespace=true"]
+          # ignoreDifferences를 diff 화면에만 숨기지 않고 실제 sync에도 적용한다.
+          syncOptions = ["CreateNamespace=true", "RespectIgnoreDifferences=true"]
           retry = {
             limit = 3
             backoff = {

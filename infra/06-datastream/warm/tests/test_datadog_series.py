@@ -116,3 +116,31 @@ def test_latency_p99_is_emitted():
     assert by_name["o2.warm.latency_p99"] > 5000
     # p95 는 꼬리를 못 본다 — 이것이 p99 를 따로 보내는 이유다.
     assert by_name["o2.warm.latency_p95"] < 500
+
+
+def test_channel_limited_rate_uses_all_chat_attempts_as_denominator():
+    """실패 사유 내부 분포가 아니라 전체 정상 사용자 발화 대비 차단률이어야 한다."""
+    events = []
+    for i in range(8):
+        events.append(
+            factory.envelope(
+                "chat.send", factory.BASE + i / 10,
+                service="chat-gateway", user=f"u{i}",
+                payload={"result": "SUCCESS", "msg_length": 10, "msg_hash": f"h{i}", "is_duplicate": False},
+            )
+        )
+    for i in range(2):
+        events.append(
+            factory.envelope(
+                "chat.send", factory.BASE + 1 + i / 10,
+                service="chat-gateway", user=f"ub{i}",
+                payload={
+                    "result": "FAILED", "failure_code": "CHANNEL_LIMITED",
+                    "msg_length": 10, "msg_hash": f"hb{i}", "is_duplicate": False,
+                },
+            )
+        )
+
+    series = _series_for(events, service="chat-gateway")
+    metric = next(s for s in series if s["metric"] == "o2.warm.channel_limited_rate")
+    assert metric["points"][0]["value"] == 0.2
