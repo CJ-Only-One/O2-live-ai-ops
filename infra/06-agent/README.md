@@ -187,9 +187,21 @@ code hash만 변경한다. 저장 plan은 병합 전 커밋 기준이라 apply�
 
 Phase 4E는 시나리오 4의 `role:page` 캐시 흡수 실패 composite monitor 한 개만
 `LATENCY/READ_PATH/api`로 매핑한다(D-072). sub monitor 둘은 중복, 주문 p95 monitor는 경로
-오분류 때문에 제외한다. mapping은 구현했지만 아직 적용하지 않았고 신규 Shadow webhook도
-운영 monitor에 붙이지 않는다. 병합 전 targeted plan은 `0 add / 1 change / 0 destroy`이며
-비활성 Correlator의 mapping 환경변수만 바뀐다.
+오분류 때문에 제외한다. 병합 후 targeted apply `0 add / 1 change / 0 destroy`로 비활성
+Correlator의 mapping 환경변수만 반영했다. update `Successful`, 모든 실행 gate와 event source
+disabled, Queue·DLQ·state 0, 대상 재-plan `No changes`를 확인했다. 신규 Shadow webhook은 운영
+monitor에 붙이지 않았고 Agent/Dify 호출은 0건이다.
+
+Phase 4F는 초기 Shadow correlation window를 420초로 준비한다(D-073). 운영 Datadog monitor의
+5분 full window 300초와 관측된 Datadog Triggered tail 최대 69.474초를 60초 단위로 올린
+120초를 합한다. 이 값은 p95나 SLO가 아니다. 기계 판독 근거는
+`correlation-window-evidence.json`, drift 검증은
+`../../scripts/validate-incident-correlation-window.py`가 소유한다. 비활성 Correlator가 측정된
+window를 미리 가질 수 있도록 precondition을 완화하지만 실행 false·event source false·empty
+allowlist는 계속 강제한다. 병합 전에는 `0 → 420` 환경변수 한 개의 targeted plan만 검증한다.
+실제 state plan은 `0 add / 1 change / 0 destroy`였고, 421초와 enabled+empty allowlist 음성 plan은
+각각 validation과 precondition에서 거부됐다. 전체 plan의 기존 IAM 1개·Lambda 3개 update는
+계속 제외한다.
 
 ## Incident Correlator Phase 3B
 
