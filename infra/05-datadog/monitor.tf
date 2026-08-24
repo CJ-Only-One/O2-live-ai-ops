@@ -38,33 +38,38 @@ locals {
 }
 
 ###############################################################################
-# 시나리오 2 (조기 경보, Phase 2 — 기본 비활성) — 특가 오픈 캐스케이드의
-# 진짜 시작점
+# 시나리오 2 (조기 경보) — 특가 오픈 캐스케이드의 진짜 시작점
 #
 # 캐스케이드의 첫 도미노는 채팅 발화율이지 주문 API 가 아니다(트랜스크립트
 # 시간축: 채팅 인입 20→210 msg/s 가 T+6s, chat-gateway CPU 포화가 T+18s —
 # 12초 소요, 주문 p99 급등은 T+52s). chat.send 이벤트로 이 시작점을 잡는다는
-# 설계 자체는 맞다(contracts.md 5.1·5.3, service:chat-gateway 로 필터링한
-# rps_ratio) — 그런데 **지금은 이 이벤트가 Datadog까지 오지 않는다.**
+# 설계다(contracts.md 5.1·5.3, service:chat-gateway 로 필터링한 rps_ratio).
 #
-# `apps/chat-gateway/src/events.ts` 의 `emitChatSend()` 를 실측한 결과:
-#   - 기본 OFF: `EMIT_CHAT_EVENTS`(config.emitChatEvents)가 false 면 아예 안 냄
-#   - 켜도 목적지가 stdout: 코드 주석 그대로 "지금은 stdout 싱크다. Kinesis
-#     전환은 이 함수 안쪽만 바꾸면 된다" — 즉 Kinesis 로 가는 경로 자체가
-#     아직 없다. api 의 `O2_EVENTS_SINK` 같은 싱크 선택 로직도 없다
-#   - `04-platform/datadog.tf` 의 `logs.enabled = false` 라 stdout 도 Datadog
-#     이 못 줍는다 — D-027 이 이미 겪은 것과 같은 모양의 함정이다
+# **이 Monitor 는 켜져 있다**(`terraform.tfvars` 의
+# `enable_chat_ingest_monitor = true`). 아래는 그렇게 되기까지의 경위이고,
+# 여기 적힌 사유가 낡은 채로 남아 몇 주를 불필요하게 꺼져 있었다.
 #
-# 그래서 `o2.warm.rps_ratio{service:chat-gateway}` 는 지금 이 조직에 시계열
-# 자체가 없다. 이 Monitor 를 Phase 0 로 켜 두면 영구 No Data 로 조용히 죽는다
-# — 그게 오탐보다 나쁘다는 원칙(제안서 2절)을 그대로 적용해 게이트를 건다.
+# 2026-08-24 이전 이 자리에는 이런 사유가 적혀 있었다 —
+#   "켜도 목적지가 stdout 뿐이다. Kinesis 로 가는 경로 자체가 아직 없고,
+#    api 의 O2_EVENTS_SINK 같은 싱크 선택 로직도 없다."
 #
-# 활성화 순서(코드 변경, 이 Terraform 스택 범위 밖):
-#   1. `apps/chat-gateway`: `emitChatSend()` 안의 `process.stdout.write(...)`
-#      를 Kinesis PutRecord 로 바꾼다(스트림 이름은 `06-datastream` 소유)
-#   2. 배포 매니페스트(O2-live-deploy)에서 `EMIT_CHAT_EVENTS=true` 로 켠다
-#   3. Datadog Metrics Explorer 에서 `o2.warm.rps{service:chat-gateway}` 에
-#      시계열이 잡히는지 확인한 뒤 `enable_chat_ingest_monitor = true`
+# **그 서술은 그 사이 사실이 아니게 됐다.** `apps/chat-gateway/src/events.ts`
+# 에 `KinesisClient`·`PutRecordCommand` 가 들어왔고(`:16`),
+# `config.eventsSink === 'kinesis'` 분기가 있다(`:100`). 배포 환경변수도
+# 설정돼 실제로 흐른다 — 7일 구간에서
+# `o2.warm.rps{service:chat-gateway}` 와 `rps_ratio{service:chat-gateway}`
+# 가 둘 다 시계열을 갖는다(2026-08-24 API 조회).
+#
+# **교훈은 이 Monitor 가 아니라 주석에 대한 것이다.** 비활성 사유는 조건이
+# 해소되면 같이 고쳐야 한다. 안 고치면 "왜 꺼져 있지" 를 묻는 사람이 낡은
+# 답을 읽고 그대로 덮는다. `enable_aggregator_lag_monitor` 도 같은 일을
+# 겪었다(monitor_pipeline.tf).
+#
+# **임계값은 아직 근거가 없다.** `chat_rps_ratio_warning = 5` 는 옛
+# 트랜스크립트의 예시 숫자(20→210 msg/s)이지 실측이 아니다. 그리고
+# `rps_ratio` 는 EWMA 표본 30개(약 5분)가 쌓여야 값이 생기므로 **방송 시작
+# 직후에는 조기 경보가 안 나온다.** S1 이 "특가 오픈 순간" 을 노린다면 이
+# 워밍업 시간을 진행 순서에 넣어야 한다.
 ###############################################################################
 
 resource "datadog_monitor" "chat_ingest_surge" {

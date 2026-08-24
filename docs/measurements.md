@@ -1107,6 +1107,54 @@ sum:kubernetes_state.deployment.replicas_available{kube_namespace:o2-dev} by {ku
 파드가 하나면 S2("느린 파드 하나가 서비스 전체 꼬리를 끌어올린다")는 성립하지
 않는다. `api` 를 2개 이상으로 올리는 것이 **S2 의 마지막 전제**다.
 
+### CFS 지표는 이제 존재한다 — 다만 KEDA 파드만 (2026-08-24)
+
+`dashboard_infra.tf` 가 2026-08-19 에 *"이 org 에 `kubernetes.cpu.cfs.*` 가
+메트릭 메타데이터 검색에조차 안 잡힌다"* 고 적어 뒀는데 **그 사이 바뀌었다.**
+
+```
+avg:kubernetes.cpu.cfs.throttled.periods{*} by {kube_namespace}
+  -> kube_namespace:keda     series 7 (전부 KEDA 파드)
+  -> kube_namespace:o2-dev   없음
+```
+
+KEDA 를 넣으면서(D-051) 그 Helm 차트가 자기 파드에 `limits.cpu` 를 걸었고,
+그것만으로 시계열이 생겼다. **앱 네임스페이스(`o2-dev`)에는 여전히 없다.**
+
+결론은 안 바뀐다 — 대시보드 위젯은 `o2-dev` scope 라 여전히 빈다. 바뀐 것은
+**사유**다. "이 org 에 그런 지표가 없다" 가 아니라 "우리 앱 파드에 limit 이
+없다" 가 맞다.
+
+이 구분이 S2 에 중요하다. 명세 S2 는 느린 파드를 **정상 파드와 비교**해서
+찾는다. 정상 파드에도 넉넉한 limit 이 있어야 분모가 생기고, 시계열이 둘
+이상이어야 `outliers()` 가 이상치를 낼 수 있다. **KEDA 파드는 그 비교의
+대상이 아니다.**
+
+### 채팅 이벤트는 이미 Kinesis 로 흐른다 (2026-08-24)
+
+`monitor.tf` 가 `chat_ingest_surge` 를 껐던 사유(*"목적지가 stdout 뿐이라
+Kinesis 로 가는 경로 자체가 없다"*)도 낡아 있었다. 7일 구간 조회:
+
+| 쿼리 | 결과 |
+|---|---|
+| `avg:o2.warm.rps{*} by {service}` | `api` · `order-worker` · `chat-gateway` · `o2-canary` |
+| `avg:o2.warm.rps_ratio{service:chat-gateway}` | **있음** |
+| `avg:o2.warm.latency_p99{*}` | **없음** — 계산만 되고 발행 안 됨 (아래) |
+
+`events.ts` 에 `PutRecordCommand`(`:16`)와 `config.eventsSink === 'kinesis'`
+분기(`:100`)가 들어와 있고 배포 환경변수도 설정돼 있다. Monitor 도 이미
+`true` 다. **남아 있던 것은 주석뿐이었다.**
+
+### `latency_p99` 는 계산만 되고 발행되지 않았다
+
+`metrics.py` 가 오래 전부터 `latency_p99` 를 계산했는데 `DATADOG_SCALARS`
+에 없어 **Datadog 에는 한 번도 오지 않았다**(7일 구간 series 0).
+DynamoDB 상세에만 있었다.
+
+명세 S2 의 1차 조치 검증이 p50·p95·**p99** 셋을 함께 보는 것을 전제하는데
+그 자리가 비어 있었다. **p95 로 대신할 수 없다** — 느린 파드의 몫이 전체의
+5% 미만이면 p95 는 안 움직이고 p99 만 움직인다.
+
 `O2-live-deploy` 매니페스트 소관이라 이 두 스택 범위 밖이다. F-6(정상 파드에
 `limits.cpu` 부여)과 **같은 곳에 같이 요청해야 하는 항목**이다 — 둘 다
 "파드가 여럿이고 서로 비교 가능해야 한다" 는 같은 전제를 만든다.
