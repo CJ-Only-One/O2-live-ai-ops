@@ -213,8 +213,9 @@ resource "datadog_dashboard" "infra" {
           # 쿼터 자체가 없었다.
           #
           # **갱신(2026-08-24): 지표는 이제 존재한다. 다만 이 위젯에는 여전히
-          # 안 잡힌다.** KEDA 를 넣으면서(D-051) 그 Helm 차트가 자기 파드에
-          # `limits.cpu` 를 걸었고, 그것만으로 시계열이 생겼다.
+          # 안 잡히고, 앞으로도 안 잡힌다(D-064).** KEDA 를 넣으면서(D-051)
+          # 그 Helm 차트가 자기 파드에 `limits.cpu` 를 걸었고, 그것만으로
+          # 시계열이 생겼다.
           #
           #   avg:kubernetes.cpu.cfs.throttled.periods{*} by {kube_namespace}
           #     -> kube_namespace:keda        (series 7, 전부 KEDA 파드)
@@ -230,9 +231,18 @@ resource "datadog_dashboard" "infra" {
           # 분모가 생기고, 시계열이 둘 이상이어야 `outliers()` 가 이상치를
           # 낼 수 있다. KEDA 파드는 그 비교의 대상이 아니다.
           #
-          # Terraform(이 스택)에서 고칠 수 있는 문제가 아니다. 매니페스트
-          # 저장소(O2-live-deploy)에서 앱 컨테이너에 `resources.limits.cpu` 를
-          # 넣는 순간부터 아래 위젯이 채워진다.
+          # **그리고 넣지 않기로 확정됐다 — D-064.** `O2-live-deploy` 는 모든
+          # 디플로이먼트에서 CPU limit 을 일부러 안 건다(스로틀링이 지연을
+          # 만든다). 응답 지연을 재는 시스템에서 지연을 만드는 설정을 켜는
+          # 것은 앞뒤가 안 맞고, 그 판단이 옳다.
+          #
+          # **그래서 이 위젯은 앞으로도 빈다.** 지우지 않고 두는 이유는
+          # `$kube_namespace` 가 템플릿 변수라 `keda` 로 바꾸면 값이 나오고,
+          # "왜 비어 있나" 의 답이 위젯 옆에 있는 편이 낫기 때문이다.
+          #
+          # **파드별 CPU 는 위의 사용률 위젯**(`kubernetes.cpu.usage.total`
+          # `by {pod_name}`)**으로 본다.** 조임 비율은 못 내지만 정상 파드와
+          # 다른 파드를 지목하는 데는 충분하다.
           background_color = "gray"
           font_size        = "12"
           text_align       = "left"
@@ -240,12 +250,16 @@ resource "datadog_dashboard" "infra" {
           show_tick        = false
 
           content = <<-EOT
-            **아래 위젯은 지금 항상 비어 있다 — 쿼리 문제가 아니다.**
-            이 네임스페이스의 컨테이너에 CPU `limit` 이 없어서 cAdvisor 가
-            CFS 쿼터 지표를 만들 수 없다. (`keda` 네임스페이스에는 값이
-            있다 — 그쪽 Helm 차트가 limit 을 걸어 둔다.)
-            `O2-live-deploy` 매니페스트에 `resources.limits.cpu` 가 생기면
-            그때부터 값이 잡힌다.
+            **아래 위젯은 항상 비어 있다. 그렇게 두기로 했다 (D-064).**
+            이 네임스페이스의 컨테이너에는 CPU `limit` 이 없고 앞으로도
+            걸지 않는다 — 스로틀링이 곧 지연이라, 지연을 재는 시스템에
+            지연을 만드는 설정을 켤 수 없다.
+
+            **파드별 CPU 는 위의 "CPU 사용률" 위젯으로 본다.**
+            조임 비율 대신 정상 파드와의 사용량 차이로 지목한다.
+
+            (`keda` 네임스페이스로 바꾸면 값이 나온다 — 그쪽 Helm 차트가
+            자기 파드에 limit 을 걸어 둔다.)
           EOT
         }
       }

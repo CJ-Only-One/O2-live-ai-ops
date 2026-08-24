@@ -434,9 +434,10 @@ resource "datadog_monitor" "latency_p95_pod_outlier" {
     아래로 떨어진 것이면 조치할 것이 없습니다.
 
     **왜 이런 일이 생기나**
-    - 그 파드만 CPU 가 조이고 있다 (`kubernetes.cpu.cfs.throttled.periods`).
-      단, 정상 파드에 `limits.cpu` 가 없으면 비교할 분모가 없습니다 —
-      그때는 조임 비율이 아니라 `kubernetes.cpu.usage.total` 로 봅니다
+    - 그 파드만 CPU 를 유독 많이 씁니다 —
+      `avg:kubernetes.cpu.usage.total{kube_namespace:o2-dev} by {pod_name}`
+      을 정상 파드와 나란히 봅니다. **조임 비율(`cfs.*`)은 보지 마십시오.**
+      이 클러스터는 CPU limit 을 일부러 안 걸어서 그 지표가 없습니다(D-064)
     - 그 파드만 캐시가 식어 있다 — `cache_hit_rate_pod_outlier` 가 같은
       파드를 지목했는지 봅니다. 같으면 원인은 캐시 쪽입니다
     - 그 파드가 방금 떴다 — 표본 5건 미만인 파드는 애초에 이 축에

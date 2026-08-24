@@ -57,25 +57,30 @@ enable_pod_cache_outlier_monitor   = true
 pod_cache_outlier_tolerance        = 2.5
 enable_order_confirm_stall_monitor = true
 
-# 파드 단위 지연 이상치(시나리오 5 재분석). **계측은 들어갔지만 아직 끈다.**
+# 파드 단위 지연 이상치(시나리오 5 재분석). **켠다.**
 #
-# 끈 이유는 태그가 없어서가 아니라 **파드가 하나뿐이기 때문이다.**
-# 2026-08-24 실측(M-016) — `api` 디플로이먼트가 replica 1개이고,
-# `avg:o2.warm.cache_hit_rate{*} by {pod_name}` 이 파드 이름 하나
-# (`api-84cc478498-hw6jp`)로만 갈린다. DBSCAN 은 시계열이 둘 이상이어야
-# 무리와 이상치를 나눈다. 하나면 **아무것도 못 잡는데 Monitor 는 OK 로
-# 보인다** — 오탐보다 나쁘다.
+# 껐던 이유는 태그가 없어서가 아니라 파드가 하나뿐이어서였다 — DBSCAN 은
+# 시계열이 둘 이상이어야 무리와 이상치를 나눈다. 그 전제가 충족됐다.
 #
-# 켜는 순서:
-#   1. `api` 를 2개 이상으로 (O2-live-deploy 매니페스트. 이 스택 밖)
-#   2. `avg:o2.warm.latency_p95{*} by {pod_name}` 이 파드 수만큼 갈리는지 확인
-#      (안 갈리면 3단 중 어딘가에서 태그가 빠진 것이다)
-#   3. 그때 true
+#   `O2-live-deploy` 19d6ae9  — api replicas 1 -> 2
+#   부하 10 RPS · 180초 후 확인 (M-016):
+#     avg:o2.warm.latency_p95{*} by {pod_name}
+#       -> api-56cc9b94c9-4tk29   2.0ms
+#       -> api-56cc9b94c9-bg429   4.0ms
+#       -> pod_name:N/A           (service 단위 값)
 #
-# **같은 이유로 아래 `enable_pod_cache_outlier_monitor = true` 도 지금은
-# 무능하다.** 끄지는 않는다 — 파드가 늘면 그대로 동작하고, 끄면 다시 켜는
-# 것을 잊는다. 무능한 것과 틀린 것은 다르다.
-enable_pod_latency_outlier_monitor = false
+# 위에 적어 둔 켜는 조건("파드 수만큼 갈리는지 확인")을 그대로 통과했다.
+#
+# **다만 파드 2개는 최소 요건이지 넉넉한 것이 아니다.** DBSCAN 이
+# "무리에서 떨어진 것" 을 말하려면 무리가 있어야 하는데, 둘이 갈리면
+# 어느 쪽이 이상치인지가 원리상 모호하다. **정상 2 + 이상 1 = 3** 이
+# 되는 S2 실험 중에 제 성능이 나온다. 지금은 평상시 조용히 있다가
+# 실험 때 동작하는 상태로 두는 것이다.
+#
+# 시끄러우면 이 값을 끄기 전에 `pod_latency_outlier_tolerance` 를 먼저
+# 올린다. 파드별 지연의 정상 분산을 아직 안 쟀으므로(M-016 "안 잰 것")
+# 2.5 는 근거가 아니라 캐시 쪽과 맞춘 기본값이다.
+enable_pod_latency_outlier_monitor = true
 pod_latency_outlier_tolerance      = 2.5
 
 # 파이프라인 구간별 Monitor(monitor_pipeline.tf). `aws.lambda.*` 수집을
