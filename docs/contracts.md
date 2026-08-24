@@ -679,8 +679,8 @@ Chat Candidate 예시:
 | `guardrails` | 현재 `READ_ONLY`, 자동 조치 금지, 불확실성 보존, Chat 원문 없음 |
 
 초기 Chat 호출은 새 Candidate INSERT 한 번만 허용한다. 쿨다운 중 Candidate update는
-Agent를 다시 호출하지 않는다. Agent Worker는 envelope 전체를 직렬화해 Dify의
-`custom_alert_json` 하나로 전달하며 Chat 데이터를 Datadog 필드로 변환하지 않는다.
+새 trigger를 만들지 않는다. Incident Correlator가 이 envelope를 Incident State에 귀속하며,
+Agent Worker가 Signal Queue를 직접 소비하거나 Chat 데이터를 Datadog 필드로 변환하지 않는다.
 
 상세 처리 흐름, 실패 격리, Phase gate는
 [`agent-entrypoint.md`](agent-entrypoint.md)가 원본이다.
@@ -725,6 +725,11 @@ Chat-first는 revision 1로 즉시 read-only 분석할 수 있다. Datadog이 �
 반대 순서도 같은 규칙이다. 같은 Incident의 Agent 실행은 직렬화하며 새 revision이 실행 중에
 도착하면 완료 후 최신 revision 한 건만 후속 실행한다. 이 규칙으로 사건은 하나로 유지하면서
 오래된 분석의 중복 실행과 이중 조치를 막는다.
+
+Generic Worker는 Incident State의 최신 revision을 확인한 뒤 Invocation snapshot 전체를
+Dify의 `custom_alert_json` 하나로 전달한다. 최신보다 오래된 Queue 메시지는 `SUPERSEDED`로
+종료하며, revision 멱등 항목과 `incident_id`별 lock은 같은 DynamoDB transaction으로
+획득한다. 만료된 lock은 Dify 도달 여부가 불명확하므로 자동 탈취하지 않는다.
 
 예시 원본:
 

@@ -209,17 +209,17 @@ variable "agent_entry_event_source_enabled" {
   default     = false
 }
 
-variable "agent_entry_allowed_idempotency_keys" {
-  description = "Phase 3에서 Dify 호출을 허용할 합성 Chat idempotency key. 활성화 시 정확히 1개"
+variable "agent_entry_allowed_incident_ids" {
+  description = "Phase 3D에서 전용 Dify 테스트 앱 호출을 허용할 합성 Incident id. 활성화 시 정확히 1개"
   type        = set(string)
   default     = []
 
   validation {
     condition = alltrue([
-      for value in var.agent_entry_allowed_idempotency_keys :
-      can(regex("^chat:cand_[0-9A-HJKMNP-TV-Z]{26}$", value))
+      for value in var.agent_entry_allowed_incident_ids :
+      can(regex("^inc_[0-9A-HJKMNP-TV-Z]{26}$", value))
     ])
-    error_message = "Phase 3 allowlist는 chat:cand_<ULID> 형식만 허용한다."
+    error_message = "Phase 3D allowlist는 inc_<ULID> 형식만 허용한다."
   }
 }
 

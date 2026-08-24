@@ -1,7 +1,7 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 3C-A synthetic correlation E2E passed; execution gates disabled
+> **Status:** Phase 3D repository implementation complete; apply and Shadow E2E not run
 > **Updated:** 2026-08-24
 > **Decision:** `decisions.md` D-050 and D-055
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
@@ -12,13 +12,17 @@ implementation_state:
   common_contract: COMPLETE
   agent_trigger_queue: DEPLOYED_EMPTY
   chat_candidate_adapter: DEPLOYED_EXECUTION_DISABLED
-  generic_dify_worker: DEPLOYED_EXECUTION_DISABLED
+  generic_dify_worker_runtime: DEPLOYED_PHASE1B_TRIGGER_CONTRACT_EXECUTION_DISABLED
+  phase3d_incident_worker_repository: IMPLEMENTED_NOT_APPLIED
+  phase3d_targeted_plan: PASS_1_ADD_2_CHANGE_0_DESTROY
   phase3_synthetic_guard: DEPLOYED_EXECUTION_DISABLED
   incident_correlation_contract: COMPLETE
   incident_correlator: DEPLOYED_EXECUTION_DISABLED
   agent_invocation_queue: DEPLOYED_NO_CONSUMER
   phase3c_signal_queue_correlation_e2e: PASS
   phase3c_source_pipeline_delay_measurement: NOT_RUN
+  phase3d_dify_incident_contract_dsl: UPDATED_NOT_PUBLISHED
+  phase3d_shadow_e2e: NOT_RUN
   idempotency_ledger: DEPLOYED_EMPTY
   dedicated_test_workflow: PUBLISHED_CODE_ONLY
   dedicated_test_workflow_ui_contract_tests: PASS
@@ -32,6 +36,8 @@ activation_blockers:
   - CORRELATION_WINDOW_NOT_MEASURED
   - DATADOG_MONITOR_MAPPING_NOT_CONFIGURED
   - SOURCE_PIPELINE_DELAY_MEASUREMENT_NOT_RUN
+  - PHASE3D_DIFY_INCIDENT_CONTRACT_NOT_PUBLISHED
+  - PHASE3D_INFRA_NOT_APPLIED
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
 production_migration_blockers:
@@ -196,22 +202,25 @@ Chat Source Adapter는 Candidate DynamoDB Stream의 **새 Candidate INSERT만** 
 | `INV-AGENT-ENTRY-013` | 자동 병합은 환경·증상군·대상 범위·시간이 맞는 진행 중 사건이 정확히 하나일 때만 허용한다. |
 | `INV-AGENT-ENTRY-014` | 후보가 둘 이상이거나 비교 차원이 부족하면 강제 병합하지 않고 `AMBIGUOUS`로 남긴다. |
 | `INV-AGENT-ENTRY-015` | 같은 Incident의 Agent 실행과 조치 락은 하나이며 revision별 실행은 직렬화한다. |
+| `INV-AGENT-ENTRY-016` | Worker는 Incident State의 최신 revision보다 오래된 Invocation을 `SUPERSEDED` 처리하고 Dify를 호출하지 않는다. |
+| `INV-AGENT-ENTRY-017` | 만료된 Incident lock은 자동 탈취하지 않는다. Dify 도달 여부를 확인한 운영자만 ledger와 DLQ를 복구한다. |
 
 Chat 예시는 `contracts.md` 5.8에 있다. `evidence`는 Candidate 계약의 허용 필드만 복사하며
 `raw_chat_included`는 evidence가 아니라 공통 `guardrails`에서 항상 `false`로 강제한다.
 
 ## 4. 전용 테스트 Dify 입력 매핑
 
-Generic Agent Worker는 팀 workflow가 아니라 전용 테스트 앱을 가리킨다. envelope 전체를
+Generic Agent Worker는 팀 workflow가 아니라 전용 테스트 앱을 가리킨다. Incident snapshot
+전체를
 compact JSON string으로 직렬화해 다음처럼 보낸다.
 
 ```json
 {
   "inputs": {
-    "custom_alert_json": "<serialized agent.trigger.v1>"
+    "custom_alert_json": "<serialized agent.incident.v1>"
   },
   "response_mode": "blocking",
-  "user": "agent-entry:<source>"
+  "user": "agent-entry:incident"
 }
 ```
 
@@ -239,6 +248,9 @@ compact JSON string으로 직렬화해 다음처럼 보낸다.
 | Dify HTTP 200 + workflow failed | 실패로 간주하고 ledger를 `FAILED`로 닫아 자동 재호출 금지; DLQ에서 운영 확인 |
 | Dify 장시간 지연 | Queue backlog로 흡수; Chat Worker를 점유하지 않음 |
 | Agent 결과 저장 실패 | 성공한 LLM을 무조건 재실행하지 않도록 invocation 상태를 분리 |
+| 같은 Incident revision 동시 도착 | DynamoDB Incident lock으로 하나만 실행; 나머지는 SQS 재전달 |
+| 대기 중 더 최신 revision 도착 | Incident State 최신 revision보다 오래된 메시지는 `SUPERSEDED`; Dify 호출 0 |
+| lock lease 만료 | Dify 도달 여부가 불명확하므로 자동 탈취하지 않고 fail-closed, DLQ에서 운영자 확인 |
 
 Signal Queue·Agent Invocation Queue와 각 DLQ의 retention, retry 횟수, visibility timeout,
 Correlator·Worker concurrency는
@@ -524,6 +536,45 @@ Phase 3C의 **상관관계 기능 게이트는 통과**했다. 그러나 이번 
 Source Adapter의 합성 경로를 각각 열 수 있을 때 전달 시각을 함께 기록해 M-017에 행을
 추가한 뒤 window를 결정한다.
 
+### 6.7 Phase 3D 저장소 구현 체크포인트
+
+2026-08-24에 Generic Worker의 입력 경계를 Signal Queue의 `agent.trigger.v1`에서 Agent
+Invocation Queue의 `agent.incident.v1`로 옮겼다. Terraform 기본값은 계속 event source
+`false`, 실행 플래그 `false`, 합성 Incident allowlist empty라 병합이나 apply만으로 Dify가
+호출되지 않는다. 실환경에는 아직 apply하지 않았고 게시 Dify 앱도 아직 이전 trigger 계약이다.
+
+Worker 처리 순서는 다음으로 고정했다.
+
+1. `agent.incident.v1`과 포함된 모든 source trigger를 exact-field 방식으로 검증
+2. allowlist의 합성 `incident_id` 정확히 한 개인지 확인
+3. Incident State의 authoritative 최신 revision을 consistent read
+4. 오래된 revision이면 execution ledger에 `SUPERSEDED` 기록 후 종료
+5. 현재 revision이면 revision 멱등 항목과 Incident lock을 한 DynamoDB transaction으로 획득
+6. 전용 contract-test Dify 앱을 blocking 호출하고 `data.status=succeeded`와 sanitized output 검증
+7. execution 상태 확정과 Incident lock 해제를 한 transaction으로 완료
+
+Standard SQS의 중복·역순 전달은 유지하되 FIFO 교체 없이 DynamoDB가 Incident별 직렬화를
+소유한다. 실행 중 새 revision이 생기면 현재 실행은 중단하지 않고 완료하며, 대기 중인 오래된
+revision은 다음 수신에서 최신 상태와 비교해 건너뛴다. 네트워크 단절이나 Lambda 종료로 lock이
+만료된 경우 자동 탈취하지 않는다. 요청이 Dify에 도달했을 수 있으므로 DLQ에서 실행 이력을
+확인하기 전 재호출하면 안 된다.
+
+Phase 1B의 Signal Queue Worker mapping은 Terraform destroy 없이 `enabled=false`로 보존하고
+해당 Queue 소비 IAM을 제거했다. Phase 3D는 별도 Invocation Queue mapping을 추가한다. 따라서
+apply plan은 비활성 mapping 1개 추가와 Worker/IAM 제자리 변경만 포함해야 하며, 기존 mapping
+삭제나 Queue 교체는 포함하면 안 된다.
+
+저장 targeted plan은 Invocation mapping 1개 생성, Worker Lambda와 최소 IAM 2개 제자리 변경,
+삭제 0개였다. 새 mapping은 `enabled=false`, Worker 실행 플래그도 `false`, allowlist는 empty다.
+이 plan은 검증 증거일 뿐 apply하지 않았다. 별도 음성 plan에서 allowlist 없이 event source와
+실행 플래그만 `true`로 주자 resource precondition이 의도대로 plan을 거부했다.
+
+로컬 검증은 Worker 19개, Correlator 15개(로컬 boto3 부재 1개 skip), JSON Schema 정상 2개·
+거부 4개, Dify DSL YAML parse와 Code 노드 정상 Incident 2개·raw chat 거부를 통과했다.
+Terraform `fmt`와 `validate`도 통과했다. 다음 단계는 병합본에서 저장 plan의 변경 범위를
+확인하고, 전용 Dify 테스트 앱을 이 Incident 계약으로 게시한 뒤 제한된 Shadow E2E를 한 번
+수행하는 것이다.
+
 ## 7. 각 Phase에서 사람이 확인할 것
 
 사용자가 매 단계마다 AWS 콘솔을 직접 확인할 필요는 없다. 구현자는 CLI와 테스트로 다음
@@ -542,3 +593,5 @@ Phase 0 예시 파일:
 
 - `contracts/examples/agent-trigger-chat-v1.example.json`
 - `contracts/examples/agent-trigger-datadog-v1.example.json`
+- `contracts/examples/agent-incident-chat-first-v1.example.json`
+- `contracts/examples/agent-incident-correlated-v1.example.json`
