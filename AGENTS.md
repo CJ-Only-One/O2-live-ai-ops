@@ -31,9 +31,9 @@ sed -n '553,607p' docs/decisions.md     # 그 절만 읽는다
 | 채팅 기반 Incident Candidate | `docs/chat-incident-candidate.md` (**구현 전 필독**) |
 | Datadog·Chat Candidate → AI Agent 공통 진입점 | `docs/agent-entrypoint.md` (**Agent 호출 변경 전 필독**) |
 | 테이블·컬럼·인덱스, MySQL/Valkey 경계 | `docs/schema.md` |
+| **시나리오 실험 — 복구 판정 · 주입 설정 · 초기화** | `docs/scenario-experiment.md` (**실험 돌리기 전 필독**) |
 | 저장소 사용법, 배포 흐름 | `README.md` |
 | 특정 인프라 스택 | `infra/<스택>/README.md` |
-| 문서를 어디에 어떻게 쓸지 | `docs/documentation-guide.md` |
 
 **`D-` 번호가 두 벌이다. 자릿수로 구분한다.**
 
