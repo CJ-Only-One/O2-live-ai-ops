@@ -10,7 +10,7 @@
 Datadog에서 알람 하나가 날아오면, Lambda가 알람을 정규화하고 과거 유사
 인시던트를 S3 Vectors에서 검색해 `past_cases`로 묶은 뒤 Dify를 호출한다.
 **이 검색은 Dify 노드가 아니라 Lambda 안에서 끝난다** — Dify는 `past_cases`를
-텍스트 변수로 받을 뿐이다(`../README.md` 1.1.1).
+텍스트 변수로 받을 뿐이다(`../infra/06-agent/dify/README.md` 1.1.1).
 
 Dify는 이 입력으로 진단·조치 루프에 들어간다. 루프 안에서는 먼저 Observability
 스냅샷(Warm Path API 1회 + Hot Path CPU/Memory 조회 2회, 총 3건)을 가져와
@@ -70,13 +70,13 @@ Slack Final Notify (HTTP) → END
 
 | # | 노드 | 타입 | 역할 |
 |---|---|---|---|
-| 1 | START | 시작 | Datadog Alert Payload + `past_cases` 수신. 입력 계약은 `../README.md` 1절과 동일 계열 |
+| 1 | START | 시작 | Datadog Alert Payload + `past_cases` 수신. 입력 계약은 `../infra/06-agent/dify/README.md` 1절과 동일 계열 |
 | 2 | Incident Normalize | CODE | payload → `incident_context` 로 정규화. 이후 모든 노드가 이 형태를 기준으로 참조 |
 
 > **다이어그램에 있던 "3. Knowledge Retrieval — Incident History" 는 실제
 > 워크플로에 존재하지 않는다.** 65개 노드 전체를 확인했지만 이력 검색 노드가
 > 없다. **원래는 Dify 안에 이 노드가 있었으나, 이후 검색을 Lambda 쪽으로
-> 옮기는 방향으로 로직이 바뀌었다** — 지금은 Lambda(`../lambda/worker.py`)가
+> 옮기는 방향으로 로직이 바뀌었다** — 지금은 Lambda(`../infra/06-agent/lambda/worker.py`)가
 > Dify 호출 **전에** 검색을 끝내고 `past_cases` 하나로 시작 시점에 넘겨줄
 > 뿐이다. Dify는 벡터도, S3도 모른다.
 
@@ -89,7 +89,7 @@ Slack Final Notify (HTTP) → END
 | 6-B/6-C | Hot Path — CPU/Memory | HTTP ×2 | `hot_cpu_snapshot`/`hot_mem_snapshot` — Datadog 직접 조회. 6번과 합쳐 **총 3건이 동시에 조회됨** |
 | 7 | Context Enrichment | CODE | `warm_snapshot.body` + `hot_cpu_snapshot.body`/`hot_mem_snapshot.body`(CPU·Memory 최댓값 계산) + `incident_context` 를 `context_json` 하나로 병합. Warm Path 응답이 비거나 실패해도(dry-run 등) 예외 처리로 안전하게 degrade |
 | 8 | Diagnosis Prompt | Template | Context + `attempt_log`(이전 시도 기록)를 반영해 프롬프트 조립 |
-| 9 | Diagnosis Agent | Agent 노드 (Bedrock) | RCA 후보를 비교하고 근거와 confidence 를 산출. **제목은 "GPT + query_athena"지만 현재 `tools: null`** — Athena 쿼리 tool은 아직 연결되지 않았다(14번과 같은 패턴, 6절 참고) |
+| 9 | Diagnosis Agent | Dify Agent 노드 (`type: agent`, v2, inline_agent 바인딩) | RCA 후보를 비교하고 근거와 confidence 를 산출. **query_athena tool 연결되어 있음** — snapshot 지표만으로 부족할 때 원시 로그 SQL 조회용. 모델은 Bedrock이 아니라 **GPT** — Bedrock + Dify Agent 노드 + 커스텀 tool 조합에서 `toolSpec.description null` 버그(langgenius/dify 확인된 버그)가 있어 이 노드만 GPT로 운용(제목·`desc` 필드에 명시, 2026-08-24 확인) |
 | 10 | Diagnosis Output Parser | CODE | Agent 응답 → `parsed_diagnosis` 구조화 |
 
 ### 2.3 Runbook 준비
@@ -243,7 +243,7 @@ else:
 호출**한다(2026-08-24 확인). 앞의 `finalize_output`(26) 코드도 `slack_text`/
 `slack_payload_json`만 조립할 뿐 S3나 Lambda 호출 로직이 없다.
 
-이력(S3 원본 JSON + S3 Vectors)은 `../README.md` "이력 저장소" 절에 문서화된
+이력(S3 원본 JSON + S3 Vectors)은 `../infra/06-agent/README.md` "이력 저장소" 절에 문서화된
 대로 **Dify 워크플로 밖에서, Dify를 호출하는 `lambda/worker.py`가** Triggered/
 Recovered 시점에 담당한다. 즉 흐름은:
 
@@ -254,7 +254,7 @@ Datadog → Lambda(worker.py) ─┬─▶ Dify 호출 (이 워크플로 전체)
 
 Dify 안에는 이력을 적재하는 노드가 없고, 27-A/27-B가 하는 일은 Slack 알림
 하나뿐이다. `worker.py`가 Dify 실행 전후 정확히 어느 시점에 무엇을 트리거로
-S3에 쓰는지는 이 그래프만으로 확인할 수 없다 — `../lambda/worker.py` 코드
+S3에 쓰는지는 이 그래프만으로 확인할 수 없다 — `../infra/06-agent/lambda/worker.py` 코드
 확인 필요(6절).
 
 ---
@@ -309,13 +309,16 @@ State 갱신은 위 표에 적힌 개별 노드가 아니라 **`state_reducer`(�
   코드를 다시 확인할 것
 - **`worker.py`가 Dify 실행 전후 정확히 언제 S3/S3 Vectors 에 쓰는지.** 27-A/27-B는
   Slack 알림 전용(Webhook 직접 호출)으로 확인됐고 Dify 안에 이력 쓰기 노드는
-  없다 — 적재는 `../lambda/worker.py` 쪽이지만 정확한 트리거 시점은 그 코드를
+  없다 — 적재는 `../infra/06-agent/lambda/worker.py` 쪽이지만 정확한 트리거 시점은 그 코드를
   봐야 확정된다
 - **`mock_action_fallback`(19-C), `mock_revert`(24-D) 등 "[TEMP JSON]" 표시된
   노드들.** 아직 실제 연동 전 임시 목업 — 실제 연동되면 이 문서도 갱신
-- **Diagnosis Agent(9번)와 Remediation Planner(14번)의 tool 미연결.** 둘 다
-  제목은 tool 사용을 암시(`query_athena`, 계획된 `history_lookup`)하지만
-  현재 `tools: null`
+- **Remediation Planner(14번)의 tool 미연결.** `type: llm` 노드라 `tools: null`
+  확인됨(9번과 달리 옛 LLM 노드 스키마라 이 필드 체크가 유효하다). Agent 노드로
+  전환해 `history_lookup` 을 tool 화할 예정(2.4절)
+- **Diagnosis Agent(9번) `agent_binding.agent_id` 의 정확한 tool 스펙.**
+  query_athena 연결 자체는 `desc` 필드로 확인됐지만, 파라미터 스키마 등
+  상세는 별도 Dify `agents` 테이블을 더 조회해야 확정된다
 - **DSL export.** 아직 없다. 다음 워크플로 수정 시 Export DSL 을 먼저 하고
   이 문서를 DSL 대조본으로 낮춘다
 - **`agent_backend` 컨테이너와의 관계.** 호스트에 Dify 표준 compose에 없는
@@ -329,5 +332,5 @@ State 갱신은 위 표에 적힌 개별 노드가 아니라 **`state_reducer`(�
 - 한도(`remediation_retry`, `diagnosis_retry`, `loop_count`, Slack 타임아웃)를 바꿀 때 → 4절
 - State 변수 이름이나 갱신 위치를 바꿀 때 → 3절
 - 6절의 미확인 항목을 코드로 확인했을 때 → 해당 항목을 지우고 본문에 확정 반영
-- **DSL 을 처음 export 하는 날** → 상단 안내 문구를 지우고 `../README.md` "파일" 표에
+- **DSL 을 처음 export 하는 날** → 상단 안내 문구를 지우고 `../infra/06-agent/dify/README.md` "파일" 표에
   실제 DSL 파일명을 추가한다
