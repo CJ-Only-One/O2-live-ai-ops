@@ -54,7 +54,8 @@ test('accepted chat: SQS와 Valkey로 각각 한 번 분기한다', async () => 
   });
   assert.deepEqual(state.fanout, ['느려요']);
   assert.equal(state.telemetry.length, 1);
-  assert.equal(state.telemetry[0].payload.rejected_code, undefined);
+  assert.equal(state.telemetry[0].payload.result, 'SUCCESS');
+  assert.equal(state.telemetry[0].payload.failure_code, undefined);
 });
 
 test('길이 초과: 원문 SQS와 Valkey 모두 보내지 않는다', async () => {
@@ -63,7 +64,8 @@ test('길이 초과: 원문 SQS와 Valkey 모두 보내지 않는다', async () 
 
   assert.equal(state.signals.length, 0);
   assert.equal(state.fanout.length, 0);
-  assert.equal(state.telemetry[0].payload.rejected_code, 'TOO_LONG');
+  assert.equal(state.telemetry[0].payload.result, 'FAILED');
+  assert.equal(state.telemetry[0].payload.failure_code, 'TOO_LONG');
 });
 
 test('rate limited: 원문 SQS와 Valkey 모두 보내지 않는다', async () => {
@@ -72,7 +74,8 @@ test('rate limited: 원문 SQS와 Valkey 모두 보내지 않는다', async () =
 
   assert.equal(state.signals.length, 0);
   assert.equal(state.fanout.length, 0);
-  assert.equal(state.telemetry[0].payload.rejected_code, 'RATE_LIMITED');
+  assert.equal(state.telemetry[0].payload.result, 'FAILED');
+  assert.equal(state.telemetry[0].payload.failure_code, 'RATE_LIMITED');
 });
 
 test('channel limited: 개인 한도는 통과했지만 총량 제한에 걸린다', async () => {
@@ -81,7 +84,8 @@ test('channel limited: 개인 한도는 통과했지만 총량 제한에 걸린�
 
   assert.equal(state.signals.length, 0);
   assert.equal(state.fanout.length, 0);
-  assert.equal(state.telemetry[0].payload.rejected_code, 'CHANNEL_LIMITED');
+  assert.equal(state.telemetry[0].payload.result, 'FAILED');
+  assert.equal(state.telemetry[0].payload.failure_code, 'CHANNEL_LIMITED');
 });
 
 test('AC-008: SQS Promise가 거부돼도 Valkey 팬아웃은 성공한다', async () => {
