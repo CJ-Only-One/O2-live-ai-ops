@@ -1068,6 +1068,49 @@ M-015 의 "Datadog 수집 확인" 과 같은 세션·같은 방법이다.
 (`sketch.py` → `metrics.py` → `datadog.py`)에서 만든다. 이 실측이 그 작업의
 근거다.
 
+### 파드 축은 실제로 동작한다 — 다만 파드가 하나뿐이다 (2026-08-24)
+
+같은 세션에서 `o2.warm.*` 쪽을 확인했다. 24시간 구간.
+
+| 쿼리 | series | scope |
+|---|---|---|
+| `avg:o2.warm.cache_hit_rate{*} by {pod_name}` | **2** | `pod_name:N/A` · `pod_name:api-84cc478498-hw6jp` |
+| `avg:o2.warm.latency_p95{*} by {pod_name}` | 1 | `pod_name:N/A` (계측 배포 전) |
+| `avg:o2.warm.rps{*} by {service}` | 3 | `api` · `order-worker` · `chat-gateway` |
+
+첫 행이 중요하다 — **3단 태그 경로가 운영에서 실제로 동작하고 있다.**
+`cache_hit_rate` 가 파드 이름으로 갈린다. 지연도 집계 Lambda 를 다시 배포하면
+같은 모양이 된다. `pod_name:N/A` 는 service 단위로 보낸 값이다(D-054).
+
+**그런데 파드 이름이 하나뿐이다.**
+
+```
+sum:kubernetes_state.deployment.replicas_available{kube_namespace:o2-dev} by {kube_deployment}
+  api           1      chat-gateway  2      frontend  1
+  order-worker  1      mediamtx      1
+```
+
+`api` 디플로이먼트가 **replica 1개**다.
+
+### 이것이 S2 를 막는다
+
+`outliers(… by {pod_name}, 'DBSCAN', …)` 는 **시계열이 둘 이상이어야** 무리와
+이상치를 나눌 수 있다. 하나뿐이면 비교 대상이 없어 **아무것도 잡지 못한다.**
+오류가 아니라 조용한 무능이라 더 나쁘다 — Monitor 는 OK 로 보인다.
+
+| Monitor | 지금 상태 | 실제로 동작하나 |
+|---|---|---|
+| `cache_hit_rate_pod_outlier` | **활성**(`tfvars` 에 `true`) | **아니오** — 파드 1개 |
+| `latency_p95_pod_outlier` | 비활성 | 아니오 — 같은 이유 |
+
+**즉 켜져 있는 쪽이 이미 무능한 상태다.** 계측·Monitor·위젯이 전부 갖춰져도
+파드가 하나면 S2("느린 파드 하나가 서비스 전체 꼬리를 끌어올린다")는 성립하지
+않는다. `api` 를 2개 이상으로 올리는 것이 **S2 의 마지막 전제**다.
+
+`O2-live-deploy` 매니페스트 소관이라 이 두 스택 범위 밖이다. F-6(정상 파드에
+`limits.cpu` 부여)과 **같은 곳에 같이 요청해야 하는 항목**이다 — 둘 다
+"파드가 여럿이고 서로 비교 가능해야 한다" 는 같은 전제를 만든다.
+
 ### 다시 재야 할 때
 
 - `ddtrace` 버전을 올렸을 때 — 통합 서비스 태깅이 파드 축을 붙이기 시작하면

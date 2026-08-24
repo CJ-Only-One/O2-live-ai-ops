@@ -59,11 +59,22 @@ enable_order_confirm_stall_monitor = true
 
 # 파드 단위 지연 이상치(시나리오 5 재분석). **계측은 들어갔지만 아직 끈다.**
 #
-# 켜기 전에 확인할 것 하나 — 파드가 2개 이상 떠 있는 상태에서
-# `avg:o2.warm.latency_p95{*} by {pod_name}` 이 파드 수만큼 갈리는지 본다.
-# 갈리지 않으면 3단(sketch → metrics → datadog) 중 어딘가에서 태그가 빠진
-# 것이고, 그 상태로 켜면 시계열이 하나뿐이라 DBSCAN 이 이상치를 못 낸다 —
-# **영구히 조용한 Monitor 가 된다.** 오탐보다 나쁘다.
+# 끈 이유는 태그가 없어서가 아니라 **파드가 하나뿐이기 때문이다.**
+# 2026-08-24 실측(M-016) — `api` 디플로이먼트가 replica 1개이고,
+# `avg:o2.warm.cache_hit_rate{*} by {pod_name}` 이 파드 이름 하나
+# (`api-84cc478498-hw6jp`)로만 갈린다. DBSCAN 은 시계열이 둘 이상이어야
+# 무리와 이상치를 나눈다. 하나면 **아무것도 못 잡는데 Monitor 는 OK 로
+# 보인다** — 오탐보다 나쁘다.
+#
+# 켜는 순서:
+#   1. `api` 를 2개 이상으로 (O2-live-deploy 매니페스트. 이 스택 밖)
+#   2. `avg:o2.warm.latency_p95{*} by {pod_name}` 이 파드 수만큼 갈리는지 확인
+#      (안 갈리면 3단 중 어딘가에서 태그가 빠진 것이다)
+#   3. 그때 true
+#
+# **같은 이유로 아래 `enable_pod_cache_outlier_monitor = true` 도 지금은
+# 무능하다.** 끄지는 않는다 — 파드가 늘면 그대로 동작하고, 끄면 다시 켜는
+# 것을 잊는다. 무능한 것과 틀린 것은 다르다.
 enable_pod_latency_outlier_monitor = false
 pod_latency_outlier_tolerance      = 2.5
 
