@@ -106,6 +106,22 @@ def _load_meta(broadcast_id: str, origin: dict) -> dict | None:
     return meta
 
 
+def warm_meta(broadcast_id: str) -> bool:
+    """캐시만 채운다. cue-warmer(D-041 사전 확장)가 이걸 부른다.
+
+    get_snapshot() 을 그대로 호출하지 않는다 — 그건 재고 MGET 과
+    inventory.check 발행까지 같이 한다. 재고는 애초에 캐시 대상이 아니고
+    (D-07), inventory.check 의 cache_hit·source 는 "실제 트래픽 폭증과
+    캐시 미스 폭주를 가르는 유일한 근거"다(contracts.md 5.1). 워머가 그
+    경로를 타면 진짜 시청자 요청과 안 갈리는 가짜 히트가 그 지표에 매
+    tick 마다 섞여 들어간다 — M-009 가 재던 바로 그 신호가 오염된다.
+
+    반환값은 방송이 존재해서 실제로 채웠는지 여부다. 없는 broadcast_id 를
+    호출자가 조용히 넘기지 않게 한다.
+    """
+    return _load_meta(broadcast_id, origin={"source": "CACHE", "cache_hit": True}) is not None
+
+
 def _stock_display(sku_ids: list[str]) -> dict[str, int]:
     """표시용 재고. 원본은 Valkey 이므로 캐시를 거치지 않고 직접 읽는다."""
     if not sku_ids:
