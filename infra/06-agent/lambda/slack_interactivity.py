@@ -46,7 +46,7 @@ def _verify_slack_signature(headers, raw_body, signing_secret):
     return hmac.compare_digest(computed, sig)
 
 
-def _update_slack_message(response_url, result_text, original_text=""):
+def _update_slack_message(response_url, result_text, original_text="", original_blocks=None):
     if not response_url:
         return
     # response_url 은 별도 토큰 없이도 원본 메시지를 고칠 수 있게 Slack 이
@@ -54,10 +54,19 @@ def _update_slack_message(response_url, result_text, original_text=""):
     # 인시던트의 어떤 조치였는지) 아래에 결과를 덧붙인다 — 원본 text를 그냥
     # result_text로 덮어쓰면(replace_original) 뭘 승인/거부했는지가 화면에서
     # 사라져서 사람이 다시 스크롤해서 찾아야 했다.
+    #
+    # ★ blocks를 안 보내면 Slack이 기존 블록(원인/조치/위험도 레이아웃)을
+    #   통째로 지우고 text만 밋밋하게 보여준다 - 원본 blocks에서 버튼
+    #   (actions) 블록만 빼고 결과를 새 섹션으로 이어붙여서 그대로 유지한다.
     text = f"{original_text}\n\n{result_text}" if original_text else result_text
+    body = {"replace_original": "true", "text": text}
+    if original_blocks:
+        kept = [b for b in original_blocks if b.get("type") != "actions"]
+        kept.append({"type": "section", "text": {"type": "mrkdwn", "text": result_text}})
+        body["blocks"] = kept
     req = urllib.request.Request(
         response_url,
-        data=json.dumps({"replace_original": "true", "text": text}).encode(),
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -93,8 +102,10 @@ def lambda_handler(event, context):
     user = payload.get("user", {}).get("username", "unknown")
     response_url = payload.get("response_url")
     # 원본 승인 요청 메시지 텍스트(인시던트/원인/조치/위험도/영향범위) — Slack이
-    # 버튼 클릭 payload에 원본 메시지를 그대로 실어 보내준다.
+    # 버튼 클릭 payload에 원본 메시지를 그대로 실어 보내준다. blocks도 같이
+    # 실려오므로 갱신할 때 레이아웃을 그대로 이어갈 수 있다.
     original_text = (payload.get("message") or {}).get("text", "")
+    original_blocks = (payload.get("message") or {}).get("blocks") or []
 
     if not approval_id or decision not in {"APPROVE", "REJECT", "RECONSIDER"}:
         print("bad button value:", action.get("value"))
@@ -118,10 +129,10 @@ def lambda_handler(event, context):
         # 이미 누가 눌렀거나(동시 클릭), 폴링이 시간 초과로 이미 끝난 뒤다.
         # 두 번째 클릭은 무시한다 — 최초 결정이 이긴다.
         print("already decided, ignoring second click:", approval_id)
-        _update_slack_message(response_url, "⚠️ 이미 처리된 요청입니다.", original_text)
+        _update_slack_message(response_url, "⚠️ 이미 처리된 요청입니다.", original_text, original_blocks)
         return {"statusCode": 200, "body": ""}
 
     label = {"APPROVE": "✅ 승인", "REJECT": "❌ 거부", "RECONSIDER": "🤔 재고"}[decision]
-    _update_slack_message(response_url, f"{label} — @{user}", original_text)
+    _update_slack_message(response_url, f"{label} — @{user}", original_text, original_blocks)
     print("decided:", approval_id, decision, "by", user)
     return {"statusCode": 200, "body": ""}
