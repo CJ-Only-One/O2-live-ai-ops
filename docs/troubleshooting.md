@@ -38,6 +38,8 @@
 | T-020 | 채팅은 전달되는데 Incident Candidate가 생성되지 않는다 | Chat Signal Worker 5초 timeout, 예약 동시성 1, SQS in-flight, `LATE_EVENT_DROPPED` |
 | T-021 | timeout은 없어졌는데 15초 안의 네 채팅으로 Candidate가 안 생긴다 | tumbling window 경계, epoch 정렬, 3+1 분리, rolling window 오해 |
 | T-022 | 저장소의 Dify 입력 계약과 실제 게시 앱이 다르다 | DSL 미내보내기, `/v1/info`, `/v1/parameters`, `custom_alert_json`, API key 앱 매핑 |
+| T-023 | SDK 가 봉투 필드를 늘렸는데 드리프트 시험이 안 깬다 | `ENVELOPE_FIELDS`, `pod_name`, 상수 없는 계약, 늘어난 쪽 감지 |
+
 
 ---
 
@@ -678,6 +680,7 @@ aws sts get-federation-token --name t --duration-seconds 900 \
 
 ---
 
+
 ## T-015. 부하 테스트에서 서버가 느린 게 아니라 k6 가 못 따라간 것이었다
 
 **증상** — `read-path.js` 를 400 RPS 로 돌리니 p95 가 **3,514ms** 로 뛰었다.
@@ -1213,3 +1216,59 @@ API key나 workflow graph 원문은 로그와 문서에 남기지 않는다. DSL
 Dify는 모르는 입력 키를 조용히 무시하고, workflow 내부 실패도 HTTP 200으로 응답할 수
 있다(T-011, T-012). 저장소 DSL만 읽으면 계약이 맞아 보이고, API key로 실제 앱을 조회해
 게시 graph까지 대조해야 drift가 드러난다.
+
+## T-023. SDK 가 봉투 필드를 늘렸는데 드리프트 시험이 안 깬다
+
+**증상** — `o2-sdk-for-event` 0.3.0 이 모든 이벤트 봉투에 `pod_name` 을 추가했다.
+집계 쪽(`o2warm/contract.py`)에 `E_POD_NAME = "pod_name"` 상수까지 만들어 뒀는데
+`ENVELOPE_FIELDS` 집합에 넣는 것을 빠뜨렸다. **시험은 전부 통과했다.**
+
+눈에 보이는 증상은 없다. 그게 문제다. 이 상태로 굳었으면 파드별 지표
+(`cache_hit_rate_by_pod`, 앞으로 붙일 `latency_by_pod`)가 **조용히 빈 dict** 가
+되고, Datadog 위젯은 "쿼리는 맞는데 비어 있는" 모양이 된다. 그때는 SDK·집계·
+Terraform 셋 중 어디가 원인인지 알 수 없다.
+
+**원인** — `tests/test_contract.py` 가 이벤트 이름·enum·`emit.*` 인자명은
+검증하는데 **봉투 필드만 검증하지 않았다.** SDK 쪽에 봉투 키 목록을 내보내는
+상수가 없어서(v0.3.1 `schemas.py` 기준) 대조할 대상이 없었기 때문이다.
+
+그래서 "SDK 에 상수가 생겨야 검증할 수 있다" 고 판단하고 외부 저장소에
+요청할 항목으로 미뤄 뒀다. **그 판단이 틀렸다.**
+
+**해결** — 상수끼리 비교할 필요가 없다. `emit._envelope()` 을 직접 불러
+실제 키 집합을 보면 된다. 같은 파일의 다른 시험이 이미 그 방식이다 —
+`inspect.signature(emit.*)` 로 인자를 보고, `sinks._stream_for()` 를 직접
+호출해 라우팅을 대조한다. 봉투만 예외로 둘 이유가 없었다.
+
+```python
+actual = set(o2emit._envelope(C.EVENT_ORDER_CREATE, {"order_id": "O-1"}))
+
+missing = C.ENVELOPE_FIELDS - actual              # 집계가 쓰는데 봉투에 없다
+unknown = actual - C.ENVELOPE_FIELDS - C.ENVELOPE_FIELDS_UNUSED  # 봉투에 생겼는데 모른다
+```
+
+**두 번째 단언이 핵심이다.** 드리프트 시험을 "빠진 것" 만 보게 짜면 이번
+경우를 못 잡는다 — 우리를 문 것은 **늘어난 쪽** 이었다. 그래서 안 쓰기로 한
+필드를 `ENVELOPE_FIELDS_UNUSED` 로 명시하게 했다. 안 쓰는 것과 빠뜨린 것을
+구분하지 않으면 예외 목록이 곧 쓰레기통이 된다. SDK 에 필드가 새로 생기면
+시험이 깨지고, **쓸지 말지 한 번은 정하게 된다.**
+
+`_envelope()` 은 비공개 함수라 SDK 가 공개 상수를 내주면 그때 갈아탄다.
+차단 요소가 아니므로 다음 SDK 변경 요청에 묶어 보낸다.
+
+### 왜 늦게 찾았나
+
+**상수를 만든 것으로 일을 끝냈다고 착각했다.** `E_POD_NAME` 을 정의하는
+순간 "반영했다" 는 느낌이 들었는데, 그 상수는 아무도 참조하지 않는 죽은
+값이었다. 정의와 등록이 두 걸음인 파일 구조에서 반복해서 날 실수다.
+
+**"검증할 수단이 없다" 를 너무 빨리 받아들였다.** 상대 쪽에 상수가 없으니
+대조할 수 없다고 결론 내렸는데, **같은 파일 바로 위에 런타임 객체를 직접
+들여다보는 시험이 두 개나 있었다.** 이미 있는 패턴을 안 보고 없는 기능을
+외부에 요청하려 했다.
+
+**로컬 클론이 낡아서 판단이 한 번 더 틀어졌다.** SDK 를 확인할 때
+`git fetch` 를 하지 않아 `origin/main`(`5b4d86e`)이 "존재하지 않는 객체" 로
+보였고, 그래서 "SDK 쪽 작업이 아직 안 끝났다" 는 정반대 결론을 냈다.
+실제로는 그 커밋이 이미 배포에 고정돼(`SDK_REF`) 돌고 있었다.
+**남의 저장소 상태를 말하기 전에 fetch 부터 한다.**

@@ -84,6 +84,10 @@ PAYLOAD_FIELDS = {
 
 # --- 봉투 필드 -------------------------------------------------------
 
+E_EVENT_ID = "event_id"
+E_SCHEMA_VERSION = "schema_version"
+E_TRACE_ID = "trace_id"
+E_SESSION_ID = "session_id"
 E_EVENT_NAME = "event_name"
 E_BROADCAST_ID = "broadcast_id"
 E_SERVICE = "service"
@@ -95,9 +99,27 @@ E_EVENT_TS = "event_ts"
 E_PAYLOAD = "payload"
 E_POD_NAME = "pod_name"
 
+# 집계가 실제로 읽는 봉투 필드. 여기 없는 필드는 `ENVELOPE_FIELDS_UNUSED` 에
+# 있어야 하고, 양쪽 어디에도 없으면 시험이 깹니다(tests/test_contract.py).
 ENVELOPE_FIELDS = frozenset({
     E_EVENT_NAME, E_BROADCAST_ID, E_SERVICE, E_SERVICE_VERSION, E_USER_KEY,
-    E_CLIENT_IP_KEY, E_RECEIVED_TS, E_EVENT_TS, E_PAYLOAD,
+    E_CLIENT_IP_KEY, E_RECEIVED_TS, E_EVENT_TS, E_PAYLOAD, E_POD_NAME,
+})
+
+# SDK 가 봉투에 싣지만 집계는 **일부러 안 쓰는** 필드.
+#
+# 이 집합이 없으면 봉투 드리프트 시험이 "집계가 모르는 필드"를 못 가립니다 —
+# 안 쓰기로 한 것과 빠뜨린 것이 구분되지 않기 때문입니다. SDK 에 필드가
+# 새로 생기면 시험이 깨지고, 그때 **쓸 것인지 안 쓸 것인지 한 번은 정하게**
+# 됩니다. 조용히 지나가지 않는 것이 이 집합의 목적입니다.
+#
+# - event_id       중복 제거는 수집단(Kinesis sequence number)에서 합니다
+# - schema_version 계약 버전 분기가 아직 없습니다
+# - trace_id       APM 상관은 Datadog 쪽에서 하고 집계는 관여하지 않습니다
+# - session_id     클라이언트가 만드는 값이라 감별 지표에 쓰지 않습니다
+#                  (windows.py 머리말 — 조작 가능한 값은 안 씁니다)
+ENVELOPE_FIELDS_UNUSED = frozenset({
+    E_EVENT_ID, E_SCHEMA_VERSION, E_TRACE_ID, E_SESSION_ID,
 })
 
 # 세그먼트 축과 값의 출처. "payload" 또는 "envelope".

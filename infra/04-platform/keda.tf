@@ -12,6 +12,11 @@
 # `order-worker` 를 큐 길이로 늘리는 것이 이 스택을 넣는 실질적 이유다.
 # CPU 만 보면 큐가 밀리는 것을 못 본다.
 
+locals {
+  # 큐 ARN 을 03-data 의 remote state 에서 읽으므로 데이터 배선도 켜져 있어야 한다.
+  keda_identity = var.enable_keda && var.enable_app_data_wiring
+}
+
 resource "helm_release" "keda" {
   count = var.enable_keda ? 1 : 0
 
@@ -44,6 +49,21 @@ resource "helm_release" "keda" {
         limits   = { memory = "256Mi" }
       }
     }
+
+    # **관리형 노드그룹에만 뜨도록 묶는다** (`02-eks/nodegroup.tf` 의 labels).
+    # Karpenter 컨트롤러와 같은 이유이고, 여기서는 더 직접적이다.
+    #
+    # KEDA 오퍼레이터는 죽지 않는 파드다. Karpenter 가 스파이크 때 산 노드에
+    # 이것이 올라앉으면 `consolidationPolicy = WhenEmpty` 의 "비었다" 조건이
+    # 영원히 안 맞아 **임시 노드가 상시 노드가 된다.** 2026-08-23 에 부하 테스트
+    # 뒤 노드 한 대가 그렇게 남았다 — 파드는 정상이고 요금만 계속 나간다.
+    #
+    # 스케일러가 자기 스케일 대상 노드 위에 있는 것 자체도 곤란하다. 그 노드가
+    # 반납되는 순간 스케일링이 멈춘다.
+    #
+    # 최상위 nodeSelector 하나가 세 파드(operator, metrics-apiserver, webhooks)에
+    # 모두 적용된다 — 차트 2.17.2 기준.
+    nodeSelector = { role = "general" }
   })]
 
   depends_on = [aws_eks_access_policy_association.admin]
@@ -69,4 +89,71 @@ resource "helm_release" "keda" {
 #
 # 또 ScaledObject 는 애플리케이션 배포물이라 Argo CD 가 보는 O2-live-deploy 쪽이
 # 자리로는 더 맞다. 여기는 컨트롤러 설치까지만 한다.
+###############################################################################
+
+###############################################################################
+# KEDA 가 큐 길이를 읽을 자격증명
+#
+# SQS 스케일러는 `GetQueueAttributes` 로 큐 길이를 읽는다. 권한이 없으면
+# **파드는 정상적으로 뜨고 스케일링만 안 된다** — ScaledObject 도 Ready 로
+# 보이므로 알아채기 늦다.
+#
+# 워커의 역할을 빌려 쓰는 길(`identityOwner: workload`)은 택하지 않았다.
+# 이 클러스터는 IRSA 가 아니라 EKS Pod Identity 라 KEDA 가 남의 association 을
+# 대신 쓰는 경로가 확실하지 않고, 틀리면 위와 같은 방식으로 조용히 실패한다.
+#
+# 권한은 큐 길이 조회 하나뿐이다. KEDA 는 메시지를 읽지도 지우지도 않는다.
+###############################################################################
+
+data "aws_iam_policy_document" "keda_queue_depth" {
+  count = local.keda_identity ? 1 : 0
+
+  statement {
+    effect  = "Allow"
+    actions = ["sqs:GetQueueAttributes"]
+    # 주문 큐 하나다. Chat Signal 큐는 Lambda 가 소비하므로 KEDA 가 스케일할
+    # 대상이 아니다 (D-048).
+    resources = [local.datastore.order_queue_arn]
+  }
+}
+
+resource "aws_iam_role" "keda" {
+  count = local.keda_identity ? 1 : 0
+
+  name = "${var.project}-${var.environment}-keda"
+  # 앱 셋과 같은 신뢰 정책이다 (pods.eks.amazonaws.com).
+  assume_role_policy = data.aws_iam_policy_document.app_assume[0].json
+}
+
+resource "aws_iam_role_policy" "keda_queue_depth" {
+  count = local.keda_identity ? 1 : 0
+
+  name   = "read-queue-depth"
+  role   = aws_iam_role.keda[0].id
+  policy = data.aws_iam_policy_document.keda_queue_depth[0].json
+}
+
+# ServiceAccount 는 Helm 차트가 만든다. association 은 이름 문자열로만 걸므로
+# 여기서 따로 만들지 않는다 — 앱 셋(app_data_access.tf)과 다른 점이다.
+resource "aws_eks_pod_identity_association" "keda" {
+  count = local.keda_identity ? 1 : 0
+
+  cluster_name    = local.cluster_name
+  namespace       = var.keda_namespace
+  service_account = "keda-operator"
+  role_arn        = aws_iam_role.keda[0].arn
+
+  depends_on = [
+    aws_iam_role_policy.keda_queue_depth,
+    helm_release.keda,
+  ]
+}
+
+###############################################################################
+# apply 뒤에 한 번 해야 하는 것
+#
+#   kubectl rollout restart deploy/keda-operator -n keda
+#
+# Pod Identity 자격증명은 파드가 **생성될 때** 주입된다. 이미 떠 있는 파드는
+# association 을 걸어도 그대로 자격증명이 없다.
 ###############################################################################
