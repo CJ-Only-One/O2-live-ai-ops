@@ -28,7 +28,7 @@ def test_one_bad_body_does_not_block_others(monkeypatch):
 
     monkeypatch.setattr(main, "warm", fake_warm)
 
-    warmed = main.tick(db=None, client=None)
+    warmed, _scaled = main.tick(db=None, client=None)
 
     # bad 때문에 예외가 났어도 good 은 그대로 워밍됐어야 한다.
     assert warmed == 1
@@ -44,4 +44,5 @@ def test_failed_warm_is_not_counted(monkeypatch):
     monkeypatch.setattr(main, "needs_warming", lambda b, now: True)
     monkeypatch.setattr(main, "warm", lambda client, broadcast_id: False)
 
-    assert main.tick(db=None, client=None) == 0
+    warmed, _scaled = main.tick(db=None, client=None)
+    assert warmed == 0

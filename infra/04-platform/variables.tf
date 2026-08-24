@@ -437,3 +437,24 @@ variable "keda_namespace" {
   type        = string
   default     = "keda"
 }
+
+variable "enable_cue_warmer_scaling" {
+  description = <<-EOT
+    cue-warmer 에게 파드 사전 확장 권한을 준다 —
+    o2-dev 의 deployments/scale 서브리소스 get·patch 뿐이다(D-041).
+
+    끄면 Role·RoleBinding 만 안 만들어진다. **ServiceAccount 는 이 값과
+    무관하게 항상 만든다** — 매니페스트가 serviceAccountName 으로 그것을
+    가리키는데 없으면 쿠버네티스가 파드 생성 자체를 거부해서, 스케일이 아니라
+    캐시 워밍까지 같이 멈춘다.
+
+    그래서 꺼도 파드는 정상으로 뜨고 스케일 호출에서만 403 이 난다 —
+    캐시 워밍은 계속 돈다.
+
+    켜기 전에 argocd.tf 의 ignoreDifferences 에 대상 Deployment 가 들어
+    있는지 본다. 없으면 워머가 늘린 것을 Argo selfHeal 이 되돌리고, 양쪽 다
+    자기 일을 정상적으로 했다고만 로그를 남겨 알아채기 늦다(D-004).
+  EOT
+  type        = bool
+  default     = false
+}

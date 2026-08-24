@@ -26,6 +26,7 @@ import httpx
 from sqlalchemy import and_, create_engine, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from warmer import capacity, k8s
 from warmer.config import settings
 from warmer.models import CueSheet
 
@@ -81,16 +82,20 @@ def candidate_broadcasts(db: Session, now: datetime) -> list[dict]:
     ends_at 은 선택 필드다(cue-sheet-v1 스키마). ends_at 이 없는 행에
     scheduled_at 하한을 안 두면, 끝난 지 오래된 데모·취소된 방송이 매 tick
     영원히 후보로 다시 뽑혀 DB 조회와 JSON 파싱 비용이 서비스 수명 내내
-    계속 늘어난다. ends_at 이 있는 행은 그 값이 이미 상한이므로 이 하한을
-    안 건다 — 오래 전 시작해 아직도 진행 중인 방송을 잘못 걸러내지 않기
-    위해서다."""
+    계속 늘어난다.
+
+    **이미 끝난 방송도 STALE_LOOKBACK_S 동안은 후보로 남긴다.** 파드 원복이
+    ends_at + REVERT_COOLDOWN_S 뒤에 일어나므로, 끝나자마자 후보에서 빼면
+    되돌릴 기회 자체가 사라져 늘린 파드가 영원히 떠 있는다. 원복은 멱등이라
+    (이미 baseline 이면 patch 를 건너뛴다) 남아 있는 동안 여러 번 돌아도
+    문제가 없다."""
     horizon = now + timedelta(seconds=settings.CACHE_LEAD_S)
     lookback = now - timedelta(seconds=settings.STALE_LOOKBACK_S)
     rows = db.execute(
         select(CueSheet).where(
             CueSheet.scheduled_at <= horizon,
             or_(
-                and_(CueSheet.ends_at.is_not(None), CueSheet.ends_at >= now),
+                and_(CueSheet.ends_at.is_not(None), CueSheet.ends_at >= lookback),
                 and_(CueSheet.ends_at.is_(None), CueSheet.scheduled_at >= lookback),
             ),
         )
@@ -172,10 +177,130 @@ def warm(client: httpx.Client, broadcast_id: str) -> bool:
     return False
 
 
-def tick(db: Session, client: httpx.Client) -> int:
+def desired_replicas(body: dict, now: datetime) -> dict[str, int]:
+    """지금 걸쳐 있는 세그먼트들이 요구하는 서비스별 목표 파드 수.
+
+    확장 창은 [at - SCALE_LEAD_S, at + duration) 이다. 캐시 워밍보다 앞서
+    시작하는 이유는 파드가 Ready 되는 데 시간이 걸리기 때문이고(M-019),
+    duration 은 그 부하가 이어지는 예상 시간이다(없으면 entry_window_s).
+
+    **창이 끝나도 파드를 줄이지 않는다.** 이 창은 "언제 늘릴까" 만 정하고,
+    줄이는 것은 방송 종료 후 revert 가 한다 — 게스트가 만든 WebSocket 연결은
+    세그먼트가 끝나도 방송 끝까지 유지되므로 duration 으로 줄이면 그 연결이
+    끊긴다.
+    """
+    segments = body.get("segments")
+    if not isinstance(segments, list):
+        return {}
+
+    merged: dict[str, int] = {}
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        expected = segment.get("expected")
+        if not isinstance(expected, dict):
+            continue
+
+        try:
+            at = _to_naive_utc(segment["at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        duration = segment.get("duration_s")
+        if not isinstance(duration, (int, float)) or duration < 0:
+            duration = expected.get("entry_window_s")
+        if not isinstance(duration, (int, float)) or duration < 0:
+            duration = 0
+
+        window_start = at - timedelta(seconds=settings.SCALE_LEAD_S)
+        window_end = at + timedelta(seconds=duration)
+        if window_start <= now < window_end:
+            merged = capacity.merge(merged, capacity.targets(expected))
+
+    return merged
+
+
+def _ended_long_enough(body: dict, now: datetime) -> bool:
+    """방송이 끝나고 cooldown 까지 지났는가. ends_at 이 없으면 판단하지 않는다
+    — 언제 끝났는지 모르는 방송을 임의로 줄이면 안 된다."""
+    raw = body.get("ends_at")
+    if not raw:
+        return False
+    try:
+        ends_at = _to_naive_utc(raw)
+    except (TypeError, ValueError):
+        return False
+    return now >= ends_at + timedelta(seconds=settings.REVERT_COOLDOWN_S)
+
+
+def reconcile_scale(bodies: list[dict], now: datetime) -> int:
+    """파드 수를 맞춘다. 바꾼 서비스 수를 돌려준다.
+
+    **방송 하나가 아니라 전체를 한 번에 본다.** 파드 수는 방송별이 아니라
+    클러스터가 공유하는 값이라, 방송마다 따로 조정하면 끝난 방송이 원복하고
+    진행 중인 방송이 다시 늘리기를 매 tick 반복한다.
+
+    방송 중에는 **늘리기만** 한다. 줄이는 것은 모든 방송이 끝나고 cooldown 이
+    지난 뒤 baseline 으로 되돌리는 것 하나뿐이다(D-041 — 확장은 비용 위험,
+    축소는 가용성 위험이라 조건을 확인하는 단계로만 한다).
+    """
+    if not settings.SCALE_ENABLED:
+        return 0
+
+    desired: dict[str, int] = {}
+    for body in bodies:
+        desired = capacity.merge(desired, desired_replicas(body, now))
+
+    if desired:
+        # 요구가 있으면 그쪽으로 올린다(비용 상한 안에서).
+        targets = {
+            service: min(pods, settings.MAX_REPLICAS)
+            for service, pods in desired.items()
+        }
+        reverting = False
+    elif all(_ended_long_enough(body, now) for body in bodies):
+        # 지금 요구가 없고 남은 방송이 전부 끝났을 때만 되돌린다.
+        # 후보가 아예 없을 때도(큐시트 없음) 여기로 온다 — 아무 방송도
+        # 예정돼 있지 않은 상태의 정답은 baseline 이다.
+        # MAX_REPLICAS 를 안 씌운다. 그건 확장 폭을 막는 비용 상한이지
+        # 되돌릴 기준값을 깎는 값이 아니다.
+        targets = settings.baseline_replicas
+        reverting = True
+    else:
+        # 진행 중이거나 아직 cooldown 안 지난 방송이 있다 — 그대로 둔다.
+        return 0
+
+    ns = settings.APP_NAMESPACE
+    changed = 0
+    for service, target in targets.items():
+        current = k8s.get_replicas(ns, service)
+        if current is None:
+            continue
+
+        # 방송 중이면 늘리기만. 원복 구간에서만 줄이는 방향을 허용한다.
+        if current == target or (not reverting and current >= target):
+            continue
+
+        if k8s.set_replicas(ns, service, target):
+            logger.info(
+                "%s: %s %d -> %d",
+                "원복" if reverting else "사전 확장",
+                service,
+                current,
+                target,
+            )
+            changed += 1
+
+    return changed
+
+
+def tick(db: Session, client: httpx.Client) -> tuple[int, int]:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    bodies = candidate_broadcasts(db, now)
+
+    # 캐시 워밍은 방송마다 따로다 — 캐시 키가 방송별이라 서로 안 겹친다.
     warmed = 0
-    for body in candidate_broadcasts(db, now):
+    for body in bodies:
         try:
             if needs_warming(body, now) and warm(client, body["broadcast_id"]):
                 warmed += 1
@@ -183,22 +308,35 @@ def tick(db: Session, client: httpx.Client) -> int:
             # 방송 하나의 큐시트가 깨져 있어도 나머지 방송은 이번 tick 에
             # 그대로 처리돼야 한다 — 한 건의 문제로 전체가 밀리면 안 된다.
             logger.exception("세그먼트 판정 실패, 건너뜀: %r", body.get("broadcast_id") if isinstance(body, dict) else body)
-    return warmed
+
+    # 파드 수는 클러스터가 공유하는 값이라 전체를 한 번에 본다.
+    try:
+        scaled = reconcile_scale(bodies, now)
+    except Exception:
+        logger.exception("스케일 조정 실패")
+        scaled = 0
+
+    return warmed, scaled
 
 
 def main() -> None:
     if not settings.CUE_WARMER_ADMIN_KEY:
         logger.error("CUE_WARMER_ADMIN_KEY 가 비어 있다. api 가 요청을 전부 거부한다.")
 
-    logger.info("워머 시작: tick=%ss lead=%ss", settings.TICK_S, settings.CACHE_LEAD_S)
+    logger.info(
+        "워머 시작: tick=%ss cache_lead=%ss scale=%s",
+        settings.TICK_S,
+        settings.CACHE_LEAD_S,
+        "on" if settings.SCALE_ENABLED else "off",
+    )
 
     with httpx.Client() as client:
         while _running:
             try:
                 with SessionLocal() as db:
-                    warmed = tick(db, client)
-                    if warmed:
-                        logger.info("이번 tick 워밍: %d건", warmed)
+                    warmed, scaled = tick(db, client)
+                    if warmed or scaled:
+                        logger.info("이번 tick: 워밍 %d건 · 스케일 %d건", warmed, scaled)
             except Exception:
                 logger.exception("tick 실패")
 
