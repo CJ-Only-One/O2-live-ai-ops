@@ -93,7 +93,7 @@ variable "services" {
   # docker push 에서만 실패한다 — 앞이 다 초록이라 원인이 눈에 안 띈다.
   #
   # media 는 아직 서비스가 없어 넣지 않는다.
-  default = ["api", "testpage", "frontend", "order-worker", "chat-gateway"]
+  default = ["api", "testpage", "frontend", "order-worker", "chat-gateway", "cue-warmer"]
 }
 
 locals {
