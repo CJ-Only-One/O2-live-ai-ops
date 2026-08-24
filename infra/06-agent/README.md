@@ -121,6 +121,33 @@ Phase 3D 합성 Shadow E2E는 D-053에 따라 event source와 실행 플래그�
 미허용 Incident는 Incident State 조회·Secret 조회·ledger 획득·Dify 호출 전에 실패한다.
 상세 상태와 적용 순서는 `docs/agent-entrypoint.md` 6.7을 따른다.
 
+## Datadog Source Adapter Phase 4A
+
+`datadog_source_adapter.tf`은 기존 `o2-dify-ingress`와 분리된 Shadow Function URL을 만든다.
+기존 ingress·Worker·Dify 코드를 수정하지 않으며 신규 Lambda는 Signal Queue까지만 전송한다.
+
+```text
+Datadog synthetic monitor
+  ├─ existing webhook -> existing ingress -> existing Worker/Dify
+  └─ shadow webhook   -> disabled Datadog Source Adapter -> Signal Queue
+                                                           -> consumer disabled
+```
+
+기본값은 실행 `false`, 합성 cycle allowlist empty, cutover 2100-01-01이다. 활성화할 때는
+합성 cycle key 정확히 1개와 명시 cutover가 함께 있어야 Terraform precondition을 통과한다.
+Correlator와 Generic Worker를 별도로 켜지 않으므로 Adapter apply만으로 Dify는 호출되지 않는다.
+
+권한은 기존 O2 webhook secret read, Signal Queue `SendMessage`, 기본 Lambda 로그뿐이다.
+Function URL은 Terraform state에는 존재하지만 sensitive output으로만 노출하고 공유 문서·로그에
+기록하지 않는다. secret 값은 Terraform이 읽지 않아 state에 없으며 로그에도 남지 않는다.
+계약·인증·Queue 실패 로그는 내용 없이 CloudWatch metric/alarm으로 변환한다.
+
+2026-08-24 구현 검증에서 06-agent Python suite 48개가 통과했고 기존 Lambda-runtime
+`boto3` transaction 1개만 로컬에서 skip됐다. Terraform `fmt`·`validate`가 통과했으며 대상
+plan은 신규 리소스만 `8 add, 0 change, 0 destroy`였다. apply는 하지 않았다. 실제 양쪽
+source 지연 측정과 비활성 apply 순서는 `docs/agent-entrypoint.md` 6.8이 원본이다. 전체 stack
+plan의 별도 기존 IAM 1개·Lambda 3개 update는 대상 저장 plan에서 제외해야 한다.
+
 ## Incident Correlator Phase 3B
 
 D-055에 따라 `agent.trigger.v1`은 Agent 호출이 아니라 상관관계 전 source 신호다.

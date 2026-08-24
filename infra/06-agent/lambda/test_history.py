@@ -21,9 +21,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import boto3  # noqa: F401
 except ModuleNotFoundError:
+    _BOTO3_STUBBED = True
     sys.modules["boto3"] = types.SimpleNamespace(
         client=lambda *a, **k: None, __version__="stub"
     )
+else:
+    _BOTO3_STUBBED = False
 
 # worker 는 이 둘만 필수로 읽는다. 이력 관련 변수는 일부러 비워 둔다 —
 # 그게 O2 파이프라인의 상태이고, import 가 죽지 않아야 한다.
@@ -33,6 +36,12 @@ os.environ.setdefault("WORKER_FUNCTION", "dummy")
 
 import ingress  # noqa: E402
 import worker  # noqa: E402
+
+# unittest discovery는 같은 process에서 다음 test module을 import한다. 로컬 stub을
+# 남기면 importlib.find_spec("boto3")가 __spec__ 없는 객체를 만나 ValueError를 낸다.
+# ingress/worker는 이미 자기 module namespace에 참조를 잡았으므로 전역 cache만 치운다.
+if _BOTO3_STUBBED:
+    sys.modules.pop("boto3", None)
 
 
 def test_import_survives_without_history_env():

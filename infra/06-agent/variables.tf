@@ -223,6 +223,42 @@ variable "agent_entry_allowed_incident_ids" {
   }
 }
 
+# ── Datadog Source Adapter (Phase 4A: 기본 비활성) ───────────────
+
+variable "datadog_source_adapter_execution_enabled" {
+  description = "Phase 4A 합성 dual-run에서만 true로 바꾸는 Datadog Source Adapter 실행 게이트"
+  type        = bool
+  default     = false
+}
+
+variable "datadog_source_adapter_allowed_cycle_keys" {
+  description = "신규 Signal Queue 전송을 허용할 합성 Datadog cycle key. 활성화 시 정확히 1개"
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for value in var.datadog_source_adapter_allowed_cycle_keys :
+      can(regex("^[^,:]{1,128}$", value))
+    ])
+    error_message = "Datadog Source Adapter allowlist는 쉼표·콜론 없는 1~128자 합성 cycle key만 허용한다."
+  }
+}
+
+variable "datadog_source_adapter_not_before_epoch" {
+  description = "이 Unix epoch 이전 Datadog event time은 신규 Signal Queue로 보내지 않는다. 비활성 기본값은 2100-01-01"
+  type        = number
+  default     = 4102444800
+
+  validation {
+    condition = (
+      var.datadog_source_adapter_not_before_epoch >= 0 &&
+      floor(var.datadog_source_adapter_not_before_epoch) == var.datadog_source_adapter_not_before_epoch
+    )
+    error_message = "Datadog Source Adapter cutover는 0 이상의 정수 Unix epoch여야 한다."
+  }
+}
+
 # ── Incident Correlator (Phase 3B: 비활성) ───────────────────────
 
 variable "incident_correlator_max_concurrency" {

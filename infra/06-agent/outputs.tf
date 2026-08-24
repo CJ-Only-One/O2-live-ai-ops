@@ -99,6 +99,24 @@ output "agent_entry_execution_enabled" {
   value       = var.agent_entry_execution_enabled
 }
 
+# ── Datadog Source Adapter (Phase 4A: 기본 비활성) ───────────────
+
+output "datadog_source_adapter_function_name" {
+  description = "기존 O2 ingress와 분리된 agent.trigger.v1 Datadog Source Adapter"
+  value       = aws_lambda_function.datadog_source_adapter.function_name
+}
+
+output "datadog_source_adapter_function_url" {
+  description = "합성 dual-run 전용 Datadog webhook URL. x-dd-secret 인증이며 공유 문서에 기록하지 않는다."
+  value       = aws_lambda_function_url.datadog_source_adapter.function_url
+  sensitive   = true
+}
+
+output "datadog_source_adapter_execution_enabled" {
+  description = "Datadog Source Adapter Signal Queue 전송 게이트"
+  value       = var.datadog_source_adapter_execution_enabled
+}
+
 # ── Incident Correlator (Phase 3B: 비활성) ───────────────────────
 
 output "incident_state_table" {
