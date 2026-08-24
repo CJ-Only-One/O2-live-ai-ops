@@ -43,12 +43,6 @@ os.environ.setdefault("ALERT_SECRET_NAME", "dummy")
 os.environ.setdefault("DIFY_URL", "http://127.0.0.1/v1/workflows/run")
 os.environ.setdefault("WORKER_FUNCTION", "dummy")
 
-# boto3 가 **설치돼 있는데 설정이 없는** 환경이 있다. CI 러너가 그렇다.
-# 위 stub 은 boto3 가 없을 때만 끼므로 그런 환경에서는 진짜 boto3 가 쓰이고,
-# ingress.py 가 import 시점에 부르는 boto3.client("lambda") 가 리전을 못 찾아
-# NoRegionError 로 죽는다. 클라이언트를 만들 때만 필요한 값이라 아무 리전이나
-# 있으면 되고, 이 점검은 여전히 AWS 를 부르지 않는다.
-os.environ.setdefault("AWS_DEFAULT_REGION", "ap-northeast-2")
 
 import ingress  # noqa: E402
 import worker  # noqa: E402
