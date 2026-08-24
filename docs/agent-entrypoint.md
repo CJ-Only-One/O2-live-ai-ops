@@ -1,9 +1,9 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 4B source-delay slice complete; legacy dual-run not run; all production execution gates disabled
+> **Status:** Phase 4C live-source Shadow E2E complete; all production execution gates disabled
 > **Updated:** 2026-08-24
-> **Decision:** `decisions.md` D-050 and D-055
+> **Decision:** `decisions.md` D-050, D-055, and D-066
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
 
 ```yaml
@@ -36,13 +36,15 @@ implementation_state:
   phase4b_synthetic_monitor: DELETED_AFTER_TEST
   phase4b_source_delay_samples: CHAT_7995_8743MS_DATADOG_TRIGGERED_68400_63611MS
   phase4b_legacy_new_dual_run: NOT_RUN_LEGACY_DIFY_INTENTIONALLY_EXCLUDED
-  datadog_monitor_id_guard: IMPLEMENTED_NOT_APPLIED
-  datadog_migration: PHASE4B_SOURCE_DELAY_ONLY
+  datadog_monitor_id_guard: APPLIED_EXECUTION_DISABLED
+  phase4c_live_source_to_dify_e2e: PASS_CHAT_DATADOG_CORRELATED_DIFY_ONCE
+  phase4c_datadog_cycle_substitution: PASS_TRIGGERED_RECOVERED_SAME_CYCLE
+  datadog_migration: PHASE4C_SHADOW_E2E_ONLY
   production_agent_handoff: DISABLED
 activation_blockers:
   - CORRELATION_WINDOW_NOT_DECIDED_FROM_TWO_SAMPLES
   - DATADOG_MONITOR_MAPPING_NOT_CONFIGURED
-  - DATADOG_ALERT_CYCLE_KEY_SUBSTITUTION_NOT_VERIFIED
+  - CROSS_SOURCE_ENVIRONMENT_CANONICALIZATION_NOT_DECIDED
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
 production_migration_blockers:
@@ -683,13 +685,11 @@ index가 늦게 반영돼 초기 `run:` 쿼리가 빈 series였다. 테스트는
 운영 monitor에서는 `{*}`로 우회하지 않고 tag-filter 조회가 가능해질 때까지 prewarm한다.
 
 D-066 후속 구현은 이 사전 미확정 문제를 제거하기 위해 guard를 합성 monitor ID 하나로
-바꿨다. 실제 `cycle_key`는 payload와 멱등 키에 그대로 남는다. 현재 브랜치에서는 코드·
-Terraform·계약 테스트만 변경했고 실환경 Lambda에는 아직 적용하지 않았다. 병합 후 비활성
-targeted apply를 먼저 수행하고, 원래 `$ALERT_CYCLE_KEY` payload로 Triggered/Recovered가 같은
-cycle인지 확인해야 `DATADOG_ALERT_CYCLE_KEY_SUBSTITUTION_NOT_VERIFIED` blocker를 제거한다.
-병합 전에는 Lambda 전체 50건(1건 skip), Terraform validate, 비활성 targeted plan
-`0 add / 1 update / 0 destroy`, 잘못된 활성 입력 차단까지 확인했다. 전체 plan의 기존 별도
-4 updates는 targeted apply 대상에 포함하지 않는다.
+바꿨다. 실제 `cycle_key`는 payload와 멱등 키에 그대로 남는다. 비활성 targeted apply는
+`0 add / 1 update / 0 destroy`로 수행했고, Phase 4C에서 원래 `$ALERT_CYCLE_KEY` payload의
+Triggered와 Recovered가 같은 cycle로 들어오는 것을 확인했다. 이에 따라
+`DATADOG_ALERT_CYCLE_KEY_SUBSTITUTION_NOT_VERIFIED` blocker는 제거했다. 전체 plan의 기존 별도
+IAM 1개·Lambda 4개 update는 targeted apply 대상에서 제외했고 적용하지 않았다.
 
 종료 후 두 Adapter는 실행 `false`, allowlist empty, 2100 cutover로 복귀했고 Chat event source는
 `Disabled`다. 합성 monitor는 삭제 후 GET 404를 확인했고 Shadow webhook은 운영형 15필드
@@ -697,6 +697,41 @@ payload로 남겨 두되 어떤 monitor에도 붙이지 않았다. Signal Queue�
 Queue/DLQ는 모두 visible/in-flight/delayed 0, 합성 Candidate 0, Adapter 실패 로그 0이었다.
 두 Adapter 대상 재-plan은 `No changes`였고 06-agent 전체 plan의 별도 기존 update 4개는 계속
 적용하지 않았다. 상세 측정 근거는 M-017에 있다.
+
+### 6.9 Phase 4C 실제 source → 동일 Incident → Dify Shadow E2E
+
+2026-08-24에 실제 외부 WebSocket Chat Candidate와 Datadog custom metric monitor를 같은
+테스트 Incident로 연결했다. 300초는 기능 검증용 window이며 운영값이 아니다. 기존 팀 앱과
+기존 Datadog webhook은 대상으로 삼지 않았고, 전용 contract-test Dify 앱만 호출했다.
+
+첫 실행은 Chat의 환경 `dev`와 Datadog tag `env:o2-dev`가 달라 같은 symptom·service·surface와
+시간창이어도 Incident 두 개로 분리됐다. Correlator가 환경을 exact match하는 계약대로
+fail-safe한 결과다. Worker는 disabled라 Dify 호출은 0이었고 두 Invocation, Incident State와
+합성 monitor를 개별 정리한 뒤 새 식별자로 재실행했다(T-026).
+
+재실행에서는 Datadog tag를 `env:dev`로 맞췄다. 실제 Chat Candidate는 `READ_PATH/MEDIUM`,
+4 messages, 4 unique users, `raw_chat_included=false`였고, Datadog은 원래 15필드 payload의
+`$ALERT_CYCLE_KEY`와 `$ALERT_ID`를 그대로 사용했다.
+
+| 검증 지점 | 결과 |
+|---|---|
+| source event-time 차이 | 57,840ms; 300초 test window 안 |
+| Incident | revision 2, `CORRELATED/HIGH`, Chat+Datadog 두 source |
+| normalized scope | `dev/LATENCY/api/READ_PATH` |
+| Invocation revision 1 | Worker `SUPERSEDED`, Dify 미호출 |
+| Invocation revision 2 | Worker `SUCCEEDED`, 전용 Dify run 정확히 1건 |
+| Dify API 상태 | `succeeded`, error null, 3 steps, 0 tokens, elapsed 0.177606s |
+| 실제 cycle 치환 | Triggered와 Recovered가 같은 cycle key, transition만 다름 |
+
+성공 확인 즉시 Chat Adapter, Datadog Adapter, Correlator, Generic Worker와 세 event source를
+모두 기본 비활성값으로 복귀했다. 합성 monitor는 삭제 후 GET 404, Signal/Invocation Queue와
+모든 관련 DLQ는 visible/in-flight/delayed 0, Incident State·execution ledger·Candidate·window
+state는 0이다. 이번에 건드린 06-agent/08-chat-signal 대상 plan은 모두 `No changes`다.
+06-agent 전체 plan의 별도 기존 IAM 1개·Lambda 4개 update는 적용하지 않았다.
+
+이 E2E로 새 Chat 진입점의 기능 게이트는 통과했지만 production 자동 호출을 연 것은 아니다.
+운영 전에는 source별 반복 지연으로 correlation window를 정하고, 운영 Datadog monitor mapping과
+`environment` canonicalization 정책을 확정해야 한다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 

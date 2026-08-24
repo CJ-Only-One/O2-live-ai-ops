@@ -41,6 +41,7 @@
 | T-023 | SDK 가 봉투 필드를 늘렸는데 드리프트 시험이 안 깬다 | `ENVELOPE_FIELDS`, `pod_name`, 상수 없는 계약, 늘어난 쪽 감지 |
 | T-024 | 없는 메트릭을 조회했는데 404 가 아니라 빈 태그 목록이 온다 | `/api/v2/metrics/.../all-tags`, 200+`tags:[]`, `/api/v1/search`, `trace.fastapi.request` |
 | T-025 | 새 custom metric 값은 보이는데 tag-filter monitor가 계속 No Data다 | metric ingestion, tag index propagation, `all-tags`, prewarm, `{*}` 금지 |
+| T-026 | Chat과 Datadog이 같은 장애인데 Incident가 두 개 생긴다 | `dev`, `o2-dev`, environment exact match, canonicalization |
 
 
 ---
@@ -1357,3 +1358,29 @@ prewarm한다. 이번에는 다른 producer가 없는 일회용 metric name임�
 series 0은 tag 누락으로 너무 빨리 해석했다. 어느 응답에도 “tag index가 아직 준비되지
 않았다”는 오류가 없었고, 값 경로와 tag 검색 경로를 따로 확인하기 전까지 두 상황이 같은
 빈 series로 보였다.
+
+---
+
+## T-026. Chat과 Datadog이 같은 장애인데 Incident가 두 개 생긴다
+
+**증상** — 실제 Chat과 Datadog 신호가 모두 `LATENCY/api/READ_PATH`이고 발생 시각도 58초
+이내였지만, Correlator는 두 source를 합치지 않고 각각 provisional Incident revision 1을
+만들었다. 오류 로그는 없었고 두 결과 모두 개별적으로는 정상처럼 보였다.
+
+**원인** — Chat 배포 환경은 `environment=dev`, Datadog 합성 monitor tag는 `env:o2-dev`였다.
+Correlator는 environment·symptom·service·surface를 exact match하며, 환경이 다르면 같은
+시간창이어도 병합하지 않는다. 비슷해 보이는 환경명을 임의로 합치지 않는 fail-safe 동작이다.
+
+**해결** — 검증에서는 Datadog tag를 `env:dev`로 맞춰 재실행했고 동일 Incident revision 2로
+병합되는 것을 확인했다. 운영 적용 전에는 다음 중 하나를 명시적으로 결정해야 한다.
+
+1. 모든 producer가 하나의 표준 environment 값을 보내게 한다.
+2. 공통 진입점 앞에 버전이 있는 명시적 environment mapping을 둔다.
+
+접두사 제거 같은 fuzzy normalization은 서로 다른 환경을 잘못 병합할 수 있어 사용하지 않는다.
+정책이 결정되기 전에는 exact match와
+`CROSS_SOURCE_ENVIRONMENT_CANONICALIZATION_NOT_DECIDED` blocker를 유지한다.
+
+**왜 늦게 찾았나** — 사람에게 `dev`와 `o2-dev`는 같은 환경처럼 보였고 source별 정상화
+결과를 나란히 비교하지 않았다. exact match는 오류 대신 독립 Incident라는 그럴듯한 결과를
+내므로, Dify를 열기 전에 Incident State를 확인할 때까지 불일치가 드러나지 않았다.

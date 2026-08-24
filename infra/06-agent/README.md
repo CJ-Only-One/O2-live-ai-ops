@@ -154,14 +154,25 @@ empty, 2100 cutover로 복귀했으며 Shadow webhook은 운영형 payload로 �
 
 첫 Phase 4B 실측에서는 사전에 알 수 없는 cycle key를 allowlist에 넣기 위해 webhook payload를
 합성값으로 일시 바꿨다. D-066 후속 구현은 이 한계를 없애려고 guard를 합성 monitor ID로
-교체했다. `cycle_key`는 Datadog 원본을 그대로 envelope와 멱등 키에 사용한다. 이 변경은 아직
-실환경에 적용하지 않았으며, 병합 후 비활성 targeted apply와 실제 `$ALERT_CYCLE_KEY`
-Triggered/Recovered 검증이 필요하다.
+교체했다. `cycle_key`는 Datadog 원본을 그대로 envelope와 멱등 키에 사용한다. 비활성 targeted
+apply 후 Phase 4C에서 원래 `$ALERT_CYCLE_KEY` payload의 Triggered와 Recovered가 같은 cycle로
+들어오는 것을 확인했다.
 
 병합 전 검증은 Lambda 전체 50건 통과(1건 skip), `terraform validate` 통과, 비활성 targeted
 plan `0 add / 1 update / 0 destroy`다. 잘못된 `enabled+empty+2100` 입력은 precondition으로
-차단됐고, `enabled+monitor ID 1개+명시 cutover`만 통과했다. 전체 plan에는 이번 Adapter 외 기존
-IAM 1건·Lambda 3건 update가 있으므로 저장한 targeted plan 이외의 변경은 적용하지 않는다.
+차단됐고, `enabled+monitor ID 1개+명시 cutover`만 통과했다. 현재 전체 plan에는 이번 Adapter 외
+기존 IAM 1건·Lambda 4건 update가 있으므로 저장한 targeted plan 이외의 변경은 적용하지 않는다.
+
+Phase 4C Shadow E2E에서는 실제 외부 WebSocket 채팅과 Datadog custom metric monitor를
+같은 Incident revision 2로 병합하고, 전용 contract-test Dify workflow를 정확히 한 번
+호출했다. Worker는 revision 1을 `SUPERSEDED`, revision 2를 `SUCCEEDED`로 기록했고 Dify run은
+`succeeded`, 3 steps, 0 tokens였다. 첫 실행에서 Chat `dev`와 Datadog `o2-dev`가 서로 다른
+Incident로 안전하게 분리돼 source 간 environment canonicalization 필요성도 확인했다.
+
+검증 종료 후 Adapter·Correlator·Worker와 event source는 모두 disabled, allowlist는 empty로
+복귀했다. Queue·DLQ·Incident State·ledger·합성 Candidate는 0이고, 대상 plan은 `No changes`다.
+전체 plan의 별도 기존 IAM 1개·Lambda 4개 update는 적용하지 않았다. 상세 근거는
+`docs/agent-entrypoint.md` 6.9, M-020, T-026에 있다.
 
 ## Incident Correlator Phase 3B
 

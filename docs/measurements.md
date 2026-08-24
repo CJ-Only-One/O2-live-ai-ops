@@ -32,6 +32,7 @@
 | M-017 | Incident Correlator 합성 E2E와 처리시간 | Correlator 코드·메모리·DynamoDB index·Queue 설정 변경 · 실제 source Adapter 연결 |
 | M-018 | Agent Invocation Worker 첫 Shadow E2E와 fail-closed | Worker IAM·ledger finalize·Dify 계약·Queue 설정 변경 |
 | M-019 | 파드 Ready 시간 (사전 확장 리드타임) | `readinessProbe` 설정 변경 · 이미지 크기 변경 · 인스턴스 타입 변경 · 노드 여유 부족으로 Karpenter 개입 시 |
+| M-020 | 실제 Chat·Datadog → 동일 Incident → Dify Shadow E2E | Source Adapter·Correlator·Worker·Dify 계약·monitor 평가 주기 변경 |
 
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
@@ -1417,3 +1418,44 @@ Karpenter 항과 같은 조건).
 **다시 재야 할 때** — `readinessProbe` 의 `periodSeconds`·`initialDelaySeconds` 를
 바꿀 때, 이미지 크기가 크게 변할 때, 인스턴스 타입을 바꿀 때, 노드 여유가 없어
 Karpenter 가 개입하게 될 때.
+
+---
+
+## M-020. 실제 Chat·Datadog → 동일 Incident → Dify Shadow E2E
+
+2026-08-24에 실제 외부 WebSocket 채팅과 Datadog custom metric monitor를 전용 Shadow
+경로에 넣었다. 기존 운영 monitor·기존 Dify 앱은 건드리지 않았고, Adapter·Correlator·Worker는
+정확한 합성 식별자만 허용한 동안에만 순차적으로 열었다. correlation window 300초는 기능
+검증용이며 운영값이 아니다.
+
+| 관측 지점 | 값 |
+|---|---:|
+| Chat Candidate | `READ_PATH/MEDIUM`, messages 4, unique users 4, raw chat 없음 |
+| Chat source-to-Queue | 33,886ms |
+| Datadog Triggered source-to-Queue | 69,474ms |
+| 두 source event-time 차이 | 57,840ms |
+| Incident | revision 2, `CORRELATED/HIGH`, sources 2 |
+| Correlator cold duration | revision 1: 6,138.64ms · revision 2: 6,362.20ms |
+| Worker revision 1 | `SUPERSEDED`, Dify 미호출 |
+| Worker revision 2 | `SUCCEEDED`, 5,961.15ms |
+| Dify 실행 | 정확히 1건, `succeeded`, 0.177606s, 3 steps, 0 tokens |
+| Datadog Recovered source-to-Queue | 69,242ms |
+| Datadog 실제 cycle | Triggered와 Recovered가 같은 cycle key |
+
+첫 실행은 Chat `environment=dev`와 Datadog `env:o2-dev`가 달라 동일한
+`LATENCY/api/READ_PATH`와 약 58초 간격이어도 provisional Incident 두 개가 생겼다. Worker는
+disabled라 Dify 호출은 없었다. 합성 상태를 개별 삭제한 뒤 Datadog tag를 `env:dev`로 맞춰
+재실행했고, 두 source가 `dev/LATENCY/api/READ_PATH` Incident revision 2로 병합됐다. 상세
+원인은 T-026에 남겼다.
+
+성공 직후 모든 실행 gate와 event source를 disabled로 복귀하고 allowlist를 비웠다. 합성
+monitor는 삭제 후 GET 404, Signal·Invocation Queue와 관련 DLQ는 모두
+visible/in-flight/delayed 0, Incident State·ledger·Candidate·window state는 0이었다. 이번에
+건드린 대상 Terraform 재-plan은 `No changes`였다.
+
+이 Chat 33.886초 표본은 Adapter 활성화 뒤 한 번만 잰 값이라 M-017의 약 8초 표본 둘을
+대체하지 않는다. 실제 장애의 source 발생 간격과 각 경로 지연을 반복 자동화로 더 측정한 뒤
+운영 correlation window를 결정한다.
+
+**다시 재야 할 때** — Source Adapter·Correlator·Worker 코드, Dify workflow 계약, Datadog
+monitor 평가 주기, Queue 설정 또는 environment canonicalization 정책을 바꿀 때.
