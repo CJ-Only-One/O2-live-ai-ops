@@ -45,6 +45,7 @@
 | T-027 | 시험 파일을 저장소에 넣었는데 CI 가 한 번도 안 돌린다 | 명시 파일 목록, 두 가지 시험 양식, `NO TESTS RAN` 종료 코드 5 |
 | T-028 | 로컬에서는 통과한 `test_history.py`가 CI에서 `NoRegionError`로 죽는다 | boto3 import-time client, AWS_DEFAULT_REGION, EC2 metadata, hermetic test |
 | T-029 | Chat Source Adapter는 성공했는데 DLQ가 늘어난다 | disabled DynamoDB Stream, maximum record age, on-failure destination, cutover는 handler 안쪽 |
+| T-030 | 앱은 정상인데 `o2.app.*`가 전부 No Data다 | DogStatsD, `useHostPort`, `DD_AGENT_HOST`, UDP 8125 |
 
 
 ---
@@ -1480,3 +1481,25 @@ cutover로는 이 record를 `IGNORED_BEFORE_ACTIVATION` 처리할 수 없다.
 호출 전에 일어나 Lambda `Errors`와 애플리케이션 로그가 모두 정상이다. DLQ 전송 시각,
 mapping의 최대 record age, 성공한 Candidate sequence를 함께 보지 않으면 서로 모순된 상태처럼
 보인다.
+
+---
+
+## T-030. 앱은 정상인데 `o2.app.*`가 전부 No Data다
+
+**증상** — 신규 이미지와 `DD_AGENT_HOST=status.hostIP`가 배포됐고 API 요청도 200이지만
+Datadog에서 `o2.app.*` series가 하나도 생기지 않았다. 애플리케이션의 UDP `sendto`는
+예외 없이 성공했다.
+
+**원인** — Datadog Helm chart의 `dogstatsd.portEnabled=true`는 컨테이너의 8125/UDP만
+선언한다. 노드 IP로 보내는 경로에 필요한 hostPort는 `dogstatsd.useHostPort=true`가 별도다.
+실제 DaemonSet에는 `containerPort=8125`만 있고 `hostPort`가 비어 있어 패킷이 Agent에
+도달하지 않았다.
+
+**조치** — `04-platform` Datadog values에 `useHostPort=true`를 추가하고 plan/apply 뒤
+DaemonSet의 `8125/UDP hostPort=8125`를 확인한다. 앱 파드에는 `DD_ENTITY_ID=metadata.uid`도
+주입해 UDP와 APM의 Kubernetes origin 연결 근거를 제공한다. 그 뒤 실제 앱 요청과 Datadog
+recent point를 다시 확인한다.
+
+**왜 늦게 찾았나** — `portEnabled`라는 이름과 UDP `sendto`의 성공 때문에 수신 포트가
+노드에도 열렸다고 오해했다. UDP는 목적지 listener가 없어도 송신 성공으로 보이며,
+Datadog Agent 자체에는 다른 소스의 DogStatsD 패킷이 계속 들어와 전체 상태도 정상처럼 보였다.
