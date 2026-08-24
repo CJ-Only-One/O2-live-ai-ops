@@ -107,7 +107,7 @@ stateDiagram-v2
 
 | 상태 | 불변조건 |
 |---|---|
-| `Deduped` | 진입점이 둘이라 **같은 장애가 두 번 들어온다.** 같은 대상·같은 증상의 진행 중 사건과 병합한다 |
+| `Deduped` | 진입점이 둘이라 **같은 장애가 두 번 들어온다.** D-055의 결정론적 조건으로 같은 진행 중 사건에 붙이고, 모호하면 강제 병합하지 않는다 |
 | `Baseline` | 기준값 기록 · 실행 락 · 멱등 키. **이것 없이 `Acting` 으로 가지 않는다** |
 | `Verifying` | `verification_metrics` 로만 판정. **런북으로 시작했으면 그 런북이 지정한 지표로** |
 | 런북 반복 금지 | 런북 조치가 검증 실패하면 **같은 절차를 다시 실행하지 않는다** |
@@ -164,21 +164,22 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    A["시청자 채팅 파생 신호<br/>본문 없음 · 발화량 · 해시 · 중복"] --> B["Incident Candidate"]
-    B --> C["Agent 기동"]
-    D["Datadog 알림<br/>지속 조건 때문에 늦게 도착"] -.->|"같은 사건"| E
-    C --> E["Deduped 병합"]
-    E --> F{"유사 과거 사례"}
-    F -->|"없음 · 처음 보는 장애"| G["조사 — 읽기 급증 · api 포화"]
-    G --> H{"가설"}
-    H -->|"정상 유입 → 늘려야"| I["정보 게이트<br/>조치가 정반대라 못 고른다"]
-    H -->|"자동화 → 막아야"| I
-    I -->|"질문: 계획된 외부 노출?"| J{"운영자 답변"}
-    J -->|"있음"| K["용량 쪽으로 조사 우선순위"]
-    J -->|"없음"| L["보안팀 확인 · 주문 경로 제한 후보"]
-    J -->|"모르겠다"| M["HoldAction<br/>양쪽에 안전한 조치"]
-    M --> N["읽기 경로 요청당 CPU 감소"]
-    N --> O["검증 — 포화 완화 AND 차단 0<br/>AND Agent 가 단정하지 않음"]
+    A["시청자 채팅 파생 신호<br/>본문 없음 · 발화량 · 고유 사용자 · 중복"] --> B["Incident Candidate"]
+    B --> C["agent.trigger.v1"]
+    D["Datadog 알림<br/>지속 조건 때문에 늦게 도착"] -.->|"agent.trigger.v1"| E
+    C --> E["Incident Correlator<br/>Deduped 병합"]
+    E --> F["같은 incident_id<br/>revision 증가"]
+    F --> G{"유사 과거 사례"}
+    G -->|"없음 · 처음 보는 장애"| H["조사 — 읽기 급증 · api 포화"]
+    H --> I{"가설"}
+    I -->|"정상 유입 → 늘려야"| J["정보 게이트<br/>조치가 정반대라 못 고른다"]
+    I -->|"자동화 → 막아야"| J
+    J -->|"질문: 계획된 외부 노출?"| K{"운영자 답변"}
+    K -->|"있음"| L["용량 쪽으로 조사 우선순위"]
+    K -->|"없음"| M["보안팀 확인 · 주문 경로 제한 후보"]
+    K -->|"모르겠다"| N["HoldAction<br/>양쪽에 안전한 조치"]
+    N --> O["읽기 경로 요청당 CPU 감소"]
+    O --> P["검증 — 포화 완화 AND 차단 0<br/>AND Agent 가 단정하지 않음"]
 ```
 
 **채팅 본문을 Agent 에게 주지 않는다.** 시청자가 자유롭게 타이핑하는 유일한 입력이라
@@ -189,13 +190,14 @@ flowchart TB
 | 본문을 싣지 않는 근거 | `contracts.md` 5.3 "본문은 싣지 않는다" (설계 8.5 프롬프트 인젝션) |
 | 파생 신호 스키마 | `contracts.md` 5.6 `chat.signal.v1` |
 | Candidate 스키마 | `contracts.md` 5.7 `chat.incident_candidate.v1` |
-| Candidate 생성·호출 정책 | `docs/chat-incident-candidate.md`, `docs/agent-entrypoint.md` 1.2 |
+| Candidate 생성·Incident 호출 정책 | `docs/chat-incident-candidate.md`, `docs/agent-entrypoint.md` 1.2, D-055 |
 
-**Agent 호출은 `CANDIDATE_CREATED` 에서 한 번만이다**(D-050, `agent-entrypoint.md` 1.2).
-쿨다운 중 `CANDIDATE_UPDATED` 는 저장만 하고 다시 호출하지 않는다 —
-채팅 한 건마다 Agent 를 부르지 않는다.
+**Chat trigger 생성은 `CANDIDATE_CREATED`에서 한 번만이다**(D-050, D-055).
+쿨다운 중 `CANDIDATE_UPDATED`는 저장만 한다. Agent는 source trigger가 아니라
+`agent.incident.v1` revision을 받으며, 첫 cross-source 증거 같은 material change에만 후속
+revision을 분석한다.
 
-**진입점이 둘이 되면 병합이 반드시 필요해진다**(0.4 `Deduped`).
+**진입점이 둘이 되면 Agent 호출 전에 병합 계층이 반드시 필요해진다**(0.4 `Deduped`, D-055).
 채팅으로 하나, 알림으로 하나 들어오므로 합치지 않으면 같은 사건을 두 번 조사한다.
 
 ---
