@@ -22,7 +22,11 @@ services:
   # RDS 는 프라이빗 서브넷에 있고 보안 그룹이 EKS 노드로 좁혀져 있어
   # 로컬에서는 닿지 않는다 — 그래서 컨테이너로 대신 띄운다.
   mysql:
-    image: mysql:8.0
+    # infra/03-data 의 db_engine_version 과 메이저 버전을 맞춘다. 8.0 은 표준
+    # 지원이 끝나 RDS 에서 vCPU 시간당 확장 지원 요금이 붙어(D-025, 인스턴스
+    # 요금의 10배) 8.4(LTS)로 올렸다 — 로컬을 8.0 에 남겨두면 8.4 에서만
+    # 다르게 도는 문법을 로컬에서는 못 잡아낸다.
+    image: mysql:8.4
     # 03-data 의 파라미터 그룹과 같은 값이다. 다르면 로컬에서는 통과한 쿼리가
     # 클러스터에서 "Illegal mix of collations" 로 깨진다 (infra/03-data/rds.tf).
     command: >

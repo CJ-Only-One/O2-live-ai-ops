@@ -79,6 +79,7 @@
 | D-062 | S3 조치는 api 라우트 하나 — runbook 카탈로그에는 안 넣는다 | `cfg:read_path_degraded`, `inventory.check` 생략, 원인 라벨 없음, 행동 기준 |
 | D-063 | 집계기 지연은 샤드 수로 푼다 — `parallelization_factor` 는 쓸 수 없다 | sequence number 가드, 순서 뒤바뀜, 조용한 유실, `source` 키 |
 | D-064 | 파드별 CPU 는 조임 비율이 아니라 사용량으로 본다 — `limits.cpu` 를 안 건다 | CFS 쿼터, 분모 없음, `kubernetes.cpu.usage.total`, F-6 종결 |
+| D-065 | 큐시트 저장은 형식을 검증하지 않는다 — 쓰기 경로가 사람뿐일 때까지만 | `cue_sheet.py`, jsonschema 런타임 의존성 보류, API 라우트·AI 해석 붙일 때 재검토 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4009,3 +4010,38 @@ CFS 시계열이 하나 생긴다. 비율은 못 내지만 **시계열이 존재
 
 F-6 은 이것으로 종결한다.
 
+
+## D-065. 큐시트 저장은 형식을 검증하지 않는다 — 쓰기 경로가 사람뿐일 때까지만
+
+`apps/api/app/services/cue_sheet.py` 의 `save_cue_sheet` 는 `docs/contracts/
+cue-sheet-v1.schema.json` 을 다시 검증하지 않는다. `segment_type` 이 enum
+밖이든, `sku_id` 형식이 틀렸든, `expected.by` 가 없든 그대로 저장된다.
+
+지금은 문제가 안 된다. 유일한 쓰기 경로가 `python -m app.seed_cue_sheet`
+이고, 그건 사람이 직접 돌리면서 `scripts/validate-cue-sheet.py` 로 먼저
+검증했다는 것을 전제한다. 코드 리뷰(초안)에서 지적됐고, 지금 안 고치기로
+정했다.
+
+### 왜 지금 안 고치나
+
+`jsonschema` 는 `requirements-dev.txt`(CI 전용)에만 있고 `requirements.txt`
+(런타임)에는 없다. 사람만 쓰는 CLI 하나를 위해 api 런타임 이미지에 의존성을
+새로 추가하는 것은 지금 단계에서 오버킬이다 — 큐시트 저장소 구성(이 결정이
+속한 단계)의 목표는 저장이 되는가이지, 아직 존재하지 않는 자동 쓰기 경로를
+방어하는 것이 아니다.
+
+### 언제 다시 봐야 하나
+
+**API 라우트나 AI 해석 파이프라인이 이 함수를 직접 호출하게 되는 순간.**
+그때부터 "사람이 미리 검증했다" 는 전제가 사라진다. 잘못된 값이 조용히
+저장되고, 그걸 나중에 워머(사전 확장 reconcile 루프)가 읽다가 죽으면
+원인이 몇 단계 전(입력 검증 부재)으로 숨는다 — 증상은 워머에서 나는데
+원인은 여기다.
+
+그 시점에 붙일 것:
+- `save_cue_sheet` 진입부에 `jsonschema` 검증(런타임 의존성으로 승격)
+- 또는 API 라우트 쪽에서 요청 바디를 Pydantic 모델로 한 번 걸러 형식이
+  깨진 요청은 저장 함수에 아예 안 들어가게
+
+버전 역행 방지·오프셋 필수·`updated_at` 정합성은 이미 `save_cue_sheet`
+안에서 처리한다 — 이 결정이 남겨두는 구멍은 **형식 검증** 하나뿐이다.
