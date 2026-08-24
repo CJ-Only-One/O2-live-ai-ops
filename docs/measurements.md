@@ -1281,8 +1281,32 @@ Worker와 Agent Invocation Queue mapping을 기본 비활성 상태로 적용했
 실패했다. 수정은 ledger table에 대한 `DeleteItem` 하나이며 targeted plan은 `0 add, 1 change,
 0 destroy`다. 실패 메시지는 Message ID·body·attribute를 대조한 뒤 개별 삭제했고,
 ledger·lock·Incident State는 합성 marker와 owner를 확인하는 하나의 조건부 transaction으로
-정리했다. 종료 시 Queue·DLQ와 세 DynamoDB key는 모두 비어 있었다. fix를 main에 병합·적용한
-뒤 새 Incident ID로 재측정하며 기존 ID는 재사용하지 않는다.
+정리했다. 종료 시 Queue·DLQ와 세 DynamoDB key는 모두 비어 있었다. 이 시점에는 fix를 main에
+병합·적용한 뒤 기존 ID가 아닌 새 Incident ID로 재측정하기로 결정했다.
+
+### IAM 수정 적용 후 재측정
+
+`dynamodb:DeleteItem`만 추가되는 IAM plan(`0 add, 1 change, 0 destroy`)을 적용하고 대상
+재-plan이 `No changes`인 것을 확인했다. 이전 실패 ID를 재사용하지 않고 새 합성 Incident
+`inc_01M0S4H37CKEJPHZ46E5ECS8N4`, revision 2로 같은 Shadow 절차를 수행했다.
+
+| 관측 지점 | 결과 |
+|---|---|
+| 첫 Queue 메시지 | Worker `SUCCEEDED`, ledger revision 2, attempt 1 |
+| Dify 실행 | 정확히 1건 `succeeded`; run ID가 ledger에 기록됨 |
+| Incident lock | 성공 확정 transaction에서 정상 삭제 |
+| 첫 실행 시간 | 6,176.10ms; cold init 143.55ms 포함 |
+| 동일 revision 재전송 | Worker `DUPLICATE`, 143.43ms |
+| 중복 시 Dify 실행 | 추가 실행 없음; ledger run ID와 attempt 1 유지 |
+| Queue·DLQ | visible/in-flight/delayed 모두 0 |
+| 종료 상태 | mapping `Disabled`, 실행 `false`, allowlist empty |
+| 합성 데이터 정리 | ledger·lock·Incident State 모두 없음 |
+| 운영 경보와 drift | Worker/DLQ alarm `OK`, 대상 재-plan `No changes` |
+
+재측정은 Phase 3D Shadow E2E를 통과했다. 확인 범위는 Queue → Worker → 전용 Dify workflow의
+정상 처리, 성공 ledger 확정, Incident lock 해제, 동일 revision 멱등 차단, 안전한 비활성화와
+합성 데이터 정리다. production Agent handoff는 활성화하지 않았으며 실제 source pipeline
+지연, 운영 correlation window, Datadog monitor mapping은 별도 activation blocker로 남는다.
 
 ---
 
