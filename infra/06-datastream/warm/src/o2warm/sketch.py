@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import sys
 from typing import Any
 
 from . import contract as C
@@ -666,11 +667,45 @@ class WindowSketch:
         한 Lambda 호출은 한 샤드의 연속 구간만 받으므로 other 의 source 는
         많아야 하나입니다. 그 구간의 끝 번호가 이미 기록돼 있으면
         같은 배치의 재시도입니다.
+
+        ## 이 가드는 "샤드당 한 번에 하나" 를 전제로 합니다 — 지켜야 합니다
+
+        번호를 **최댓값 하나**로만 들고 있습니다. 그래서 같은 샤드의 배치가
+        **뒤바뀌어** 들어오면 앞선 배치를 재시도로 오인해 통째로 버립니다.
+        예외도 오류도 나지 않고 건수만 조용히 줄어듭니다.
+
+        Kinesis 이벤트 소스 매핑의 `parallelization_factor` 를 1보다 크게
+        하면 **정확히 그 상황이 됩니다.** 같은 샤드를 동시에 여러 배치가
+        처리하고, 늦게 시작한 배치가 먼저 끝날 수 있습니다.
+
+        **집계기가 밀릴 때 `parallelization_factor` 로 푸는 것은 그래서 안
+        됩니다. 샤드 수를 늘려야 합니다** — 샤드가 다르면 `source` 키가
+        갈리고(`_source_of()` 가 스트림+샤드로 만듭니다) 번호를 서로
+        독립적으로 비교하므로 안전합니다. 근거와 실측은 D-063.
+
+        `tests/test_sequence_guard.py` 가 이 성질을 고정해 둡니다.
         """
         for src, hi in other.seq.items():
             cur = self.seq.get(src)
-            if cur is not None and int(cur) >= int(hi):
-                return True
+            if cur is None:
+                continue
+            if int(cur) < int(hi):
+                continue
+
+            # cur == hi 는 같은 배치의 재시도입니다. 정상이고 조용히 버립니다.
+            #
+            # cur > hi 는 다릅니다 — **이미 더 뒤까지 반영했는데 그보다 앞선
+            # 배치가 지금 도착했다**는 뜻이고, 순차 처리에서는 일어나지
+            # 않습니다. 버리는 동작 자체는 유지하되(여기서 순서를 되돌릴
+            # 방법이 없습니다) 조용히 지나가지는 않게 합니다.
+            if int(cur) > int(hi):
+                print(
+                    f"[o2warm] 순서가 뒤바뀐 배치를 버립니다 — source={src} "
+                    f"기록={cur} 도착={hi}. parallelization_factor 가 1보다 "
+                    f"크면 이 일이 상시로 일어나고 집계가 조용히 줄어듭니다(D-063).",
+                    file=sys.stderr,
+                )
+            return True
         return False
 
     def merge(self, other: "WindowSketch") -> "WindowSketch":

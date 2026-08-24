@@ -94,7 +94,7 @@ resource "datadog_monitor" "chat_ingest_surge" {
     @webhook-o2-dify
   EOT
 
-  query = "min(last_2m):avg:${var.metric_prefix}rps_ratio{service:chat-gateway,env:${local.monitor_env}} >= ${var.chat_rps_ratio_warning}"
+  query = "min(last_${var.chat_early_warning_window_minutes}m):avg:${var.metric_prefix}rps_ratio{service:chat-gateway,env:${local.monitor_env}} >= ${var.chat_rps_ratio_warning}"
 
   monitor_thresholds {
     # Datadog metric alert의 query 비교값은 critical(Alert) 임계와 일치해야 한다.
@@ -143,7 +143,7 @@ resource "datadog_monitor" "order_latency_p95" {
     @webhook-o2-dify
   EOT
 
-  query = "min(last_5m):avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical}"
+  query = "min(last_${var.scenario_entry_window_minutes}m):avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical}"
 
   monitor_thresholds {
     warning  = var.latency_p95_warning
@@ -181,7 +181,7 @@ resource "datadog_monitor" "order_latency_p95" {
 resource "datadog_monitor" "cache_hit_rate_low" {
   name    = "[O2][시나리오 4] 캐시 히트율 낮음 (서브 모니터)"
   type    = "metric alert"
-  query   = "min(last_5m):avg:${var.metric_prefix}cache_hit_rate{service:${var.default_service},env:${local.monitor_env}} < ${var.cache_hit_rate_critical}"
+  query   = "min(last_${var.scenario_entry_window_minutes}m):avg:${var.metric_prefix}cache_hit_rate{service:${var.default_service},env:${local.monitor_env}} < ${var.cache_hit_rate_critical}"
   message = "캐시 히트율이 임계치 미만입니다. 복합 모니터의 하위 조건으로 작동합니다."
 
   monitor_thresholds {
@@ -198,7 +198,7 @@ resource "datadog_monitor" "cache_hit_rate_low" {
 resource "datadog_monitor" "latency_p95_high" {
   name    = "[O2][시나리오 4] 응답 p95 지연 높음 (서브 모니터)"
   type    = "metric alert"
-  query   = "min(last_5m):avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical}"
+  query   = "min(last_${var.scenario_entry_window_minutes}m):avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical}"
   message = "응답 p95 지연 시간이 임계치를 초과했습니다. 복합 모니터의 하위 조건으로 작동합니다."
 
   monitor_thresholds {

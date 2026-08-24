@@ -164,6 +164,60 @@ variable "cpu_throttling_warning" {
 # push 경로로 Datadog Monitor 를 에이전트에 연결하는 작업을 진행 중이다.
 # 여기서는 그 webhook 이 받을 Monitor(임계치·쿼리)만 만든다.
 
+variable "scenario_entry_window_minutes" {
+  description = <<-EOT
+    **시나리오 진입 알림**의 평가 창(분). 기본 5.
+
+    Datadog 은 창을 쿼리 문자열 안에 넣습니다(`min(last_5m)`). 그동안 이
+    값이 각 Monitor 에 흩어져 박혀 있어서, 데모용으로 창을 줄이려면 리소스를
+    복제하는 수밖에 없었습니다.
+
+    **복제하면 안 됩니다.** 운영용과 데모용의 임계가 갈리고, 한쪽만 고치는
+    순간 둘이 다른 것을 감시하게 됩니다 — `variables.tf` 가 원래부터
+    경계하던 함정입니다. 그래서 리소스를 늘리는 대신 이 변수를 줄입니다.
+
+    **줄일 때 알고 있어야 할 것** — 창이 짧아지면 표본이 줄어 오탐이 늡니다.
+    warm 집계 윈도우가 10초이므로 1분이면 표본이 6개뿐입니다. 데모에서
+    2분 아래로는 내리지 않기를 권합니다.
+
+    이 변수가 거는 것은 **진입 알림**뿐입니다. outlier 탐지(10분)와
+    파이프라인 Monitor 는 각자 다른 이유로 창이 정해져 있어 따로 둡니다.
+  EOT
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.scenario_entry_window_minutes >= 1 && var.scenario_entry_window_minutes <= 60
+    error_message = "평가 창은 1~60분이어야 한다. Datadog 이 그 밖의 값을 거절한다."
+  }
+}
+
+variable "chat_early_warning_window_minutes" {
+  description = <<-EOT
+    채팅 인입 조기 경보(`chat_ingest_surge`)의 평가 창(분). 기본 **2**.
+
+    **진입 알림(5분)보다 일부러 짧습니다.** 이 Monitor 의 존재 이유가
+    "주문 p95 가 무너지기 전에 먼저 울린다" 이기 때문입니다. 트랜스크립트
+    시간축에서 채팅 인입 급증(T+6s)과 주문 p99 급등(T+52s) 사이가 46초이고,
+    그 사이에 울려야 대가 게이트를 열 시간이 생깁니다.
+
+    `scenario_entry_window_minutes` 와 묶지 않은 이유가 그것입니다 — 같이
+    움직이면 조기 경보가 진입 알림과 같은 시점에 울려 **조기가 아니게**
+    됩니다.
+
+    더 줄이는 것은 권하지 않습니다. `rps_ratio` 는 EWMA 표본 30개(약 5분)가
+    쌓여야 값이 생기므로, 창을 줄여도 방송 시작 직후에는 어차피 값이
+    없습니다.
+  EOT
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.chat_early_warning_window_minutes >= 1 && var.chat_early_warning_window_minutes <= 60
+    error_message = "평가 창은 1~60분이어야 한다. Datadog 이 그 밖의 값을 거절한다."
+  }
+}
+
 variable "enable_chat_ingest_monitor" {
   description = <<-EOT
     시나리오 2 조기 경보(`chat_ingest_surge`) 활성화 여부.
