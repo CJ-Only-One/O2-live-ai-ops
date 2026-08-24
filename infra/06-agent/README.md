@@ -156,6 +156,13 @@ Log Stream도 0개였다. Incident State는 `ACTIVE`, `PAY_PER_REQUEST`, SSE·TT
 GSI `ACTIVE`, item 0이었다. 전체 stack 재-plan의 기존 `5 change`는 별도 검토 대상으로
 남겼으며 적용하지 않았다.
 
+2026-08-24 Phase 3C-A에서 test-only window 300초와 실행별 합성 key 두 개만 허용해
+Signal Queue 직접 E2E를 수행했다. Chat→Datadog과 Datadog→Chat 모두 revision 1
+`PROVISIONAL`에서 같은 Incident의 revision 2 `CORRELATED`로 전환됐다. Invocation Queue
+consumer는 0개라 Dify 실행은 없었다. 종료 후 실행 gate·window·allowlist·Datadog mapping을
+기본 비활성값으로 복귀하고 합성 DynamoDB 항목과 Queue 메시지만 개별 삭제했다. 운영
+correlation window는 실제 source Adapter 전달 지연을 재기 전까지 미확정이다.
+
 ### 1. 버전 고정
 
 ```bash

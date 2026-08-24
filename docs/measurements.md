@@ -29,6 +29,7 @@
 | M-014 | 주문 확정 워커 처리량 (order-worker) | requests·replicas 변경 · 인스턴스 변경 · RDS 등급 변경 · delete 방식 변경 |
 | M-015 | warm 경로 인입·집계 실측과 집계기 지연 | 샤드 수·`parallelization_factor` 변경 · 부하 패턴 변경 |
 | M-016 | APM trace 지표의 태그 축 (파드 축이 있는가) | `ddtrace` 버전 변경 · Datadog Agent 설정 변경 · 통합 서비스 태깅 도입 |
+| M-017 | Incident Correlator 합성 E2E와 처리시간 | Correlator 코드·메모리·DynamoDB index·Queue 설정 변경 · 실제 source Adapter 연결 |
 
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
@@ -1172,3 +1173,32 @@ DynamoDB 상세에만 있었다.
 - `trace.fastapi.request.duration` — **이 이름의 지표는 존재하지 않는다.**
   관례상 그럴듯해서 한동안 이걸로 조회하다 시간을 버렸다. 경위는 T-024
 
+---
+
+## M-017. Incident Correlator 합성 E2E와 처리시간
+
+**조건 (2026-08-24)** — `agent.trigger.v1` Signal Queue에 계약 검증을 통과한 합성
+Chat·Datadog trigger를 직접 전송했다. Correlator Lambda는 Python 3.12, 128MB, reserved
+concurrency 2, SQS batch size 1이다. 테스트 동안만 실행 gate와 event source를 켰고,
+allowlist는 실행별 key 두 개로 제한했다. test-only correlation window는 300초였으며 두
+trigger의 event time은 같게 고정했다.
+
+| 순서 | 첫 신호 | 두 번째 신호 | Incident 결과 | Lambda Duration |
+|---|---|---|---|---|
+| Chat → Datadog | revision 1 `PROVISIONAL` | revision 2 `CORRELATED` | 같은 `incident_id`, source 2개 | cold 6,535.02ms · warm 204.28ms |
+| Datadog → Chat | revision 1 `PROVISIONAL` | revision 2 `CORRELATED` | 같은 `incident_id`, source 2개 | cold 6,447.42ms · warm 212.93ms |
+
+첫 실행의 6.4-6.5초에는 cold start 뒤 boto3의 최초 credential discovery와 DynamoDB·SQS
+호출이 포함됐다. 같은 execution environment의 두 번째 revision은 205-213ms였다.
+
+**검증한 것** — source 순서와 무관한 동일 Incident 귀속, material change에서만 revision
+증가, Invocation Queue revision 1·2 생성, consumer 0개와 Dify 실행 차단, 합성 데이터
+개별 정리, 종료 후 비활성 기본값 복귀다.
+
+**검증하지 못한 것** — 실제 Chat Candidate Adapter와 신규 Datadog Source Adapter의
+전달 지연·편차다. 두 source의 event time을 같게 넣었으므로 300초는 기능 검증용 값일 뿐
+운영 correlation window 근거가 아니다.
+
+**다시 재야 할 때** — Correlator 코드, Lambda memory, DynamoDB GSI, SQS batch/concurrency를
+바꿀 때. 실제 두 Adapter를 연결하면 source 발생 시각·Signal Queue 도착 시각의 차이를
+별도 행으로 추가하고 그 분포로 운영 window를 결정한다.
