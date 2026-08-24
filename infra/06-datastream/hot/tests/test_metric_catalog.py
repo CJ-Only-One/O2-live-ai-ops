@@ -44,14 +44,28 @@ def test_sample_count_sums_all_buckets_in_requested_window():
     assert got["sample_count"] == 12
 
 
-def test_no_data_primary_uses_warm_fallback_without_returning_zero():
+def test_no_data_primary_does_not_hide_gap_with_warm_fallback():
     def query(query_text, _from, _to):
         return result(191.7) if "o2.warm" in query_text else result(None)
 
     got = read_metric({"metric": "latency_p95", "service": "api"}, query_fn=query, now=1787558408)
-    assert got["value"] == 191.7
-    assert got["source"] == "warm_stream_derived"
-    assert got["fallback_used"] is True
+    assert got["value"] is None
+    assert got["source"] is None
+    assert got["fallback_used"] is False
+
+
+def test_rps_uses_service_specific_native_source():
+    seen = []
+
+    def query(query_text, _from, _to):
+        seen.append(query_text)
+        return result(10)
+
+    got = read_metric({"metric": "rps", "service": "chat-gateway"}, query_fn=query, now=1787558408)
+    assert got["source"] == "datadog_native"
+    assert "o2.app.business_event" in seen[0]
+    assert "event:chat.send" in seen[0]
+    assert not any("o2.warm" in item for item in seen)
 
 
 def test_both_missing_returns_no_data_not_zero():

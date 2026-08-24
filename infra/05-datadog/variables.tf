@@ -227,7 +227,7 @@ variable "enable_chat_ingest_monitor" {
     chat-gateway 가 아직 이벤트를 안 보내는 것이 정상이고, 그때 켜져 있으면
     영구 No Data 로 조용히 죽는다.
 
-    켤 조건은 `o2.warm.rps{service:chat-gateway}` 에 시계열이 있는 것이고,
+    켤 조건은 `o2.app.business_event{service:chat-gateway,event:chat.send}` 에 시계열이 있는 것이고,
     **이 조직에서는 이미 충족됐다**(2026-08-24 확인). `events.ts` 가
     `PutRecordCommand` 로 Kinesis 에 직접 넣고 배포 환경변수도 설정돼 있다.
 
@@ -242,8 +242,7 @@ variable "enable_chat_ingest_monitor" {
 variable "chat_rps_ratio_warning" {
   description = <<-EOT
     시나리오 2(특가 오픈 캐스케이드) 조기 경보 임계.
-    `o2.warm.rps_ratio{service:chat-gateway}` 가 평시 대비 몇 배로 뛰면
-    경고할지.
+    native chat.send rate의 Datadog anomaly가 평시 범위를 벗어나면 경고한다.
 
     **실측이 아니다.** 트랜스크립트 예시(20→210 msg/s, 10.5배)의 절반을
     잠정치로 둔 것이고, 새 명세의 채널 포화점과는 무관하다. 재고 나면
@@ -260,7 +259,7 @@ variable "chat_rps_ratio_warning" {
 
 variable "cache_hit_rate_critical" {
   description = <<-EOT
-    시나리오 4(캐시 흡수 실패) 임계. `o2.warm.cache_hit_rate{service:api}` 가
+    시나리오 4(캐시 흡수 실패) 임계. native `o2.app.cache_access` 비율이
     이 아래로 떨어지고 동시에 `latency_p95` 가 위험 임계를 넘으면 알림.
     README 실측 사례(71%→34%, 절반 이하)를 근거로 0.5를 잠정치로 둔다.
     단독으로는 쓰지 않는다 — latency_p95 동반 조건 없이는 표본 부족 노이즈에
