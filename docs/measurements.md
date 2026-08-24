@@ -30,7 +30,8 @@
 | M-015 | warm 경로 인입·집계 실측과 집계기 지연 | 샤드 수·`parallelization_factor` 변경 · 부하 패턴 변경 |
 | M-016 | APM trace 지표의 태그 축 (파드 축이 있는가) | `ddtrace` 버전 변경 · Datadog Agent 설정 변경 · 통합 서비스 태깅 도입 |
 | M-017 | Incident Correlator 합성 E2E와 처리시간 | Correlator 코드·메모리·DynamoDB index·Queue 설정 변경 · 실제 source Adapter 연결 |
-| M-018 | 파드 Ready 시간 (사전 확장 리드타임) | `readinessProbe` 설정 변경 · 이미지 크기 변경 · 인스턴스 타입 변경 · 노드 여유 부족으로 Karpenter 개입 시 |
+| M-018 | Agent Invocation Worker 첫 Shadow E2E와 fail-closed | Worker IAM·ledger finalize·Dify 계약·Queue 설정 변경 |
+| M-019 | 파드 Ready 시간 (사전 확장 리드타임) | `readinessProbe` 설정 변경 · 이미지 크기 변경 · 인스턴스 타입 변경 · 노드 여유 부족으로 Karpenter 개입 시 |
 
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
@@ -1206,7 +1207,34 @@ trigger의 event time은 같게 고정했다.
 
 ---
 
-## M-018. 파드 Ready 시간 (사전 확장 리드타임)
+## M-018. Agent Invocation Worker 첫 Shadow E2E와 fail-closed
+
+**조건 (2026-08-24)** — 전용 Dify 앱을 `agent.incident.v1` 계약으로 게시하고, Generic
+Worker와 Agent Invocation Queue mapping을 기본 비활성 상태로 적용했다. Shadow 동안만 새
+합성 Incident ID 한 개를 allowlist에 넣고 event source와 실행 플래그를 함께 켰다. 입력은
+저장소의 `CORRELATED` 예시이며 채팅 원문, Bedrock, 자동 조치는 포함하지 않았다.
+
+| 관측 지점 | 결과 |
+|---|---|
+| Dify 게시 Service API 정상 Incident | `succeeded`, 새 Incident 응답 계약 확인 |
+| Dify 게시 Service API raw chat 금지 입력 | `failed`, `CONTRACT_REJECTED:GUARDRAIL_VALUES` |
+| Queue → Worker → Dify Shadow | Dify run 정확히 1건 `succeeded` |
+| Worker ledger 시작 | `IN_PROGRESS`, attempt 1, Incident lock 획득 |
+| Worker ledger 확정 | `IDEMPOTENCY_FINALIZE` 실패 |
+| 직접 원인 | IAM에 `dynamodb:DeleteItem` 누락; finalize transaction의 lock 삭제 거부 |
+| 중복 방지 | `IN_PROGRESS` ledger와 lock 보존, 자동 재호출 없음 |
+| 즉시 롤백 | mapping `Disabled`, 실행 `false`, allowlist empty, DLQ 0 |
+
+이 결과는 Shadow E2E 통과가 아니다. Dify 호출과 출력 계약은 통과했지만 실행 상태 확정이
+실패했다. 수정은 ledger table에 대한 `DeleteItem` 하나이며 targeted plan은 `0 add, 1 change,
+0 destroy`다. 실패 메시지는 Message ID·body·attribute를 대조한 뒤 개별 삭제했고,
+ledger·lock·Incident State는 합성 marker와 owner를 확인하는 하나의 조건부 transaction으로
+정리했다. 종료 시 Queue·DLQ와 세 DynamoDB key는 모두 비어 있었다. fix를 main에 병합·적용한
+뒤 새 Incident ID로 재측정하며 기존 ID는 재사용하지 않는다.
+
+---
+
+## M-019. 파드 Ready 시간 (사전 확장 리드타임)
 
 큐시트 기반 사전 확장(D-041)이 "몇 초 전에 늘릴지"를 정하려면 파드가 Ready 가
 되는 데 걸리는 시간이 필요하다. 그 값을 쟀다.

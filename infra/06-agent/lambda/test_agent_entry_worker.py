@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import unittest
 from unittest import mock
 
@@ -45,6 +46,25 @@ class AgentEntryWorkerTest(unittest.TestCase):
     def test_accepts_provisional_and_correlated_incident_examples(self):
         self.assertEqual(worker.validate_envelope(self.chat_first)["revision"], 1)
         self.assertEqual(worker.validate_envelope(self.correlated)["revision"], 2)
+
+    def test_iam_policy_allows_finalize_transaction_operations(self):
+        terraform = (
+            REPO_ROOT / "infra" / "06-agent" / "agent_entry_transport.tf"
+        ).read_text()
+        statement = re.search(
+            r'statement\s*\{\s*sid\s*=\s*"UseIdempotencyLedger"(?P<body>.*?)\n\s*\}',
+            terraform,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(statement)
+        for action in {
+            "dynamodb:DeleteItem",
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
+            "dynamodb:TransactWriteItems",
+        }:
+            self.assertIn(f'"{action}"', statement.group("body"))
 
     def test_rejects_revision_idempotency_mismatch(self):
         self.chat_first["revision"] = 2

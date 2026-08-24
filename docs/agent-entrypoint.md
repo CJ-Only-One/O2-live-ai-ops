@@ -1,7 +1,7 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 3D repository implementation complete; apply and Shadow E2E not run
+> **Status:** Phase 3D disabled deployment complete; Shadow found IAM finalize gap and was rolled back
 > **Updated:** 2026-08-24
 > **Decision:** `decisions.md` D-050 and D-055
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
@@ -12,19 +12,19 @@ implementation_state:
   common_contract: COMPLETE
   agent_trigger_queue: DEPLOYED_EMPTY
   chat_candidate_adapter: DEPLOYED_EXECUTION_DISABLED
-  generic_dify_worker_runtime: DEPLOYED_PHASE1B_TRIGGER_CONTRACT_EXECUTION_DISABLED
-  phase3d_incident_worker_repository: IMPLEMENTED_NOT_APPLIED
-  phase3d_targeted_plan: PASS_1_ADD_2_CHANGE_0_DESTROY
+  generic_dify_worker_runtime: DEPLOYED_PHASE3D_INCIDENT_CONTRACT_EXECUTION_DISABLED
+  phase3d_incident_worker_repository: APPLIED_EXECUTION_DISABLED
+  phase3d_targeted_plan: APPLIED_1_ADD_2_CHANGE_0_DESTROY
   phase3_synthetic_guard: DEPLOYED_EXECUTION_DISABLED
   incident_correlation_contract: COMPLETE
   incident_correlator: DEPLOYED_EXECUTION_DISABLED
-  agent_invocation_queue: DEPLOYED_NO_CONSUMER
+  agent_invocation_queue: DEPLOYED_DISABLED_CONSUMER
   phase3c_signal_queue_correlation_e2e: PASS
   phase3c_source_pipeline_delay_measurement: NOT_RUN
-  phase3d_dify_incident_contract_dsl: UPDATED_NOT_PUBLISHED
-  phase3d_shadow_e2e: NOT_RUN
+  phase3d_dify_incident_contract_dsl: PUBLISHED
+  phase3d_shadow_e2e: DIFY_PASS_LEDGER_FINALIZE_FAIL_IAM_DELETEITEM
   idempotency_ledger: DEPLOYED_EMPTY
-  dedicated_test_workflow: PUBLISHED_CODE_ONLY
+  dedicated_test_workflow: PUBLISHED_INCIDENT_CODE_ONLY
   dedicated_test_workflow_ui_contract_tests: PASS
   dedicated_test_workflow_service_api_tests: PASS
   dedicated_test_workflow_dsl: RECORDED_IN_REPOSITORY
@@ -36,8 +36,8 @@ activation_blockers:
   - CORRELATION_WINDOW_NOT_MEASURED
   - DATADOG_MONITOR_MAPPING_NOT_CONFIGURED
   - SOURCE_PIPELINE_DELAY_MEASUREMENT_NOT_RUN
-  - PHASE3D_DIFY_INCIDENT_CONTRACT_NOT_PUBLISHED
-  - PHASE3D_INFRA_NOT_APPLIED
+  - PHASE3D_IAM_DELETEITEM_FIX_NOT_MERGED_OR_APPLIED
+  - PHASE3D_SHADOW_RERUN_REQUIRED
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
 production_migration_blockers:
@@ -541,7 +541,8 @@ Source Adapter의 합성 경로를 각각 열 수 있을 때 전달 시각을 �
 2026-08-24에 Generic Worker의 입력 경계를 Signal Queue의 `agent.trigger.v1`에서 Agent
 Invocation Queue의 `agent.incident.v1`로 옮겼다. Terraform 기본값은 계속 event source
 `false`, 실행 플래그 `false`, 합성 Incident allowlist empty라 병합이나 apply만으로 Dify가
-호출되지 않는다. 실환경에는 아직 apply하지 않았고 게시 Dify 앱도 아직 이전 trigger 계약이다.
+호출되지 않는다. 실환경에는 이 비활성 상태로 적용했고 전용 Dify 앱도 Incident 계약으로
+게시했다. 기존 팀 앱은 변경하지 않았다.
 
 Worker 처리 순서는 다음으로 고정했다.
 
@@ -564,16 +565,25 @@ Phase 1B의 Signal Queue Worker mapping은 Terraform destroy 없이 `enabled=fal
 apply plan은 비활성 mapping 1개 추가와 Worker/IAM 제자리 변경만 포함해야 하며, 기존 mapping
 삭제나 Queue 교체는 포함하면 안 된다.
 
-저장 targeted plan은 Invocation mapping 1개 생성, Worker Lambda와 최소 IAM 2개 제자리 변경,
-삭제 0개였다. 새 mapping은 `enabled=false`, Worker 실행 플래그도 `false`, allowlist는 empty다.
-이 plan은 검증 증거일 뿐 apply하지 않았다. 별도 음성 plan에서 allowlist 없이 event source와
-실행 플래그만 `true`로 주자 resource precondition이 의도대로 plan을 거부했다.
+병합본 targeted plan은 Invocation mapping 1개 생성, Worker Lambda와 최소 IAM 2개 제자리
+변경, 삭제 0개였다. 새 mapping은 `enabled=false`, Worker 실행 플래그도 `false`, allowlist는
+empty인 상태로 적용했고 대상 재-plan은 `No changes`였다. 전체 stack의 별도 변경 4개는
+적용하지 않았다. 별도 음성 plan에서 allowlist 없이 event source와 실행 플래그만 `true`로
+주자 resource precondition이 의도대로 plan을 거부했다.
 
-로컬 검증은 Worker 19개, Correlator 15개(로컬 boto3 부재 1개 skip), JSON Schema 정상 2개·
-거부 4개, Dify DSL YAML parse와 Code 노드 정상 Incident 2개·raw chat 거부를 통과했다.
-Terraform `fmt`와 `validate`도 통과했다. 다음 단계는 병합본에서 저장 plan의 변경 범위를
-확인하고, 전용 Dify 테스트 앱을 이 Incident 계약으로 게시한 뒤 제한된 Shadow E2E를 한 번
-수행하는 것이다.
+로컬 검증은 Worker 20개, Correlator 15개(로컬 boto3 부재 1개 skip), JSON Schema 정상 2개·
+거부 4개, Dify 초안·게시 Service API의 정상 Incident와 raw chat 거부를 통과했다. Terraform
+`fmt`와 `validate`도 통과했다.
+
+첫 Shadow E2E에서 합성 Incident 한 건은 Dify에서 `succeeded`까지 갔지만 Worker가 성공
+ledger와 Incident lock 해제를 확정하는 transaction에서 `dynamodb:DeleteItem` 권한이 없어
+`IDEMPOTENCY_FINALIZE`로 실패했다. ledger와 lock은 `IN_PROGRESS`로 남아 재호출을 막았고,
+event source와 실행 플래그는 즉시 `false`, allowlist는 empty로 복귀했다. 수정 후보는
+`UseIdempotencyLedger`에 `DeleteItem` 하나만 추가하며 targeted plan은 `0 add, 1 change,
+0 destroy`다. 실패 메시지는 Message ID·body·attribute의 합성 Incident ID를 확인한 뒤
+개별 삭제했고, revision ledger·lock·Incident State도 한 조건부 transaction으로 정리했다.
+Queue·DLQ와 세 DynamoDB key는 모두 비어 있다. 이 fix를 main에 병합·적용하기 전에는 Shadow를
+재실행하지 않는다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 
