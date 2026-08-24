@@ -47,6 +47,7 @@
 | **비활성** | 구현·배포는 됐고 실행 게이트가 꺼져 있다 |
 | **고쳐야** | 있는데 시나리오 조건과 어긋난다 |
 | **깨져 있음** | 있다고 보이는데 실제로는 동작하지 않는다 |
+| **보류** | 할 수 있는데 지금은 일부러 안 한다. 이유와 재개 조건을 같이 적는다 |
 | **없음** | 아무것도 없다 |
 
 ---
@@ -87,11 +88,11 @@
 | 요구 | 현재 | 판정 |
 |---|---|---|
 | canary Deployment (같은 Service 셀렉터, CPU 상한만 다름) | `O2-live-deploy` 에 매니페스트가 없다 | **없음** |
-| 정상 파드 복수 | `O2-live-deploy/api-deployment.yaml:9` **`replicas: 1`**. "정상 파드 중앙값" 도 "한 단계 증설" 도 성립하지 않는다 | **고쳐야** |
-| 파드별 지연 (`latency_by_pod`) | `o2warm/sketch.py` 에 `cache_hit_by_pod`/`cache_miss_by_pod` 만 있다. `latency` 는 같은 함수에서 `pod_name` 을 인자로 받으면서 파드별로만 안 나뉜다 | **없음** |
-| 파드 단위 이상치 모니터 | `monitor.tf:293-314` 에 `outliers(… by {pod_name}, 'DBSCAN', …)` 가 이미 있다. 다만 **지표가 `cache_hit_rate`** 다 | **고쳐야** |
+| 정상 파드 복수 | `O2-live-deploy/api-deployment.yaml:9` **`replicas: 1`**. "정상 파드 중앙값" 도 "한 단계 증설" 도 성립하지 않는다. M-016 이 이것을 **S2 의 마지막 전제**로 못박았다. 같은 파일의 `maxSurge: 0` 블록도 주석이 "replicas 가 2 이상이 되면 지운다" 고 스스로 적어뒀다 | **고쳐야** |
+| 파드별 지연 (`latency_by_pod`) | 2026-08-24 PR #133 으로 들어왔다 — `o2warm/sketch.py:514·609`, `metrics.py:328` `latency_p95_by_pod`, `datadog.py:131` 이 `pod_name` 태그로 전송한다 | **있음** |
+| 파드 단위 이상치 모니터 | `monitor.tf:420` `[O2][시나리오 5] 파드 단위 응답 지연 이상치` — `outliers(… latency_p95 … by {pod_name}, 'DBSCAN', …)`. 캐시 히트율 이상치(`monitor.tf:331`)와 별개로 붙었다 | **있음** |
 | 범용 런북 `RB-API-LATENCY-001` | `infra/06-agent/scripts/seed_runbook.py` 에 `cache_invalidation_storm` 하나뿐. `pod_load_skew` 는 TODO 주석이다 | **없음** |
-| 자원 요청 현실화 | `api-deployment.yaml:160` `cpu: 100m`. M-009 실측은 300 RPS 에서 664m | **고쳐야** |
+| 자원 요청 현실화 | `api-deployment.yaml:160` `cpu: 100m` (M-009 는 300 RPS 에서 664m). **지금은 올리지 않는다** — 3절 1 참조 | **보류** |
 | replicas 동기화 예외 | Argo CD `ignoreDifferences` 가 없다 | **없음** |
 | api 에 HPA·KEDA 없을 것 | ScaledObject 는 `order-worker` 에만 붙어 있다 | **있음** |
 
@@ -119,22 +120,30 @@
 
 ## 3. 변경해야 할 것
 
-1. **api 자원 요청** — `api-deployment.yaml:160` `cpu: 100m` → 500m 수준. M-009 가
-   300 RPS 에서 664m 을 쟀다. **HPA 를 붙이기 전에 고쳐야 한다.**
-2. **api replicas 1 → 2 이상** — S2 의 "정상 파드 중앙값 대비 canary" 와 "한 단계 증설" 이
-   replicas 1 에서는 성립하지 않는다. M-009 의 재측정 트리거에 해당하므로 바꾸면 다시 잰다.
-3. **파드 이상치 모니터의 지표** — `monitor.tf:293-314` 의 `cache_hit_rate` → `latency_p95`.
-   쿼리 구조(`outliers … by {pod_name}, 'DBSCAN'`)는 그대로 둔다. 새로 발명하지 않는다.
-4. **`rejected_code` → `failure_code`** — `apps/chat-gateway/src/events.ts` 의
+1. **api replicas 1 → 2** (`O2-live-deploy/api-deployment.yaml:9`) — S2 의 "정상 파드 중앙값
+   대비 canary" 와 "한 단계 증설" 이 replicas 1 에서는 성립하지 않는다. M-016 이 이것을
+   S2 의 마지막 전제로 지목했다. 같은 커밋에서 `maxSurge: 0` 블록도 지운다 — 그 블록의
+   주석이 t3.small 3대·Karpenter 없음을 전제로 쓰였는데 지금은 c6i.large 2대에 Karpenter 가
+   있고, 주석 스스로 "replicas 가 2 이상이 되면 이 블록을 지운다" 고 적어뒀다.
+   M-009 의 재측정 트리거에 해당하므로 바꾸면 다시 잰다.
+
+   **자원 요청(`cpu: 100m`)은 이번에 올리지 않는다.** 올려야 할 이유였던 "HPA 를 붙이기 전에"
+   가 이 시나리오에서는 성립하지 않는다 — api 에 HPA 를 붙이지 않기로 이미 정했다(5절 3).
+   반대로 500m 으로 올리면 자리가 없어진다. 2026-08-24 실측으로 노드 여유가
+   730m·550m(c6i.large 2대, 1,930m 중)이라 api 2파드 × 500m = 1,000m 을 넣으면
+   canary 를 얹을 때 Karpenter 가 노드를 새로 띄운다. 실험 중 노드가 늘면 타이밍이
+   매번 달라진다(6절, D-051). **재개 조건 — api 에 HPA 를 붙이기로 하거나, 노드 여유가
+   1파드분 이상 늘어나면 그때 올린다.**
+2. **`rejected_code` → `failure_code`** — `apps/chat-gateway/src/events.ts` 의
    `ChatSendPayload` 가 warm 의 `F_FAILURE_CODE` 와 이름이 달라 차단 건수가 집계에서 사라진다.
    S1 은 정상 사용자 차단률이 성공 판정의 필수 축이라, 이걸 안 고치면 **판정 자체가 성립하지 않는다.**
    이벤트 스키마 변경이므로 `contracts.md` 5.3 을 먼저 고치고 코드를 맞춘다(`AGENTS.md` "계약이 구현보다 우선한다").
-5. **`loadtest/broadcast.js` 발화자 분포** — `SENDERS` 를 환경변수로 분리하고, 발화자를 크게
+3. **`loadtest/broadcast.js` 발화자 분포** — `SENDERS` 를 환경변수로 분리하고, 발화자를 크게
    늘려 1인당 발화율이 `CHAT_RATE_PER_MIN` 아래가 되게 배치한다. M-010 재현 조건은
    비교 가능성을 위해 그대로 남긴다.
-6. **Datadog 모니터 이름의 시나리오 번호** — 지금 이름은 옛 번호(시나리오 1·2·4·5·6)이고
+4. **Datadog 모니터 이름의 시나리오 번호** — 지금 이름은 옛 번호(시나리오 1·2·4·5·6)이고
    현재 셋은 S1·S2·S3 다. 표시 이름만 정리하고 Terraform 리소스 이름은 건드리지 않는다.
-7. **저장소 Dify DSL 드리프트** — 실환경 DSL 을 저장소로 내보낸다. T-022, production
+5. **저장소 Dify DSL 드리프트** — 실환경 DSL 을 저장소로 내보낸다. T-022, production
    migration blocker 다.
 
 ## 4. 추가해야 할 것
@@ -162,29 +171,26 @@
 5. **상태 머신** — `Baseline` 기록·실행 락·멱등 키(`incident:<id>:revision:<n>`) ·
    검증 대기 타이머 · 재분석 1회 분기 · `Judging` 세 갈래.
    정의는 `scenario-experiment.md` 0.4 에 이미 있다.
-6. **`latency_by_pod`** — `sketch.py` 의 `cache_hit_by_pod` 패턴을 그대로 복제한다.
-   `_add_business` 가 이미 `pod_name` 을 인자로 받고 있어 수십 줄이다.
-   `metrics.py` 의 `cache_hit_rate_by_pod` 와 `datadog.py` 의 태그 부착 경로도 같이 따라간다.
-7. **canary Deployment 매니페스트** (`O2-live-deploy`) — main 과 같은 이미지·같은 Service
+6. **canary Deployment 매니페스트** (`O2-live-deploy`) — main 과 같은 이미지·같은 Service
    셀렉터, **CPU 상한만** 낮게. `readinessProbe` 의 `timeoutSeconds`·`failureThreshold` 는
    **canary 에만** 올린다. 안 그러면 파드가 Service 에서 빠져 저절로 회복되거나 들락날락한다.
-8. **`RB-API-LATENCY-001`** (증상 기반 범용 런북) + `pod_load_skew` 전용 런북 —
+7. **`RB-API-LATENCY-001`** (증상 기반 범용 런북) + `pod_load_skew` 전용 런북 —
    `seed_runbook.py` 에 항목 추가. `labels.txt` 에 `pod_load_skew` 는 이미 있다.
-9. **Argo CD replicas 동기화 예외** — 대상 Deployment 의 `replicas` 를 `ignoreDifferences` 로.
+8. **Argo CD replicas 동기화 예외** — 대상 Deployment 의 `replicas` 를 `ignoreDifferences` 로.
    지금 없어서 조치 후 GitOps 가 되돌린다.
-10. **Candidate → Agent handoff** — `agent_handoff_status` 를 실제로 연결한다. 실행 게이트
+9. **Candidate → Agent handoff** — `agent_handoff_status` 를 실제로 연결한다. 실행 게이트
     둘(`chat_source_adapter_execution_enabled` · `chat_source_adapter_event_source_enabled`)은
     한 줄 실수를 막으려고 일부러 분리해둔 것이므로 순서대로 켠다.
-11. **읽기 요청당 CPU 감소 노브** — S3 의 유일한 조치다. **먼저 재고 만든다** — 포화점을
+10. **읽기 요청당 CPU 감소 노브** — S3 의 유일한 조치다. **먼저 재고 만든다** — 포화점을
     미는 폭이 0 이면 S3 마지막 장면이 통째로 빈다. 읽기 병목이 왕복이 아니라 api 프로세스
     CPU 천장이므로(M-009 해석), 줄일 대상이 CPU 인지부터 확인한다.
-12. **`read-path.js` 두 패턴 분기** — 요청마다 새 세션 키 · 클릭 이벤트 동반 발행 ·
+11. **`read-path.js` 두 패턴 분기** — 요청마다 새 세션 키 · 클릭 이벤트 동반 발행 ·
     간격 지터 · UA 혼합. **커스텀 헤더는 넣지 않는다** — Agent 입장에서 정답 라벨이 된다.
-13. **`broadcast.js` 파형** — 첫 파동(스파이크) → 지속 고원. 이게 있어야 "첫 파동은
+12. **`broadcast.js` 파형** — 첫 파동(스파이크) → 지속 고원. 이게 있어야 "첫 파동은
     반응형 조치로 못 막는다" 와 "조치는 고원을 낮춘다" 가 분리되어 보인다.
-14. **데모 전용 모니터** — S1·S2 용 `last_1m~2m`. **S3 는 `last_5m` 그대로 둔다** —
+13. **데모 전용 모니터** — S1·S2 용 `last_1m~2m`. **S3 는 `last_5m` 그대로 둔다** —
     그 지연 자체가 S3 의 주제다.
-15. **채팅 전파 지연 지표** — 봉투에 실을지 별도 커스텀 메트릭으로 낼지 결정이 필요하다.
+14. **채팅 전파 지연 지표** — 봉투에 실을지 별도 커스텀 메트릭으로 낼지 결정이 필요하다.
     지금은 k6 안에만 있어 Agent 가 검증에 쓸 수 없다.
 
 ## 5. 뺄 것
@@ -206,13 +212,13 @@
 
 | 순서 | 무엇 | 왜 |
 |---|---|---|
-| 0 | 3절 1·2·4 (자원 요청 · replicas · `failure_code`) | 작고, 뒤 단계 전부가 이 위에 선다 |
+| 0 | 3절 1·2 (replicas · `failure_code`) | 작고, 뒤 단계 전부가 이 위에 선다 |
 | 1 | 4절 1 (조치 실행기 + EKS 권한) | 단일 최대 크리티컬 패스 |
 | 2 | 4절 2·3·4·5 (`cfg:*` · 노브 카탈로그 · Correlator · 상태 머신) | 없으면 어떤 시나리오도 화면에 못 올린다 |
-| 3 | S3 — 4절 10·11·12 | 검증 루프도 원복도 재분석도 안 쓴다. 기반 점검용 |
-| 4 | S2 — 4절 6·7·8·9, 3절 3 | 신규 인프라가 가장 적다 |
-| 5 | S1 — 4절 2(채널 노브)·13·15, 3절 5 | 노브와 채팅 지표를 새로 만들어야 한다 |
-| 6 | 녹화 프로필 — 4절 14, 3절 6·7 | 시연 직전 |
+| 3 | S3 — 4절 9·10·11 | 검증 루프도 원복도 재분석도 안 쓴다. 기반 점검용 |
+| 4 | S2 — 4절 6·7·8 | 관측 축은 끝났다. 남은 것은 canary 와 런북뿐 |
+| 5 | S1 — 4절 2(채널 노브)·12·14, 3절 3 | 노브와 채팅 지표를 새로 만들어야 한다 |
+| 6 | 녹화 프로필 — 4절 13, 3절 4·5 | 시연 직전 |
 
 **백업 계획** — 조치 실행기가 제때 안 되면 축소 시연으로 간다. Agent 가 조치 명령을 Slack 에
 내고, 사람이 실행하고, Agent 가 검증한다. 주제가 human-in-the-loop 이라 이 축소가 오히려
