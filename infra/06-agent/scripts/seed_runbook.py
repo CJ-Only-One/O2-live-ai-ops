@@ -188,6 +188,116 @@ RUNBOOKS = [
 ]
 
 
+# 노브 카탈로그가 사는 PK. lambda/runbook_lookup.py 의 같은 이름 상수와
+# 반드시 같아야 한다 — 어긋나면 조회가 조용히 빈 목록을 준다.
+KNOB_PARTITION = "KNOB"
+
+# ── 노브 카탈로그 ────────────────────────────────────────────────────────
+#
+# 게이트 진입을 **결정론적으로** 판정하기 위한 표다. LLM 이 "이건 위험해 보인다"
+# 로 정하면 테이크마다 달라진다 — 이 표를 조회해서 정한다.
+#
+# rca_type 축이 아니라 노브 축이다. 같은 노브가 여러 rca_type 의 조치로 쓰일 수
+# 있고, S3 처럼 **런북이 아예 없는 시나리오의 조치**도 있어야 하기 때문이다
+# (scenario-experiment.md 0.2 "런북을 썼다고 알려진 장애가 되는 것이 아니다").
+#
+# 저장 위치는 같은 runbook 테이블의 `rca_type="KNOB"` 파티션이다. 테이블도
+# 조회 Lambda 도 IAM 도 새로 만들지 않는다 — PK 값 하나만 다르다.
+#
+# ★★ 숫자 넷은 안 쟀다 — max_duration_seconds · preapproved_budget ·
+#    cooldown_seconds · max_attempts. `None` 으로 두고 measured=False 를 같이
+#    싣는다. 지어낸 값을 넣으면 다음 사람이 그 위에 판정을 얹는다
+#    (AGENTS.md "숫자를 지어내지 않는다"). 실측되면 measurements.md 에 남기고
+#    여기를 그 값으로 덮어쓴다. ★★
+#
+# ★ risk_level 의 L1/L2/L3 척도는 저장소 어디에도 정의가 없다. 기존 ACTION
+#   아이템이 쓰던 값을 그대로 옮겼다 — 척도 정의는 별도 과제다.
+
+KNOBS = [
+    {
+        "action_id": "limit_channel_volume",
+        "target": "chat-gateway · broadcast 단위",
+        # 키를 지우면 노브 자체는 원상복구된다.
+        "knob_reversible": True,
+        # 거부당한 발화는 되돌릴 수 없다. 이미 못 한 말이다.
+        "user_effect_reversible": False,
+        "max_blast_radius": "single broadcast_id · 그 방송의 전체 시청자",
+        "max_duration_seconds": None,
+        "preapproved_budget": None,
+        "cooldown_seconds": None,
+        "max_attempts": None,
+        "measured": False,
+        "risk_level": "L2",
+        # 인입이 줄어 채팅 관련 지표가 통째로 바뀐다.
+        "diagnostic_contamination": True,
+        "rollback_method": "immediate_delete",
+        "rollback_call": {"endpoint": "$CHAT_GATEWAY_ADMIN_URL", "action": "clear"},
+        "verification_metrics": ["chat_propagation_p95_ms", "block_rate", "items_per_sec"],
+        # 결정론적 사전 검사. 통과 못 하면 자동 실행하지 않는다.
+        "preconditions": [
+            {"check": "broadcast_is_live", "source": "observability.alert.broadcast_id"},
+            {"check": "no_active_channel_limit", "source": "cfg:channel_limit:{broadcast_id}"},
+        ],
+    },
+    {
+        "action_id": "isolate_slow_pod",
+        "target": "o2-dev 네임스페이스의 Deployment 하나",
+        "knob_reversible": True,
+        # 격리 중 그 파드가 받던 요청은 나머지 파드로 간다. 사용자에게 남는
+        # 영구 손실이 없다.
+        "user_effect_reversible": True,
+        "max_blast_radius": "single deployment, o2-dev namespace",
+        "max_duration_seconds": None,
+        "preapproved_budget": None,
+        "cooldown_seconds": None,
+        "max_attempts": None,
+        "measured": False,
+        "risk_level": "L2",
+        "diagnostic_contamination": True,
+        "rollback_method": "previous_value",
+        "rollback_call": {"endpoint": "$SCALE_EXECUTOR_URL", "note": "replicas 를 이전 값으로"},
+        "verification_metrics": ["p95_ms", "error_rate"],
+        # 이게 없으면 서비스를 통째로 내릴 수 있다 (scenario-experiment.md 3절).
+        "preconditions": [
+            {"check": "healthy_capacity_at_or_above_safe_minimum"},
+            {"check": "target_is_not_the_only_capacity"},
+            {"check": "outlier_observed_repeatedly"},
+            {"check": "target_resolves_to_exactly_one_deployment"},
+        ],
+    },
+    {
+        # S3 는 런북이 없다 — 그래서 이 노브는 rca_type 파티션에 집이 없다.
+        # 노브 카탈로그를 rca_type 축에서 떼어낸 이유가 이것이다.
+        "action_id": "set_read_path_degraded",
+        "target": "api · broadcast 단위 읽기 경로",
+        "knob_reversible": True,
+        # 응답 내용(재고·가격)이 안 바뀐다. 차단이 0 이라 되돌릴 사용자 영향이
+        # 없다 — S3 의 "안 고르고 버티기" 가 성립하는 근거다.
+        "user_effect_reversible": True,
+        "max_blast_radius": "single broadcast_id · 응답 내용 불변, 차단 0",
+        "max_duration_seconds": None,
+        "preapproved_budget": None,
+        "cooldown_seconds": None,
+        "max_attempts": None,
+        "measured": False,
+        "risk_level": "L1",
+        # ★ 오염 방향이 다른 둘과 반대다. 이 노브는 `inventory.check` 발행을
+        #   건너뛰므로 **관측이 사라진다** — cache_hit 계열 지표가 비는 것을
+        #   "캐시가 죽었다" 로 읽으면 안 된다.
+        "diagnostic_contamination": True,
+        "diagnostic_contamination_note": "inventory.check 발행이 멈춰 cache_hit 계열 지표가 빈다",
+        "rollback_method": "immediate_delete",
+        "rollback_call": {"endpoint": "$API_ADMIN_URL", "action": "clear"},
+        # 효율 축(포화점 이동)은 아직 못 넣는다 — 안 쟀다.
+        "verification_metrics": ["block_rate", "api_cpu_per_request"],
+        "preconditions": [
+            {"check": "broadcast_is_live", "source": "observability.alert.broadcast_id"},
+            {"check": "read_path_not_already_degraded", "source": "cfg:read_path_degraded:{broadcast_id}"},
+        ],
+    },
+]
+
+
 def main():
     known = set(H.labels())
     for entry in RUNBOOKS:
@@ -221,7 +331,29 @@ def main():
             )
         print(f"✓ {rca_type} — DEF + ACTION {len(entry['actions'])}개")
 
-    print(f"\n완료. {table_name} 에 {len(RUNBOOKS)}개 rca_type 시딩됨.")
+    # 노브는 rca_type 축이 아니라 노브 축이라 KNOB 파티션에 따로 넣는다.
+    known_actions = {a["action_id"] for e in RUNBOOKS for a in e["actions"]}
+    for knob in KNOBS:
+        table.put_item(
+            Item={
+                "rca_type": KNOB_PARTITION,
+                "sk": f"KNOB#{knob['action_id']}",
+                **knob,
+            }
+        )
+        # 런북에 없는 노브는 정상이다(S3). 반대로 런북이 참조하는 노브가
+        # 카탈로그에 없으면 게이트가 판정할 근거를 못 찾는다.
+        orphan = "" if knob["action_id"] in known_actions else "  (런북 없음 — S3 처럼 조립하는 경우)"
+        print(f"✓ KNOB#{knob['action_id']}{orphan}")
+
+    missing = known_actions - {k["action_id"] for k in KNOBS}
+    if missing:
+        raise SystemExit(
+            f"런북이 참조하는데 노브 카탈로그에 없다: {sorted(missing)} — "
+            "게이트 진입을 판정할 근거가 없어진다."
+        )
+
+    print(f"\n완료. {table_name} 에 rca_type {len(RUNBOOKS)}개 · 노브 {len(KNOBS)}개 시딩됨.")
 
 
 if __name__ == "__main__":

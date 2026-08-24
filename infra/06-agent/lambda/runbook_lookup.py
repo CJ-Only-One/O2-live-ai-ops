@@ -51,6 +51,28 @@ def _json_default(value):
     raise TypeError(f"not JSON serializable: {value!r}")
 
 
+# 노브 카탈로그가 사는 PK. scripts/seed_runbook.py 의 KNOB_PARTITION 과 같아야
+# 한다. rca_type 축이 아니라 노브 축이라 별도 파티션에 둔다 — 같은 노브가 여러
+# rca_type 의 조치로 쓰이고, S3 처럼 런북 없이 조립하는 조치도 있기 때문이다.
+KNOB_PARTITION = "KNOB"
+KNOB_SK_PREFIX = "KNOB#"
+
+
+def _knob(action_id):
+    """조치 하나의 노브 정의를 가져온다. 없으면 None.
+
+    없어도 조회를 실패시키지 않는다 — 노브가 빠진 것과 런북이 없는 것은 다른
+    문제이고, 여기서 500 을 내면 진단 자체가 멈춘다. 대신 호출자가 `knob` 키의
+    부재로 "게이트 판정 근거 없음" 을 알 수 있다.
+    """
+    if not action_id:
+        return None
+    got = _table.get_item(
+        Key={"rca_type": KNOB_PARTITION, "sk": f"{KNOB_SK_PREFIX}{action_id}"}
+    )
+    return got.get("Item")
+
+
 def lambda_handler(event, context):
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     secrets = _load_secrets()
@@ -90,11 +112,22 @@ def lambda_handler(event, context):
 
     success_criteria = None
     actions = []
+    knobs = []
     for item in items:
         if item["sk"] == "DEF":
             success_criteria = item.get("success_criteria")
         elif item["sk"].startswith("ACTION#"):
             actions.append(item)
+        elif item["sk"].startswith(KNOB_SK_PREFIX):
+            knobs.append(item)
+
+    # 게이트 진입 판정은 LLM 이 아니라 이 값들로 한다 — knob_reversible ·
+    # user_effect_reversible · preapproved_budget · preconditions. 조치마다
+    # 노브를 붙여 보내야 호출자가 조회를 두 번 하지 않는다.
+    for action in actions:
+        knob = _knob(action.get("action_id"))
+        if knob is not None:
+            action["knob"] = knob
 
     return {
         "statusCode": 200,
@@ -103,6 +136,8 @@ def lambda_handler(event, context):
                 "rca_type": rca_type,
                 "success_criteria": success_criteria,
                 "actions": actions,
+                # rca_type="KNOB" 으로 부르면 카탈로그 전체가 여기 담긴다.
+                "knobs": knobs,
             },
             default=_json_default,
         ),

@@ -81,6 +81,7 @@
 | D-064 | 파드별 CPU 는 조임 비율이 아니라 사용량으로 본다 — `limits.cpu` 를 안 건다 | CFS 쿼터, 분모 없음, `kubernetes.cpu.usage.total`, F-6 종결 |
 | D-065 | 큐시트 저장은 형식을 검증하지 않는다 — 쓰기 경로가 사람뿐일 때까지만 | `cue_sheet.py`, jsonschema 런타임 의존성 보류, API 라우트·AI 해석 붙일 때 재검토 |
 | D-066 | Datadog Shadow는 cycle key가 아니라 합성 monitor ID로 격리한다 | `$ALERT_CYCLE_KEY`, 사전 미확정 값, monitor allowlist, 실제 치환 검증 |
+| D-067 | 노브 카탈로그는 새 테이블이 아니라 runbook 테이블의 KNOB 파티션에 둔다 | 게이트 진입 결정론화, 노브 축, 런북 없는 조치, 안 잰 값은 `None`+`measured` |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4086,3 +4087,89 @@ monitor ID는 monitor 생성 API 응답에서 trigger 전에 알 수 있다. 따
 코드 병합만으로 실환경 guard는 바뀌지 않는다. 병합 후 비활성 targeted plan에서 Lambda
 환경변수 이름 교체와 코드 해시 update만 있는지 확인하고 적용한 다음, 실제 cycle-key
 치환 Shadow를 별도 단계로 수행한다.
+
+---
+
+## D-067. 노브 카탈로그는 새 테이블이 아니라 runbook 테이블의 KNOB 파티션에 둔다
+
+게이트 진입을 **LLM 자유 서술로 판정하면 테이크마다 달라진다.** 어떤 조치가
+승인을 받아야 하는지는 가역성과 사전 승인 예산으로 정해지는 값이지 문장으로
+설명할 일이 아니다. `risk_level` 은 이미 "LLM 이 만들지 않고 조회한다" 로
+정해져 있었고, 그 원칙을 게이트 진입 전체로 넓힌 것이다.
+
+### 왜 rca_type 축에 못 넣나
+
+`runbook` 테이블은 `rca_type` 이 PK 다. 조치 메타데이터를 ACTION 아이템에만
+두면 두 가지가 깨진다.
+
+1. **같은 노브가 여러 rca_type 의 조치로 쓰이면 같은 사실이 두 곳에 적힌다.**
+   한쪽만 고치는 날이 온다
+2. **런북이 없는 조치는 집이 없다.** S3 는 런북 없이 조립하는 시나리오라
+   (`scenario-experiment.md` 0.2) 읽기 저하 노브가 어느 `rca_type` 에도
+   안 붙는다. 실제로 `set_read_path_degraded` 가 그 상태다
+
+노브의 축은 원인이 아니라 노브다.
+
+### 왜 새 테이블이 아닌가
+
+노브가 셋이고 조회 패턴이 "action_id 하나로 하나 꺼내기" 뿐이다. 테이블을
+새로 만들면 Terraform 리소스·IAM 정책·조회 Lambda·시딩 경로가 전부 하나씩
+더 생긴다. **PK 값 하나를 예약하면 그 넷이 전부 그대로 재사용된다.**
+
+    PK  rca_type = "KNOB"
+    SK  KNOB#{action_id}
+
+`rca_type` 이 통제 어휘(`labels.txt`)에서 오는 값이라 `KNOB` 과 충돌하지
+않는다. 나중에 노브가 수십 개가 되거나 노브만의 조회 패턴이 생기면 그때
+테이블을 가른다 — 아이템을 복사하면 되는 이동이다.
+
+### 조회는 한 번이다
+
+`runbook_lookup` 이 `rca_type` 조회 결과의 조치마다 노브를 붙여 돌려준다.
+Dify 가 노드를 두 개 쓰지 않아도 된다.
+
+`rca_type="KNOB"` 으로 부르면 카탈로그 전체가 `knobs` 로 나온다 — 런북이 없는
+S3 는 이 경로로 찾는다.
+
+**노브가 없어도 조회를 실패시키지 않는다.** 카탈로그에 없는 조치는 `knob` 키가
+없는 채로 나간다. 여기서 500 을 내면 노브 하나가 빠진 것 때문에 진단 전체가
+멈춘다. 호출자는 키의 부재로 "게이트 판정 근거 없음" 을 구분한다.
+
+반대로 **시딩은 막는다** — 런북이 참조하는 조치가 카탈로그에 없으면
+`seed_runbook.py` 가 실패한다. 조용히 비는 것을 배포 시점에 잡는다.
+
+### 안 잰 값은 지어내지 않는다
+
+넷은 실측 전이다 — `max_duration_seconds` · `preapproved_budget` ·
+`cooldown_seconds` · `max_attempts`. `None` 으로 두고 `measured: False` 를
+같이 싣는다. **자리를 비워두면 "아직 안 정했다" 와 "0 이다" 가 구분되지
+않으므로** 플래그를 따로 둔다. 실측되면 `measurements.md` 에 남기고 이 값을
+덮어쓴다.
+
+구조적으로 정해지는 값은 지금 채운다 — 가역성 두 축, `rollback_method`,
+`diagnostic_contamination`, `preconditions`, `verification_metrics`.
+
+### 지금 등록된 셋
+
+| action_id | 노브 가역 | 사용자 영향 가역 | 원복 |
+|---|---|---|---|
+| `limit_channel_volume` | 예 | **아니오** — 거부당한 발화는 되돌릴 수 없다 | 즉시 삭제 |
+| `isolate_slow_pod` | 예 | 예 | 이전 값 |
+| `set_read_path_degraded` | 예 | 예 — 응답 내용이 안 바뀌어 차단이 0 이다 | 즉시 삭제 |
+
+`limit_channel_volume` 만 사용자 영향이 비가역이라 대가 게이트로 간다.
+S1 이 대가 게이트 시나리오인 것이 여기서 데이터로 나온다 — 시나리오 번호를
+보고 정하는 것이 아니다.
+
+`set_read_path_degraded` 의 오염은 방향이 다르다. 이 노브는 `inventory.check`
+발행을 건너뛰므로 **관측이 사라진다.** `cache_hit` 계열 지표가 비는 것을
+"캐시가 죽었다" 로 읽으면 안 되고, 그래서 `diagnostic_contamination_note` 를
+따로 싣는다.
+
+### 남은 것
+
+`risk_level` 의 `L1`/`L2`/`L3` 척도는 저장소 어디에도 정의가 없다. 기존 ACTION
+아이템이 쓰던 값을 그대로 옮겼을 뿐이다. 척도 정의는 별도 과제로 남긴다.
+
+ACTION 아이템의 `risk_level` 은 Node 11 이 이미 읽고 있어 지금은 그대로 둔다.
+Node 11 이 병합된 `knob` 을 읽게 되면 그때 ACTION 쪽 사본을 지운다.
