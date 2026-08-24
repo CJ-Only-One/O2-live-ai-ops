@@ -67,7 +67,7 @@ output "alert_relay_log_command" {
   ])
 }
 
-# ── Agent 공통 진입점 (Phase 1B: 비활성) ─────────────────────────
+# ── Agent 공통 진입점 (Phase 3 전: 비활성) ────────────────────────
 
 output "agent_entry_queue_url" {
   description = "agent.trigger.v1 전용 Queue. Phase 1B event source는 disabled"
@@ -90,8 +90,13 @@ output "agent_entry_worker_name" {
 }
 
 output "agent_entry_event_source_enabled" {
-  description = "자동 Agent 호출 활성화 여부. Phase 1B 완료 상태는 반드시 false"
+  description = "자동 Agent 호출 event source 활성화 여부"
   value       = aws_lambda_event_source_mapping.agent_entry.enabled
+}
+
+output "agent_entry_execution_enabled" {
+  description = "Generic Worker Dify 실행 게이트"
+  value       = var.agent_entry_execution_enabled
 }
 
 # ── O2 알림 중계 Lambda (병렬 파이프라인) ──────────────────────────

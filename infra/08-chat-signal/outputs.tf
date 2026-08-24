@@ -24,8 +24,13 @@ output "chat_source_adapter_event_source_uuid" {
 }
 
 output "chat_source_adapter_event_source_enabled" {
-  description = "Phase 2 완료 상태는 반드시 false"
+  description = "Chat Candidate Stream event source 활성화 여부"
   value       = aws_lambda_event_source_mapping.chat_source_adapter.enabled
+}
+
+output "chat_source_adapter_execution_enabled" {
+  description = "Chat Source Adapter Queue 전송 실행 게이트"
+  value       = var.chat_source_adapter_execution_enabled
 }
 
 output "chat_source_adapter_dlq_url" {

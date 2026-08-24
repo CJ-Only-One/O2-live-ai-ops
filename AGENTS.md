@@ -31,9 +31,9 @@ sed -n '553,607p' docs/decisions.md     # 그 절만 읽는다
 | 채팅 기반 Incident Candidate | `docs/chat-incident-candidate.md` (**구현 전 필독**) |
 | Datadog·Chat Candidate → AI Agent 공통 진입점 | `docs/agent-entrypoint.md` (**Agent 호출 변경 전 필독**) |
 | 테이블·컬럼·인덱스, MySQL/Valkey 경계 | `docs/schema.md` |
+| **시나리오 실험 — 복구 판정 · 주입 설정 · 초기화** | `docs/scenario-experiment.md` (**실험 돌리기 전 필독**) |
 | 저장소 사용법, 배포 흐름 | `README.md` |
 | 특정 인프라 스택 | `infra/<스택>/README.md` |
-| 문서를 어디에 어떻게 쓸지 | `docs/documentation-guide.md` |
 
 **`D-` 번호가 두 벌이다. 자릿수로 구분한다.**
 
@@ -79,9 +79,10 @@ graceful shutdown + 지터 재연결 / resource requests / readiness·liveness �
 먼저 읽는다. **Valkey 구독 Collector를 운영 소스로 만들지 않는다.** 분석 이벤트는
 Chat Gateway 인입 지점에서 전용 SQS로 직접 분기한다(D-047).
 
-Candidate 이후 Agent 호출을 바꾸면 `docs/agent-entrypoint.md`, `contracts.md` 5.8,
-`docs/contracts/agent-trigger-v1.schema.json`을 먼저 읽는다. Source별 JSON은 Adapter
-앞에서만 다르고 Agent Queue부터는 `agent.trigger.v1`이어야 한다(D-050).
+Candidate 이후 Agent 호출을 바꾸면 `docs/agent-entrypoint.md`, `contracts.md` 5.8-5.9,
+`docs/contracts/agent-trigger-v1.schema.json`, `docs/contracts/agent-incident-v1.schema.json`을
+먼저 읽는다. Source별 JSON은 Adapter 앞에서만 다르고 Signal Queue는 `agent.trigger.v1`,
+Agent Invocation Queue는 `agent.incident.v1`이어야 한다(D-050, D-055).
 
 ## 문서를 고칠 때
 

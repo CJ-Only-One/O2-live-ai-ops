@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:o2:contract:agent.incident.v1",
+  "title": "agent.incident.v1",
+  "description": "A revisioned incident snapshot produced after deterministic correlation of one or more agent.trigger.v1 signals.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_type",
+    "incident_id",
+    "revision",
+    "idempotency_key",
+    "lifecycle",
+    "analysis_reason",
+    "opened_at",
+    "updated_at",
+    "correlation",
+    "normalized_context",
+    "signals",
+    "guardrails"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "event_type": {
+      "const": "agent.incident.v1"
+    },
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "idempotency_key": {
+      "type": "string",
+      "pattern": "^incident:inc_[0-9A-HJKMNP-TV-Z]{26}:revision:[1-9][0-9]*$",
+      "maxLength": 256
+    },
+    "lifecycle": {
+      "enum": [
+        "OPEN",
+        "RECOVERING",
+        "RESOLVED"
+      ]
+    },
+    "analysis_reason": {
+      "enum": [
+        "INITIAL_DETECTION",
+        "CROSS_SOURCE_EVIDENCE_ADDED",
+        "MATERIAL_SEVERITY_CHANGE",
+        "AMBIGUITY_RECORDED",
+        "RECOVERY_EVIDENCE_ADDED"
+      ]
+    },
+    "opened_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "correlation": {
+      "$ref": "#/$defs/correlation"
+    },
+    "normalized_context": {
+      "$ref": "#/$defs/normalized_context"
+    },
+    "signals": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "$ref": "urn:o2:contract:agent.trigger.v1"
+      }
+    },
+    "guardrails": {
+      "$ref": "#/$defs/guardrails"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "correlation": {
+            "properties": {
+              "state": {
+                "const": "CORRELATED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          }
+        },
+        "required": [
+          "correlation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "signals": {
+            "minItems": 2,
+            "allOf": [
+              {
+                "contains": {
+                  "properties": {
+                    "source": {
+                      "const": "CHAT_INCIDENT_CANDIDATE"
+                    }
+                  },
+                  "required": [
+                    "source"
+                  ]
+                },
+                "minContains": 1
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "source": {
+                      "const": "DATADOG_MONITOR"
+                    }
+                  },
+                  "required": [
+                    "source"
+                  ]
+                },
+                "minContains": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "correlation": {
+            "properties": {
+              "state": {
+                "const": "AMBIGUOUS"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          }
+        },
+        "required": [
+          "correlation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "correlation": {
+            "properties": {
+              "operator_confirmation_required": {
+                "const": true
+              }
+            }
+          },
+          "analysis_reason": {
+            "const": "AMBIGUITY_RECORDED"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "strategy",
+        "confidence",
+        "reason_code",
+        "matched_on",
+        "operator_confirmation_required"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "PROVISIONAL",
+            "CORRELATED",
+            "AMBIGUOUS"
+          ]
+        },
+        "strategy": {
+          "const": "DETERMINISTIC_V1"
+        },
+        "confidence": {
+          "enum": [
+            "HIGH",
+            "MEDIUM",
+            "LOW"
+          ]
+        },
+        "reason_code": {
+          "enum": [
+            "CHAT_FIRST_NO_METRIC",
+            "DATADOG_FIRST_NO_CHAT",
+            "UNIQUE_ACTIVE_MATCH",
+            "MULTIPLE_ACTIVE_MATCHES",
+            "INSUFFICIENT_DIMENSIONS"
+          ]
+        },
+        "matched_on": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "ENVIRONMENT",
+              "SYMPTOM_FAMILY",
+              "AFFECTED_SCOPE",
+              "EVENT_TIME"
+            ]
+          }
+        },
+        "operator_confirmation_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "normalized_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "environment",
+        "symptom_family",
+        "suspected_surfaces",
+        "services",
+        "broadcast_ids"
+      ],
+      "properties": {
+        "environment": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "symptom_family": {
+          "enum": [
+            "LATENCY",
+            "AVAILABILITY",
+            "ERROR_RATE",
+            "UNKNOWN"
+          ]
+        },
+        "suspected_surfaces": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "READ_PATH",
+              "PLAYBACK",
+              "CHAT",
+              "UNKNOWN"
+            ]
+          }
+        },
+        "services": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "broadcast_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^bc_[0-9]+$"
+          }
+        }
+      }
+    },
+    "guardrails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "analysis_mode",
+        "automatic_remediation_allowed",
+        "must_preserve_uncertainty",
+        "raw_chat_included",
+        "single_incident_action_lock_required"
+      ],
+      "properties": {
+        "analysis_mode": {
+          "const": "READ_ONLY"
+        },
+        "automatic_remediation_allowed": {
+          "const": false
+        },
+        "must_preserve_uncertainty": {
+          "const": true
+        },
+        "raw_chat_included": {
+          "const": false
+        },
+        "single_incident_action_lock_required": {
+          "const": true
+        }
+      }
+    }
+  }
+}

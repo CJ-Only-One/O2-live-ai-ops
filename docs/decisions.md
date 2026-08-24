@@ -67,8 +67,11 @@
 | D-050 | Agent 앞에서 source별 JSON을 공통 envelope로 정규화한다 | agent.trigger.v1, discriminator, custom_alert_json, idempotency, read-only |
 | D-051 | Karpenter·KEDA 는 안전망이지 주력이 아니다 | D-037 조건 충족, NodePool 을 좁힌 이유, IAM 태그 조건, ScaledObject 는 배포 저장소 |
 | D-052 | 파이프라인 생존은 합성 카나리로 감시한다 | 실패를 삼키는 설계, `logs.enabled=false`, 트래픽 의존 no-data 의 한계, `service:o2-canary` |
-| D-053 | 안 쓰는 Monitor 는 지우지 않고 알림 경로만 끊는다 | `role:sub`, 알림 핸들 없음, composite 참조, `state mv` |
-| D-054 | 파드별 지연은 새 메트릭이 아니라 `latency_p95` 의 태그로 낸다 | `pod_name` 태그, `cache_hit_rate` 패턴, 최소 표본, APM 우회 불가 |
+| D-053 | Phase 3 Agent E2E는 이중 합성 allowlist로 격리한다 | broadcast_id, idempotency_key, fail-closed, paired gates, rollback |
+| D-054 | 시나리오 복구 기준은 SLO 복귀와 기준선 개선을 함께 요구한다 | 자연 회복 배제, 지표 세 축, 판정 창, 주입 표식 금지 |
+| D-055 | source 신호를 먼저 Incident로 병합한 뒤 Agent를 호출한다 | correlator, agent.incident.v1, revision, ambiguity, single action lock |
+| D-056 | 안 쓰는 Monitor 는 지우지 않고 알림 경로만 끊는다 | `role:sub`, 알림 핸들 없음, composite 참조, `state mv` |
+| D-057 | 파드별 지연은 새 메트릭이 아니라 `latency_p95` 의 태그로 낸다 | `pod_name` 태그, `cache_hit_rate` 패턴, 최소 표본, APM 우회 불가 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3267,7 +3270,109 @@ M-014 에서 확인했다). `enable_queue_backlog_monitor` 와 같은 처리다.
 
 ---
 
-## D-053. 안 쓰는 Monitor 는 지우지 않고 알림 경로만 끊는다
+## D-053. Phase 3 Agent E2E는 이중 합성 allowlist로 격리한다
+
+Phase 2의 Chat Source Adapter는 Candidate key만 필터링한다. 이 상태에서 Stream event
+source를 켜면 cutover 이후 생성된 운영 Candidate도 Agent Trigger Queue로 갈 수 있다.
+Agent Worker도 Queue에 들어온 모든 유효 envelope를 처리하므로 Queue E2E 중 예상하지 못한
+메시지가 들어오면 전용 Dify 테스트 앱을 호출할 수 있다.
+
+따라서 Phase 3은 실행 게이트 외에 두 개의 합성 식별자 allowlist를 둔다.
+
+| 경계 | 허용값 | 허용되지 않은 입력 |
+|---|---|---|
+| Chat Source Adapter | 정확히 한 합성 `broadcast_id` | 정상 제외, Queue 전송 없음 |
+| Generic Agent Worker | 정확히 한 합성 `idempotency_key` | 실패 처리, Secret·ledger·Dify 접근 없음 |
+
+운영 broadcast는 테스트 중에도 들어올 수 있으므로 Adapter에서 정상 제외한다. 반대로 Queue의
+미허용 메시지는 경로 오염 증거이므로 Worker에서 성공으로 삼키지 않고 재시도·DLQ 관측이
+가능한 실패로 처리한다. 빈 allowlist, 복수 값, 형식 오류는 구성 오류이며 양쪽 모두
+fail-closed한다.
+
+Terraform은 다음 두 상태만 허용한다.
+
+1. 비활성: event source `false`, 실행 플래그 `false`, allowlist empty, Adapter cutoff 2100년
+2. 합성 E2E: event source `true`, 실행 플래그 `true`, allowlist 정확히 1개, 명시 cutover
+
+한 게이트만 켜거나 allowlist 없이 활성화하는 plan은 precondition에서 실패한다. 매 테스트는
+새 Candidate ULID와 idempotency key를 사용하고, 종료 즉시 비활성 상태로 되돌린다. 기존 팀
+workflow, 기존 Datadog 입력, 운영 Chat source를 테스트 대상으로 사용하지 않는다.
+
+## D-054. 시나리오 복구 기준은 SLO 복귀와 기준선 개선을 함께 요구한다
+
+장애 시나리오 실험에서 "조치가 들었다" 를 판정하는 규칙이 없었다. 규칙 없이 재면
+두 방향으로 틀린다.
+
+절대 임계(계약 SLO)만 쓰면 **부하가 저절로 빠져도 통과한다.** 자연 회복이 조치
+효과로 기록되고, Datadog 의 `Recovered` 를 해결로 적는 것과 같은 오류가 된다.
+반대로 조치 직전 기준선 대비 개선폭만 쓰면 **나아졌지만 여전히 계약을 위반하는
+상태가 "해결" 로 기록된다.**
+
+그래서 **둘 다 요구한다.** 그리고 지표를 하나로 두지 않는다 — 효율(빨라졌나)만
+보면 "정상 사용자 절반을 차단해서 빨라진 것" 이 성공이 되므로 정확(차단률·오류율)과
+범위(안 건드린 경로가 그대로인가)를 함께 판정한다.
+
+판정 창은 **조치 반영 + 지표 집계 창의 2배 이상**으로 둔다. warm path 집계 창이
+10초(`O2_WARM_WINDOW`)이고 여기에 Datadog 전송·평가 지연이 얹히므로, 창이 몇 개
+안 들어가면 한 창의 흔들림으로 판정이 뒤집힌다.
+
+주입 쪽에는 하나를 금지한다 — **부하 생성기에 식별용 표식을 붙이지 않는다.**
+봉투에 `pod_name` 등이 실려(T-023) warm path 집계를 거쳐 Agent 가 읽는 지표가
+되므로, k6 표식은 Agent 입장에서 정답 라벨이 된다. 특히 사람/봇 구분 시나리오는
+`ua_diversity` 가 판별 신호라 표식 하나로 실험이 무의미해진다.
+
+세부 규칙과 시나리오별 기준·주입 설정은 `docs/scenario-experiment.md` 에 둔다.
+수치는 이 결정에 포함하지 않는다 — `docs/measurements.md` 가 원본이다.
+
+## D-055. source 신호를 먼저 Incident로 병합한 뒤 Agent를 호출한다
+
+D-050의 `agent.trigger.v1`은 Chat과 Datadog을 같은 모양으로 전달하지만, 같은 모양이라고
+같은 사건이 되는 것은 아니다. 두 Adapter가 각각 Generic Worker를 호출하면 S3처럼 Chat이
+먼저 오고 Datadog이 늦게 오는 경우 같은 장애를 두 번 분석하고 조치 락도 둘로 갈라진다.
+
+따라서 `agent.trigger.v1`은 **상관관계 전 source 신호**로 한정하고, Agent 앞에 durable
+Incident Correlator를 둔다.
+
+```text
+Chat/Datadog Adapter -> agent.trigger.v1 Signal Queue
+                     -> Incident Correlator -> Incident State DynamoDB
+                                            -> agent.incident.v1 Invocation Queue
+                                            -> Generic Worker -> Dify
+```
+
+자동 병합은 다음 차원이 모두 맞는 OPEN Incident가 정확히 하나일 때만 한다.
+
+1. environment
+2. normalized symptom family
+3. 고정 mapping으로 호환되는 affected surface/service
+4. correlation window 안의 source event time
+
+후보가 0개면 새 `PROVISIONAL` Incident를 만든다. 후보가 2개 이상이거나 필수 차원이 없으면
+`AMBIGUOUS`로 기록하고 운영자 확인 전까지 강제 병합하지 않는다. LLM은 상관관계 결정을
+소유하지 않으며 의미가 애매하다는 이유로 다른 사건을 합치지 않는다. correlation window의
+운영값은 추정하지 않고 Phase 3C의 실제 source 도착 지연 측정 후 정한다.
+
+Incident는 `incident_id`를 수명 동안 유지하고 material change마다 revision만 올린다.
+Chat-first revision 1은 read-only 분석을 시작할 수 있고, 늦은 Datadog 신호가 붙으면 같은
+Incident의 revision 2가 된다. 반대 순서도 같다. 첫 cross-source 증거, 심각도 변화, 복구
+증거만 후속 분석을 만들며 단순 재전달이나 비물질적 update는 저장만 한다.
+
+Agent 실행 멱등 키는 `incident:<incident_id>:revision:<revision>`이다. 같은 Incident의 실행은
+직렬화하고 조치 락은 Incident당 하나만 둔다. 실행 중 더 최신 revision이 생기면 현재 실행을
+중복 시작하지 않고 완료 후 최신 snapshot 한 건만 후속 실행한다.
+
+기존 물리 `agent-trigger` Queue는 새 구조에서 Signal Queue 역할로 유지한다. 이름만 바꾸기
+위해 Queue를 교체하지 않는다. 별도 Agent Invocation Queue를 만들고 Generic Worker를 그쪽으로
+옮긴다. 기존 Worker와 Correlator가 같은 SQS의 competing consumer가 되면 입력을 임의로
+나눠 가지므로, Worker mapping 분리 확인 전에는 Correlator event source를 활성화하지 않는다.
+
+기계 판독 계약은 `docs/contracts/agent-trigger-v1.schema.json`과
+`docs/contracts/agent-incident-v1.schema.json`, 단계와 활성화 게이트는
+`docs/agent-entrypoint.md`가 원본이다.
+
+---
+
+## D-056. 안 쓰는 Monitor 는 지우지 않고 알림 경로만 끊는다
 
 **맥락** — 시나리오 명세가 v4 로 바뀌면서 Monitor 열넷 중 일부가 대응
 시나리오를 잃었다. 적합성 검토(F-9)가 셋을 지적했다.
@@ -3386,7 +3491,7 @@ terraform state mv 'datadog_monitor.cache_absorption_failure'                   
 
 ---
 
-## D-054. 파드별 지연은 새 메트릭이 아니라 `latency_p95` 의 태그로 낸다
+## D-057. 파드별 지연은 새 메트릭이 아니라 `latency_p95` 의 태그로 낸다
 
 **맥락** — 명세 S2(느린 파드 하나가 서비스 전체 꼬리를 끌어올린다)의 자기
 교정 루프는 1차 조치가 듣지 않았을 때 **재분석**으로 내려간다. 그때 필요한

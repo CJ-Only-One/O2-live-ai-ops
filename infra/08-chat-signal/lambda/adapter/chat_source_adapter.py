@@ -1,8 +1,10 @@
 """Convert privacy-safe Chat Candidate INSERTs to agent.trigger.v1.
 
 Phase 2 deploys this Lambda with both the DynamoDB Stream event source and
-CHAT_SOURCE_ADAPTER_ENABLED disabled. Logs contain sequence ids, stable error
-codes, and statuses only. Candidate payloads and Queue bodies are never logged.
+CHAT_SOURCE_ADAPTER_ENABLED disabled. Phase 3 additionally requires exactly
+one synthetic broadcast id before the adapter may enqueue anything. Logs
+contain sequence ids, stable error codes, and statuses only. Candidate payloads
+and Queue bodies are never logged.
 """
 
 from __future__ import annotations
@@ -88,6 +90,14 @@ def _fail(code: str) -> None:
 
 def _enabled() -> bool:
     return os.environ.get("CHAT_SOURCE_ADAPTER_ENABLED", "false").lower() == "true"
+
+
+def _allowed_broadcast_id() -> str:
+    raw = os.environ.get("CHAT_SOURCE_ADAPTER_ALLOWED_BROADCAST_IDS", "")
+    values = raw.split(",") if raw else []
+    if len(values) != 1 or not re.fullmatch(r"bc_[0-9]+", values[0]):
+        raise AdapterError("SYNTHETIC_BROADCAST_ALLOWLIST_INVALID")
+    return values[0]
 
 
 def _client(name: str) -> Any:
@@ -261,6 +271,10 @@ def _process_record(record: dict[str, Any]) -> str:
     candidate = validate_candidate(item.get("payload"))
     if pk != f"CANDIDATE#{candidate['candidate_id']}":
         _fail("CANDIDATE_KEY_MISMATCH")
+
+    allowed_broadcast_id = _allowed_broadcast_id()
+    if candidate["broadcast_id"] != allowed_broadcast_id:
+        return "IGNORED_BROADCAST_NOT_ALLOWED"
 
     # A disabled Stream mapping can retain records until Phase 3. The cutover
     # timestamp prevents old production Candidates from becoming test traffic.

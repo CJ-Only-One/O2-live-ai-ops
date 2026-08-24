@@ -120,7 +120,7 @@ Datadog 의 일이 아닙니다.
 
 **파드 축은 메트릭 이름을 새로 만들지 않습니다.** `latency_p95` 는 service
 단위로 한 번, 파드마다 한 번씩 같은 이름으로 나갑니다 — 태그만 다릅니다
-(D-054). 그래서 `avg:o2.warm.latency_p95{*} by {pod_name}` 을 치면 파드
+(D-057). 그래서 `avg:o2.warm.latency_p95{*} by {pod_name}` 을 치면 파드
 시계열 외에 `pod_name:N/A` 가 하나 더 나옵니다. service 단위로 보낸 값이
 태그가 없어서 그렇게 잡히는 것이고, 정상입니다.
 

@@ -1,10 +1,10 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 1B and Phase 2 deployed with execution gates disabled
-> **Updated:** 2026-08-23
-> **Decision:** `decisions.md` D-050
-> **Wire contract:** `contracts.md` 5.8 and `contracts/agent-trigger-v1.schema.json`
+> **Status:** Phase 3A synthetic guards deployed with execution gates disabled
+> **Updated:** 2026-08-24
+> **Decision:** `decisions.md` D-050 and D-055
+> **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
 
 ```yaml
 implementation_state:
@@ -13,6 +13,10 @@ implementation_state:
   agent_trigger_queue: DEPLOYED_EMPTY
   chat_candidate_adapter: DEPLOYED_EXECUTION_DISABLED
   generic_dify_worker: DEPLOYED_EXECUTION_DISABLED
+  phase3_synthetic_guard: DEPLOYED_EXECUTION_DISABLED
+  incident_correlation_contract: COMPLETE
+  incident_correlator: NOT_STARTED
+  agent_invocation_queue: NOT_STARTED
   idempotency_ledger: DEPLOYED_EMPTY
   dedicated_test_workflow: PUBLISHED_CODE_ONLY
   dedicated_test_workflow_ui_contract_tests: PASS
@@ -23,7 +27,9 @@ implementation_state:
   datadog_migration: NOT_STARTED
   production_agent_handoff: DISABLED
 activation_blockers:
-  - PHASE_3_SHADOW_E2E_EXECUTION_GATES_DISABLED
+  - INCIDENT_CORRELATOR_NOT_IMPLEMENTED
+  - AGENT_INVOCATION_QUEUE_NOT_IMPLEMENTED
+  - PHASE_3_CORRELATION_E2E_NOT_RUN
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
 production_migration_blockers:
@@ -69,15 +75,19 @@ Datadog과 채팅은 의미가 다르므로 source schema를 억지로 같게 �
 | Datadog | `datadog.alert.v1` | 임계치를 넘은 모니터 알림 |
 | Chat | `chat.incident_candidate.v1` | 사용자가 먼저 체감한 증상 집합, 메트릭 미확인 |
 
-두 source schema는 **Source Adapter 앞에서는 달라도 된다.** 하지만 Agent Queue부터는
-공통 envelope `agent.trigger.v1`을 사용한다. `source`가 discriminator이고 `evidence`만
-source별 구조를 갖는다.
+두 source schema는 **Source Adapter 앞에서는 달라도 된다.** Source Adapter 뒤의 Signal
+Queue에서는 공통 envelope `agent.trigger.v1`을 사용한다. `source`가 discriminator이고
+`evidence`만 source별 구조를 갖는다. Correlator가 한 개 이상의 trigger를 진행 중 사건에
+붙인 뒤 Agent Invocation Queue에는 `agent.incident.v1`만 보낸다(D-055).
 
 ```text
 source-specific JSON
   -> Source Adapter
   -> agent.trigger.v1
-  -> Agent Trigger SQS
+  -> Signal Queue
+  -> Incident Correlator
+  -> agent.incident.v1
+  -> Agent Invocation Queue
   -> Generic Agent Worker
   -> Dify custom_alert_json
 ```
@@ -85,21 +95,25 @@ source-specific JSON
 이 경계가 없으면 Dify가 `alert_title` 유무로 source를 추측해야 하고, 새 source가 생길
 때마다 워크플로 전체가 조건문과 빈 문자열에 의존한다.
 
-### 1.2 채팅은 Candidate 생성 때 한 번만 호출한다
+### 1.2 채팅 Candidate는 Incident 생성 신호를 한 번만 만든다
 
-초기 정책은 `CANDIDATE_CREATED`만 Agent 호출 대상으로 삼는다. 쿨다운 중
-`CANDIDATE_UPDATED`는 저장만 하고 다시 호출하지 않는다. 채팅 메시지 한 건당 Agent를
-호출하거나 동일 Candidate 업데이트마다 호출하는 것은 금지한다.
+초기 정책은 `CANDIDATE_CREATED`만 `agent.trigger.v1`로 만든다. 쿨다운 중
+`CANDIDATE_UPDATED`는 저장만 하고 새 trigger를 만들지 않는다. 채팅 메시지 한 건마다
+Incident나 Agent 실행을 만드는 것은 금지한다.
 
-초기 멱등 키는 다음과 같다.
+Source 멱등 키와 Agent 실행 멱등 키는 서로 다른 경계가 소유한다.
 
 ```text
 chat:<candidate_id>
 datadog:<cycle_key>:<transition>
+incident:<incident_id>:revision:<revision>
 ```
 
-업데이트 재분석이 필요해지면 `chat:<candidate_id>:<revision>`으로 계약을 올리고,
-호출 빈도와 비용을 측정한 뒤 별도로 결정한다.
+Chat-first Incident revision 1은 즉시 read-only 분석 대상으로 만들 수 있다. 늦게 온
+Datadog 신호가 같은 사건에 붙으면 같은 `incident_id`의 revision 2가 된다. 단, 새 신호가
+붙을 때마다 실행하지 않고 첫 cross-source 증거, 심각도 변화, 복구 증거처럼
+`analysis_reason`에 정의된 material change만 새 Agent 실행을 만든다. 같은 Incident의
+실행은 직렬화하고 실행 락은 Incident 단위로 하나만 둔다.
 
 ### 1.3 팀 workflow와 테스트 workflow를 분리한다
 
@@ -130,15 +144,21 @@ Chat Gateway -> Chat Signal SQS -> Chat Signal Worker -> Candidate DynamoDB
                                                        |
                                                        | Candidate-key stream
                                                        v
-                                             Chat Source Adapter
-                                                       |
-Datadog Webhook -> Datadog Source Adapter -------------+
-                                                       v
-                                               Agent Trigger SQS
-                                                       v
-                                      Generic Agent Worker in Dify VPC
-                                                       v
-                                  Dedicated Test Workflow -> later Bedrock
+                                             Chat Source Adapter ----+
+                                                                    |
+Datadog Webhook -> Datadog Source Adapter --------------------------+
+                                                                    v
+                                                        agent.trigger.v1 Queue
+                                                                    v
+                                                         Incident Correlator
+                                                                    |
+                                                        Incident State DynamoDB
+                                                                    |
+                                                        agent.incident.v1 Queue
+                                                                    v
+                                                Generic Agent Worker in Dify VPC
+                                                                    v
+                                           Dedicated Test Workflow -> later Bedrock
 ```
 
 Chat Signal Worker에서 Dify를 직접 호출하지 않는다. Candidate 저장 성공과 Agent 호출
@@ -153,13 +173,13 @@ Chat Source Adapter는 Candidate DynamoDB Stream의 **새 Candidate INSERT만** 
 기존 Datadog 경로는 즉시 교체하지 않는다. 공통 Worker가 Shadow 검증을 통과한 뒤 기존
 입력과 새 envelope 결과를 비교하고 source adapter를 전환한다.
 
-## 3. 공통 envelope 불변조건
+## 3. Trigger와 Incident 불변조건
 
 기계 판독 원본은 [`agent-trigger-v1.schema.json`](contracts/agent-trigger-v1.schema.json)이다.
 
 | ID | 불변조건 |
 |---|---|
-| `INV-AGENT-ENTRY-001` | Queue 이후 모든 요청은 `agent.trigger.v1`이어야 한다. |
+| `INV-AGENT-ENTRY-001` | Source Adapter 뒤 Signal Queue의 모든 요청은 `agent.trigger.v1`이어야 한다. |
 | `INV-AGENT-ENTRY-002` | `source`, `source_schema`, `trigger_type` 조합은 Schema가 강제한다. |
 | `INV-AGENT-ENTRY-003` | Chat evidence에 원문, 원문 일부, 원문 해시, 사용자 키를 넣지 않는다. |
 | `INV-AGENT-ENTRY-004` | Chat root cause는 handoff 시점에도 `UNDETERMINED`다. |
@@ -169,6 +189,11 @@ Chat Source Adapter는 Candidate DynamoDB Stream의 **새 Candidate INSERT만** 
 | `INV-AGENT-ENTRY-008` | 같은 `idempotency_key`는 LLM을 두 번 실행하지 않는다. |
 | `INV-AGENT-ENTRY-009` | Trigger Queue와 DLQ는 서버 측 암호화하고 Source Adapter와 Worker에만 최소 권한을 준다. |
 | `INV-AGENT-ENTRY-010` | Dify에 보낼 최종 직렬화 문자열이 게시 입력 상한 30,000자를 넘으면 외부 호출과 ledger 획득 전에 거부한다. |
+| `INV-AGENT-ENTRY-011` | Agent Invocation Queue의 모든 요청은 `agent.incident.v1`이어야 한다. |
+| `INV-AGENT-ENTRY-012` | `CORRELATED`는 Chat과 Datadog trigger를 각각 하나 이상 포함해야 한다. |
+| `INV-AGENT-ENTRY-013` | 자동 병합은 환경·증상군·대상 범위·시간이 맞는 진행 중 사건이 정확히 하나일 때만 허용한다. |
+| `INV-AGENT-ENTRY-014` | 후보가 둘 이상이거나 비교 차원이 부족하면 강제 병합하지 않고 `AMBIGUOUS`로 남긴다. |
+| `INV-AGENT-ENTRY-015` | 같은 Incident의 Agent 실행과 조치 락은 하나이며 revision별 실행은 직렬화한다. |
 
 Chat 예시는 `contracts.md` 5.8에 있다. `evidence`는 Candidate 계약의 허용 필드만 복사하며
 `raw_chat_included`는 evidence가 아니라 공통 `guardrails`에서 항상 `false`로 강제한다.
@@ -204,7 +229,8 @@ compact JSON string으로 직렬화해 다음처럼 보낸다.
 | 실패 | 처리 |
 |---|---|
 | Candidate Stream/Adapter 실패 | Stream 재시도; Candidate와 채팅 경로는 이미 성공 상태 유지 |
-| Agent Trigger SQS 중복 | idempotency ledger에서 같은 key를 성공/진행 상태로 차단 |
+| Signal Queue trigger 중복 | Correlator가 source `idempotency_key`로 같은 신호의 중복 귀속을 차단 |
+| Agent Invocation Queue revision 중복 | Worker ledger가 Incident revision `idempotency_key`를 성공/진행 상태로 차단 |
 | Schema 불일치 | Dify 호출 금지, sanitized error code, DLQ |
 | Dify 호출 시작 전 Secret 조회 실패 | ledger를 잡지 않고 SQS가 제한 횟수 재전달 |
 | Dify HTTP/네트워크 실패 | 호출 도달 여부가 불명확하므로 ledger를 `FAILED`로 닫고 자동 재호출 금지; DLQ에서 운영 확인 |
@@ -212,16 +238,17 @@ compact JSON string으로 직렬화해 다음처럼 보낸다.
 | Dify 장시간 지연 | Queue backlog로 흡수; Chat Worker를 점유하지 않음 |
 | Agent 결과 저장 실패 | 성공한 LLM을 무조건 재실행하지 않도록 invocation 상태를 분리 |
 
-Agent Trigger SQS와 DLQ의 retention, retry 횟수, visibility timeout, Worker concurrency는
+Signal Queue·Agent Invocation Queue와 각 DLQ의 retention, retry 횟수, visibility timeout,
+Correlator·Worker concurrency는
 실측 전 확정하지 않는다. 단, visibility timeout은 Worker timeout보다 길어야 하고 Dify
 동시 처리량보다 Worker 동시성이 커지면 안 된다.
 
 Dify API key는 기존처럼 Secrets Manager에서 실행 시 읽는다. Generic Worker는 private
 Dify에 닿는 VPC 경계 안에 두고 새 public ingress를 만들지 않는다.
 
-관측 항목은 source별 accepted/rejected, Queue age/depth, Dify success/failure/elapsed,
-idempotency duplicate, DLQ depth다. 로그에는 Chat 원문이 애초에 들어오지 않으며 envelope
-전체도 출력하지 않는다.
+관측 항목은 source별 accepted/rejected, correlation state/reason, ambiguous 수, revision 수,
+두 Queue의 age/depth, Dify success/failure/elapsed, idempotency duplicate, DLQ depth다. 로그에는
+Chat 원문이 애초에 들어오지 않으며 envelope 전체도 출력하지 않는다.
 
 ## 6. 구현 Phase와 완료 게이트
 
@@ -231,13 +258,16 @@ idempotency duplicate, DLQ depth다. 로그에는 Chat 원문이 애초에 들�
 | 1A | 전용 Dify contract-test 앱 생성 | 기존 앱/API key 미사용, `custom_alert_json` required, Code-only 결정론적 응답, 두 source 예시 직접 호출 통과, DSL export |
 | 1B | Agent Trigger SQS/DLQ, idempotency ledger, Generic Worker를 비활성 상태로 생성 | Terraform fmt/validate, event source disabled, 자동 Dify 호출 0, 테스트 앱 secret만 참조 |
 | 2 | Chat Candidate INSERT Source Adapter와 계약 테스트 | synthetic Candidate가 정확히 한 envelope 생성, 원문/사용자 키 0, 중복 Agent 호출 0 |
-| 3 | 전용 테스트 workflow로 Dify Shadow E2E | contract-only Queue E2E 후 Bedrock 추가, 장애 시 Queue/DLQ 격리, 기존 앱 영향 0 |
+| 3A | 합성 입력 guard를 비활성 상태로 적용 | 양쪽 실행·event source false, allowlist empty, Queue/DLQ 0 |
+| 3B | `agent.incident.v1`, Incident State, Correlator, Agent Invocation Queue를 비활성 상태로 구현 | 계약 검증, 기존 Worker와 Correlator가 같은 Queue를 동시에 소비하지 않음, Dify 실행 0 |
+| 3C | 상관관계 전용 합성 E2E | Chat→Datadog과 Datadog→Chat 모두 같은 `incident_id`, revision 증가, 모호한 후보 강제 병합 0, Dify 실행 0 |
+| 3D | 병합된 Incident를 전용 테스트 workflow로 Shadow E2E | revision 멱등, Incident별 실행 직렬화, 장애 시 Queue/DLQ 격리, 기존 앱 영향 0 |
 | 4 | 기존 DLQ·DSL drift 정리 후 Datadog Source Adapter dual-run | legacy/new 결과 비교, Recovered 의미 보존, rollback 확인 |
 | 5 | 운영 hardening | backlog·error·DLQ 알람, replay runbook, concurrency·timeout 실측 근거 |
 
 Phase 1A는 전용 테스트 앱 API를 사람이 직접 호출해 계약만 확인하고, 자동 source는
 연결하지 않는다. Phase 1B와 2는 Dify event source를 비활성 상태로 구현한다. Phase 3은
-전용 테스트 앱과 합성 입력만으로 Queue E2E를 진행하므로 기존 O2 Worker DLQ와 팀
+상관관계 계층과 전용 테스트 앱을 합성 입력만으로 검증하므로 기존 O2 Worker DLQ와 팀
 workflow drift를 건드리지 않는다. 두 문제의 정리는 기존 Datadog 경로를 공통 진입점으로
 옮기는 Phase 4의 선행 조건이다.
 
@@ -357,6 +387,54 @@ Stream만 켜는 `0 add, 1 change, 0 destroy`였고, 적용 후 table `ACTIVE`, 
 
 따라서 Phase 2 상태는 `DEPLOYED_EXECUTION_DISABLED`다. Agent/Dify 호출 경로는 열리지
 않았으며, Phase 3 합성 Shadow E2E 전에는 어떤 실행 게이트도 변경하지 않는다.
+
+### 6.4 Phase 3 합성 입력 격리 준비
+
+Phase 3은 운영 Candidate나 기존 팀 workflow를 대상으로 하지 않는다. Queue contract-only
+E2E와 Chat Candidate E2E 모두 매 실행마다 새 합성 식별자 한 개만 허용한다(D-053).
+
+| 경계 | 합성 입력 제한 |
+|---|---|
+| Chat Source Adapter | 정확히 한 `broadcast_id`만 Agent Trigger Queue 전송 허용 |
+| Generic Agent Worker | 정확히 한 `idempotency_key`만 Secret·ledger·Dify 접근 허용 |
+| Terraform 기본값 | 두 계층의 event source와 실행 플래그 모두 `false`, allowlist는 빈 집합 |
+| 활성화 plan | 두 게이트 `true`와 allowlist 1개가 함께 있어야 통과 |
+| Adapter cutover | 명시한 test epoch 이후 Candidate만 허용; 비활성 기본값은 2100-01-01 |
+| 종료 상태 | 두 게이트 `false`, allowlist 빈 집합, Adapter cutoff 2100-01-01로 복귀 |
+
+허용되지 않은 production broadcast는 정상 제외해 재시도·DLQ를 만들지 않는다. 반면 빈 값,
+복수 값, 형식 오류 같은 allowlist 구성 오류는 fail-closed하고 Queue 전송이나 Dify 호출을
+하지 않는다. Worker의 allowlist 검사는 Secret 조회와 idempotency ledger 획득보다 먼저
+실행한다.
+
+2026-08-24 병합본에서 두 Lambda만 제한한 저장 plan을 적용했다. Chat Adapter와 Agent
+Worker는 각각 1개 제자리 업데이트였고 생성·삭제는 없었다. 적용 후 두 실행 플래그와 두
+event source는 모두 `false`/`Disabled`, allowlist는 빈 값, Agent Queue와 DLQ는 visible과
+in-flight 모두 0이었다. 따라서 Phase 3A는 `DEPLOYED_EXECUTION_DISABLED`로 완료했다.
+
+### 6.5 Phase 3B 상관관계 계약
+
+`agent.trigger.v1`은 Incident가 아니라 source 신호다. 같은 장애의 Chat Candidate와
+Datadog 알림을 직접 Dify에 보내면 분석과 조치가 둘로 갈라진다. Phase 3B부터는 Correlator가
+durable Incident State를 소유하고 Agent Worker에는 `agent.incident.v1` revision만 보낸다.
+
+자동 병합은 다음 조건을 모두 만족할 때만 한다.
+
+1. 같은 environment
+2. 같은 normalized symptom family
+3. source별 고정 mapping으로 호환되는 affected scope
+4. 측정으로 정한 correlation window 안의 event time
+5. 위 조건을 만족하는 OPEN Incident가 정확히 하나
+
+0개면 새 provisional Incident를 만들고, 2개 이상이거나 필수 차원이 없으면
+`AMBIGUOUS`로 기록해 강제 병합하지 않는다. LLM은 이 결정을 소유하지 않는다. 운영
+correlation window 값은 아직 측정하지 않았으므로 Phase 3C의 양방향 도착 지연 실측 전에는
+확정하지 않는다.
+
+현재 물리 이름이 `agent-trigger`인 Queue는 Phase 3B에서 논리적 Signal Queue 역할을 한다.
+별도 Agent Invocation Queue를 만들고 Generic Worker를 그쪽으로 옮긴다. Correlator와 기존
+Worker가 같은 SQS의 competing consumer가 되는 순간 신호가 임의 소비되므로, 기존 Worker
+mapping을 비활성·분리했다고 확인하기 전에는 Correlator event source를 켜지 않는다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 
