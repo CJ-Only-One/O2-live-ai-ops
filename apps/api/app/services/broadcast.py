@@ -142,8 +142,26 @@ def get_product(broadcast_id: str, sku_id: str) -> dict | None:
     return None
 
 
-def _degraded_key(broadcast_id: str) -> str:
+def degraded_key(broadcast_id: str) -> str:
+    """`app/api/routes/admin.py` 도 SET·DEL 할 때 이 함수를 그대로 쓴다 —
+    키 포맷이 두 곳에 따로 있으면 한쪽만 바뀌었을 때 조용히 어긋난다."""
     return f"cfg:read_path_degraded:{broadcast_id}"
+
+
+def _load_degraded_flag(broadcast_id: str) -> bool:
+    """Valkey 가 죽어도 DB 경로처럼 안전한 기본값(평시)으로 응답한다 —
+    `_load_meta` 와 같은 원칙이다. 노브 조회 실패가 읽기 경로 자체를
+    죽이면 안 된다 — 특히 이 노브가 켜지는 시점(인시던트 중)일수록
+    Valkey 가 불안정할 확률이 높다.
+
+    `bool(...)` 는 None 을 안 돌려주므로 `get_or_load` 가 문제없이
+    캐시한다(cache.py — loader 가 None 일 때만 캐시를 건너뛴다).
+    """
+    try:
+        return bool(valkey.get(degraded_key(broadcast_id)))
+    except Exception:
+        logger.exception("read_path_degraded 노브 조회 실패, 평시로 간주한다")
+        return False
 
 
 def _read_path_degraded(broadcast_id: str) -> bool:
@@ -153,19 +171,12 @@ def _read_path_degraded(broadcast_id: str) -> bool:
 
     매 요청 Valkey 를 직접 보지 않는다 — 로컬 캐시(1초)로 감싸서, 평시
     수백 RPS 에서도 실제 Valkey 조회는 초당 1회로 묶인다.
-
-    ★ `get_or_load` 는 loader 가 None 을 돌려주면 캐시에 안 넣는다
-      (cache.py — "존재 안 함"과 "아직 안 캐움"을 구분 못 하면 미스가
-      계속 하위로 샌다). 노브가 꺼진 평시가 바로 그 None 경로라, 그대로
-      쓰면 캐시가 항상 비어 매 요청 Valkey 를 친다 — 그래서 빈 문자열을
-      캐시 가능한 "꺼짐" 값으로 쓴다.
     """
-    cached = get_or_load(
-        _degraded_key(broadcast_id),
+    return get_or_load(
+        degraded_key(broadcast_id),
         LOCAL_TTL,
-        lambda: valkey.get(_degraded_key(broadcast_id)) or "",
+        lambda: _load_degraded_flag(broadcast_id),
     )
-    return bool(cached)
 
 
 def _emit_inventory_check(meta: dict, stocks: dict[str, int], origin: dict, latency_ms: int) -> None:

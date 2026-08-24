@@ -70,7 +70,6 @@ def test_set_then_clear(fake_valkey, admin_key):
         "broadcast_id": "bc_1042",
         "action": "set",
         "previously_degraded": False,
-        "degraded": True,
     }
     assert fake_valkey.get("cfg:read_path_degraded:bc_1042") == "1"
 
@@ -82,14 +81,27 @@ def test_set_then_clear(fake_valkey, admin_key):
     assert res.status_code == 200
     body = res.json()
     assert body["previously_degraded"] is True
-    assert body["degraded"] is False
     assert fake_valkey.get("cfg:read_path_degraded:bc_1042") is None
 
 
 def test_bad_action_rejected(fake_valkey, admin_key):
+    # action 이 Literal["set", "clear"] 이라 Pydantic 이 파싱 단계에서 막는다
+    # — 라우트 본문에 수동 검증을 안 둔다. app.core.errors 가 검증 오류를
+    # 계약 오류 봉투(400 INVALID_REQUEST)로 바꾼다(errors.py 참조).
     res = client.post(
         URL,
         json={"broadcast_id": "bc_1042", "action": "nope"},
+        headers={"x-admin-key": admin_key},
+    )
+    assert res.status_code == 400
+
+
+def test_malformed_broadcast_id_rejected(fake_valkey, admin_key):
+    # BroadcastId 패턴(^bc_[0-9]+$) 검증 — 오타 낸 broadcast_id 로 조용히
+    # 엉뚱한 키에 SET 하고 200 을 돌려주는 사고를 막는다.
+    res = client.post(
+        URL,
+        json={"broadcast_id": "not-a-broadcast", "action": "set"},
         headers={"x-admin-key": admin_key},
     )
     assert res.status_code == 400
