@@ -59,6 +59,13 @@ def _approval_id(incident_id: str, action: dict) -> str:
 
 
 def _post_slack_message(secrets, approval_id, incident_id, diagnosis, action, risk_level):
+    # Dify 의 "diagnosis" 필드는 diagnosis_agg.output(= {"diagnosis": {...},
+    # "context": {...}} 번들 전체)을 그대로 담아 보낸다 — 한 겹 더 감싸져
+    # 있다. 그대로 diagnosis.get("rca")를 하면 항상 못 찾고 "원인: -"로
+    # 뜬다. 감싸진 형태와 혹시 나중에 워크플로 쪽에서 안쪽 값만 바로
+    # 보내도록 고쳐질 경우 둘 다 받아들이게 한 겹 벗긴다.
+    if isinstance(diagnosis, dict) and isinstance(diagnosis.get("diagnosis"), dict):
+        diagnosis = diagnosis["diagnosis"]
     rca = diagnosis.get("rca") if isinstance(diagnosis, dict) else None
     action_id = action.get("action_id", "unknown")
     blast_radius = action.get("blast_radius", "-")
