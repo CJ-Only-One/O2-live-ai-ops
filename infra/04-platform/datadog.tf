@@ -76,6 +76,7 @@ resource "helm_release" "datadog" {
       dogstatsd = {
         portEnabled     = true
         nonLocalTraffic = true
+        useHostPort     = true
       }
 
       collectEvents = true
