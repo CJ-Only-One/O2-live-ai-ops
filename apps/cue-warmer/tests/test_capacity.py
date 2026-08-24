@@ -73,3 +73,29 @@ def test_merge_keeps_service_only_in_one_side():
         "api": 2,
         "chat-gateway": 3,
     }
+
+
+def test_order_pods_from_order_rate():
+    # M-014: 파드당 47/s. 200/s 면 ceil(200/47) = 5 파드.
+    assert capacity.order_pods(200.0) == 5
+    assert capacity.order_pods(47.0) == 1
+    assert capacity.order_pods(48.0) == 2
+
+
+def test_order_pods_needs_value():
+    assert capacity.order_pods(None) is None
+    assert capacity.order_pods(0) is None
+
+
+def test_targets_includes_order_worker():
+    # 특가 세그먼트 — 주문율만 있고 진입·채팅은 없다.
+    out = capacity.targets({"order_rate": 200.0})
+    assert out == {"order-worker": 5}
+
+
+def test_targets_sale_open_hits_api_and_order():
+    # 특가 오픈은 유입과 주문이 같이 온다.
+    out = capacity.targets(
+        {"concurrent": 12_000, "entry_window_s": 60, "order_rate": 120.0}
+    )
+    assert out == {"api": 1, "order-worker": 3}

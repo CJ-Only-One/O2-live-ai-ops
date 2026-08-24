@@ -57,6 +57,18 @@ resource "kubectl_manifest" "cue_warmer_role" {
         resources = ["deployments/scale"]
         verbs     = ["get", "patch"]
       },
+      {
+        # order-worker 는 Deployment 의 replicas 를 KEDA 가 소유해서 그쪽을
+        # patch 하면 다음 조절 주기에 되돌려진다. 워머는 ScaledObject 의
+        # minReplicaCount(바닥)만 올리고 KEDA 가 그 위에서 조절하게 둔다.
+        #
+        # scale 서브리소스처럼 필드를 좁힐 수단이 없어 리소스 단위로 준다 —
+        # ScaledObject 는 CRD 라 서브리소스가 없다. 대신 대상이 o2-dev
+        # 네임스페이스로 묶여 있고 삭제·생성 권한은 없다.
+        apiGroups = ["keda.sh"]
+        resources = ["scaledobjects"]
+        verbs     = ["get", "patch"]
+      },
     ]
   })
 }

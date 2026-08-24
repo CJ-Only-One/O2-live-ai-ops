@@ -86,15 +86,24 @@ class Settings(BaseSettings):
     # 사본을 하나로 유지한다. 매니페스트 env 로 또 덮어쓰면 같은 값이 세 곳에
     # 생겨 어긋날 자리가 늘어난다.
     #
-    # order-worker 는 없다 — KEDA 가 소유해서 워머가 안 만진다.
+    # order-worker 는 Deployment 가 아니라 ScaledObject 의 minReplicaCount 다
+    # (order-worker-scaledobject.yaml 의 minReplicaCount).
     BASELINE_API_REPLICAS: int = 2
     BASELINE_CHAT_REPLICAS: int = 2
+    BASELINE_ORDER_MIN_REPLICAS: int = 1
+
+    # KEDA 가 Deployment 의 replicas 를 소유하는 서비스. 여기 있는 것은
+    # ScaledObject 의 minReplicaCount(바닥)를 올리고, KEDA 가 그 위에서
+    # 큐 길이를 보고 계속 조절한다. Deployment 를 직접 patch 하면 KEDA 의
+    # 다음 조절 주기에 되돌려진다.
+    KEDA_MANAGED: frozenset[str] = frozenset({"order-worker"})
 
     @property
     def baseline_replicas(self) -> dict[str, int]:
         return {
             "api": self.BASELINE_API_REPLICAS,
             "chat-gateway": self.BASELINE_CHAT_REPLICAS,
+            "order-worker": self.BASELINE_ORDER_MIN_REPLICAS,
         }
 
     @property
