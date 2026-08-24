@@ -15,6 +15,11 @@ on:
       - 'scripts/check-docs-index.sh'
       - 'scripts/validate-agent-contracts.py'
       - 'scripts/validate-cue-sheet.py'
+      - 'scripts/validate-incident-correlation-window.py'
+      - 'infra/06-agent/correlation-window-evidence.json'
+      - 'infra/05-datadog/variables.tf'
+      - 'infra/06-agent/terraform.tfvars'
+      - 'infra/08-chat-signal/lambda/runtime/processor.py'
   push:
     branches: [main]
     paths:
@@ -24,6 +29,11 @@ on:
       - '.github/workflows/docs.yml'
       - 'scripts/validate-agent-contracts.py'
       - 'scripts/validate-cue-sheet.py'
+      - 'scripts/validate-incident-correlation-window.py'
+      - 'infra/06-agent/correlation-window-evidence.json'
+      - 'infra/05-datadog/variables.tf'
+      - 'infra/06-agent/terraform.tfvars'
+      - 'infra/08-chat-signal/lambda/runtime/processor.py'
 
 permissions:
   contents: read
@@ -61,3 +71,9 @@ jobs:
       # 그 셋을 교차 검사로 막는다.
       - name: 큐시트 Schema와 예시 검증
         run: python scripts/validate-cue-sheet.py
+
+      # Phase 4F window는 적은 표본의 p95가 아니라 운영 Monitor의 고정 5분 창과
+      # 관측된 Datadog tail을 보수적으로 합친 값이다. JSON 근거와 tfvars가
+      # 갈라지기 전에 계산식을 CI에서 다시 실행한다.
+      - name: Incident correlation window 근거 검증
+        run: python scripts/validate-incident-correlation-window.py

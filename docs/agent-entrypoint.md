@@ -1,9 +1,9 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 4D live validation complete; Phase 4E monitor mapping implemented, not applied; all production execution gates disabled
+> **Status:** Phase 4E monitor mapping applied; Phase 4F initial correlation window implemented, not applied; all production execution gates disabled
 > **Updated:** 2026-08-24
-> **Decision:** `decisions.md` D-050, D-055, D-066, D-070, and D-072
+> **Decision:** `decisions.md` D-050, D-055, D-066, D-070, D-072, and D-073
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
 
 ```yaml
@@ -42,13 +42,15 @@ implementation_state:
   phase4d_environment_contract: APPLIED_EXECUTION_DISABLED
   phase4d_targeted_plan: APPLIED_0_ADD_2_CHANGE_0_DESTROY_CODE_HASH_ONLY
   phase4d_environment_mismatch_shadow: PASS_AMBIGUOUS_NO_AUTO_MERGE
-  phase4e_datadog_monitor_mapping: IMPLEMENTED_NOT_APPLIED
-  phase4e_targeted_plan: PASS_0_ADD_1_CHANGE_0_DESTROY_MAPPING_ONLY
+  phase4e_datadog_monitor_mapping: APPLIED_EXECUTION_DISABLED
+  phase4e_targeted_plan: APPLIED_0_ADD_1_CHANGE_0_DESTROY_MAPPING_ONLY
+  phase4f_initial_correlation_window: IMPLEMENTED_NOT_APPLIED_420_SECONDS
+  phase4f_window_evidence_validation: PASS
+  phase4f_targeted_plan: PASS_0_ADD_1_CHANGE_0_DESTROY_WINDOW_ONLY
   datadog_migration: PHASE4C_SHADOW_E2E_ONLY
   production_agent_handoff: DISABLED
 activation_blockers:
-  - CORRELATION_WINDOW_NOT_DECIDED_FROM_TWO_SAMPLES
-  - DATADOG_MONITOR_MAPPING_NOT_APPLIED
+  - CORRELATION_WINDOW_NOT_APPLIED
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
 production_migration_blockers:
@@ -787,11 +789,37 @@ monitor는 READ_PATH가 아니므로 제외한다.
 
 mapping은 `infra/06-agent/terraform.tfvars`가 환경별 실제 monitor ID를 소유한다. 숫자 ID와
 통제된 symptom/surface, 1~128자 service만 허용하도록 Terraform validation도 추가했다.
-Phase 4E는 아직 apply하지 않았고 Shadow webhook도 운영 monitor에 붙이지 않는다. 병합 후
-Correlator가 disabled인 상태에서 mapping 환경변수 한 개만 바뀌는 targeted apply를 수행한다.
-병합 전 실제 state plan은 `0 add / 1 change / 0 destroy`이며
-`INCIDENT_DATADOG_MONITOR_MAP_JSON` 외 속성은 바뀌지 않았다. saved plan은 병합 후 재사용하지
-않고 새로 만든다.
+Phase 4E는 2026-08-24 병합 후 Correlator가 disabled인 상태에서 targeted apply했다.
+실제 결과는 `0 add / 1 change / 0 destroy`였고
+`INCIDENT_DATADOG_MONITOR_MAP_JSON`만 바뀌었다. 적용 후 update `Successful`, 실행 `false`,
+allowlist empty, window `0`, event source `Disabled`를 확인했다. Signal·Invocation Queue와 두
+DLQ, Incident State·ledger는 모두 0이고 대상 재-plan은 `No changes`였다. 전체 plan에 남은
+기존 IAM 1개·Lambda 3개 update는 적용하지 않았다. Shadow webhook은 운영 monitor에 붙이지
+않았고 Agent/Dify 호출도 0건이다.
+
+### 6.12 Phase 4F 초기 correlation window
+
+D-073에 따라 초기 Shadow correlation window를 420초로 준비한다. 값은 소수 표본의 p95가
+아니라 실제 매핑한 Datadog monitor의 5분 full window 300초와, 관측된 Datadog Triggered
+source-to-Queue 최대 69.474초를 60초 단위로 올린 120초를 합한 보수적 상한이다.
+
+기계 판독 근거는 `infra/06-agent/correlation-window-evidence.json`이고
+`scripts/validate-incident-correlation-window.py`가 다음 drift를 CI에서 막는다.
+
+- Chat Worker 고정 window가 15초인지
+- Datadog 시나리오 진입 monitor 기본 full window가 5분인지
+- 관측값에서 계산한 tail guard가 120초인지
+- `infra/06-agent/terraform.tfvars` 값이 계산 결과 420초와 같은지
+- scope가 `SHADOW_ONLY`이고 production Agent handoff가 false인지
+
+비활성 상태에서도 측정된 window를 미리 구성할 수 있도록 Terraform precondition을
+`disabled + empty allowlist`로 바꾼다. 실행 `false`와 event source `false`는 그대로 강제한다.
+병합 전 실제 state plan은 Correlator 환경변수 `INCIDENT_CORRELATION_WINDOW_SECONDS`만
+`0 → 420`인 `0 add / 1 change / 0 destroy`다. 421초는 variable validation이 거부했고,
+`enabled + empty allowlist`는 resource precondition이 거부했다. 전체 plan의 기존 IAM 1개·Lambda
+3개 update는 대상 plan에서 제외했으며 적용하지 않는다. 병합 후 같은 target으로 새 plan을 만든다.
+420초는 Shadow 초기값이며 p95·SLO가 아니다. 서로 다른 READ_PATH 장애의 오병합률을 Shadow에서
+확인한 뒤 production handoff 전에 유지·축소 또는 구분 차원 추가를 결정한다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 

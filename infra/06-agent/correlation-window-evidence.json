@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "scope": "PHASE4F_SHADOW_INITIAL_WINDOW",
+  "statistical_claim": "NONE",
+  "configured_bounds": {
+    "chat_candidate_window_seconds": 15,
+    "datadog_operational_full_window_seconds": 300,
+    "rounding_quantum_seconds": 60
+  },
+  "observations": {
+    "chat_source_to_queue_ms": [7995, 8743, 33886],
+    "datadog_triggered_source_to_queue_ms": [68400, 63611, 69474]
+  },
+  "derivation": {
+    "rule": "datadog_operational_full_window_seconds + ceil(max(datadog_triggered_source_to_queue_ms) / rounding_quantum_seconds) * rounding_quantum_seconds",
+    "expected_datadog_tail_guard_seconds": 120,
+    "expected_correlation_window_seconds": 420
+  },
+  "guardrails": {
+    "activation_scope": "SHADOW_ONLY",
+    "production_agent_handoff_enabled": false,
+    "maximum_correlation_window_seconds": 900,
+    "remeasure_when": [
+      "DATADOG_MONITOR_EVALUATION_WINDOW_CHANGED",
+      "DATADOG_SOURCE_ADAPTER_CHANGED",
+      "CHAT_CANDIDATE_WINDOW_CHANGED",
+      "INCIDENT_CORRELATOR_EVENT_TIME_POLICY_CHANGED"
+    ]
+  }
+}

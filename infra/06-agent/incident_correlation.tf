@@ -212,7 +212,6 @@ resource "aws_lambda_function" "incident_correlator" {
       condition = (
         (!var.incident_correlator_execution_enabled &&
           !var.incident_correlator_event_source_enabled &&
-          var.incident_correlation_window_seconds == 0 &&
         length(var.incident_correlator_allowed_idempotency_keys) == 0) ||
         (var.incident_correlator_execution_enabled &&
           var.incident_correlator_event_source_enabled &&
@@ -220,7 +219,7 @@ resource "aws_lambda_function" "incident_correlator" {
           length(var.incident_correlator_allowed_idempotency_keys) >= 1 &&
         length(var.incident_correlator_allowed_idempotency_keys) <= 3)
       )
-      error_message = "Incident Correlator는 disabled+window 0+empty allowlist 또는 enabled+측정 window+합성 key 1~3개 조합만 허용한다."
+      error_message = "Incident Correlator는 disabled+empty allowlist 또는 enabled+측정 window+합성 key 1~3개 조합만 허용한다."
     }
   }
 }

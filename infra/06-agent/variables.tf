@@ -285,13 +285,19 @@ variable "incident_correlator_event_source_enabled" {
 }
 
 variable "incident_correlation_window_seconds" {
-  description = "두 source event time을 같은 OPEN Incident 후보로 볼 시간창. Phase 3C 실측 전 기본값 0"
+  description = "두 source event time을 같은 OPEN Incident 후보로 볼 시간창. 0 또는 60초 단위 60~900초"
   type        = number
   default     = 0
 
   validation {
-    condition     = var.incident_correlation_window_seconds >= 0 && floor(var.incident_correlation_window_seconds) == var.incident_correlation_window_seconds
-    error_message = "correlation window는 0 이상의 정수 초여야 한다. 0이면 Correlator를 활성화할 수 없다."
+    condition = (
+      var.incident_correlation_window_seconds == 0 ||
+      (var.incident_correlation_window_seconds >= 60 &&
+        var.incident_correlation_window_seconds <= 900 &&
+        floor(var.incident_correlation_window_seconds) == var.incident_correlation_window_seconds &&
+      var.incident_correlation_window_seconds % 60 == 0)
+    )
+    error_message = "correlation window는 0 또는 60초 단위의 60~900초 정수여야 한다. 0이면 Correlator를 활성화할 수 없다."
   }
 }
 

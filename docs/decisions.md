@@ -87,6 +87,7 @@
 | D-070 | Incident 환경은 배포 environment와 exact match하며 namespace 별칭을 만들지 않는다 | `dev`, `o2-dev`, source mismatch, fail-safe ambiguity |
 | D-071 | 조치 상태 머신의 결정론적 절반만 Lambda 로 뺀다 — 대기는 Dify 가 한다 | 실행 락, 기준값, 재분석 1회, 세 갈래 판정, `incident_state` 재사용 |
 | D-072 | READ_PATH 상관관계에는 시나리오 4 page composite monitor 하나만 매핑한다 | role:page, role:sub, cache absorption, order path, duplicate signal |
+| D-073 | READ_PATH 초기 correlation window는 운영 5분 창과 Datadog tail 상한을 합친 420초다 | event time, full window, 420초, Shadow, false merge |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4364,3 +4365,37 @@ Chat의 `READ_PATH/LATENCY/api` Candidate와 병합할 Datadog monitor를 이름
 
 이 결정은 mapping만 구성한다. 신규 Shadow webhook을 운영 monitor에 붙이거나 Source Adapter,
 Correlator, Worker를 활성화하지 않는다. webhook migration과 production handoff는 별도 승인이다.
+
+---
+
+## D-073. READ_PATH 초기 correlation window는 운영 5분 창과 Datadog tail 상한을 합친 420초다
+
+Incident Correlator는 source 도착 시각이 아니라 `occurred_at` event time을 비교한다. 그렇다고
+Phase 4B의 Datadog Triggered 두 표본으로 p95를 만들면 안 된다. 표본이 너무 적고, 합성 monitor는
+1분 창이었지만 실제 매핑한 시나리오 4 sub monitor는 `min(last_5m)`과
+`require_full_window=true`를 사용한다. 같은 사용자 지연이라도 Chat Candidate가 먼저 생기고
+Datadog page composite가 수분 뒤 상태 전환하는 것이 정상이다.
+
+초기 Shadow 값은 확률적 지연 SLO가 아니라 다음 보수적 상한으로 계산한다.
+
+```text
+운영 Datadog full window                         300초
++ 관측 Datadog Triggered source-to-Queue 최대 69.474초를
+  60초 단위로 올린 안전 여유                    120초
+= 초기 correlation window                        420초
+```
+
+Chat 15초 Candidate window를 별도로 더하지 않는다. Chat `occurred_at`은 Candidate가 생성된
+시각이라 이미 그 창의 끝에 있고, Datadog 300초 full window를 통째로 쓰는 쪽이 보수적이다.
+120초는 event-time 비교에 필요한 transport 값을 정밀 추정한 것이 아니라, 관측된 Datadog
+tail보다 작아지지 않도록 둔 Shadow 안전 여유다. 따라서 이 값으로 p95·SLO를 주장하지 않는다.
+
+420초는 source가 `dev/LATENCY/READ_PATH/api`로 정확히 같고 OPEN Incident 후보가 하나일 때만
+작동한다. 후보가 둘이면 계속 `AMBIGUOUS`이며 강제 병합하지 않는다. 긴 창 때문에 서로 다른
+READ_PATH 장애가 붙을 위험은 Shadow 결과에서 확인하고, production handoff 전에 줄이거나
+Incident 구분 차원을 추가한다.
+
+기계 판독 원본은 `infra/06-agent/correlation-window-evidence.json`이다.
+`scripts/validate-incident-correlation-window.py`가 05-datadog의 5분 기본값, Chat Worker의 15초,
+06-agent `terraform.tfvars`의 420초가 계산 근거와 같은지 CI에서 검증한다. 이 단계에서는
+Correlator·Worker·Source Adapter와 production Agent handoff를 활성화하지 않는다.

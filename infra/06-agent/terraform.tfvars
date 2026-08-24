@@ -39,3 +39,8 @@ incident_datadog_monitor_map = {
     service           = "api"
   }
 }
+
+# Phase 4F Shadow 초기값. 운영 monitor의 full window 300초와 관측된 Datadog
+# source-to-Queue 최대 69.474초를 60초 단위로 올린 120초를 합친다(D-073).
+# 근거와 계산식은 correlation-window-evidence.json이 소유한다.
+incident_correlation_window_seconds = 420
