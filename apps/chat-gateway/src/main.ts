@@ -13,7 +13,8 @@
  * 받고 흘러간 채팅은 흘러간 것으로 본다 (3.6).
  */
 
-import { createServer } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
 import Redis from 'ioredis';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -140,6 +141,89 @@ const handleChat = createChatIngressHandler({
     ),
 });
 
+// ── 조치 실행 — S1 채널 총량 노브 ────────────────────────────────
+//
+// S1(docs/scenario-experiment.md 0.5) 조치와 원복이 둘 다 이 라우트다 —
+// `action: "set"`(조치) / `"clear"`(원복)로만 갈린다. `cfg:channel_limit:
+// {broadcast_id}` 를 chat-gateway 가 이미 들고 있는 `pub` 커넥션으로 직접
+// SET/DEL 한다 — 별도 Lambda 를 두지 않는다. chat-gateway 는 이미 Valkey에
+// TLS 로 붙어 있고 이미 일반 HTTP 서버를 갖고 있어서(이 아래 healthz),
+// 새 인프라 없이 라우트 하나만 추가하면 된다. ALB 인그레스가 `/ws` 를
+// prefix 로 이 서비스에 이미 매핑해 뒀으므로(frontend-ingress.yaml)
+// `/ws/admin/*` 도 별도 설정 없이 바로 도달한다.
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk: Buffer) => {
+      data += chunk;
+    });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
+}
+
+function authorized(req: IncomingMessage): boolean {
+  const provided = req.headers['x-admin-key'];
+  const expected = config.channelLimitAdminKey;
+  if (typeof provided !== 'string' || expected.length === 0) return false;
+  // 길이가 다르면 timingSafeEqual 이 예외를 던진다 — 길이부터 맞춰야 한다.
+  if (provided.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+}
+
+async function handleChannelLimitAdmin(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorized(req)) {
+    res.writeHead(403);
+    res.end();
+    return;
+  }
+
+  let body: { broadcast_id?: unknown; action?: unknown; limit?: unknown };
+  try {
+    body = JSON.parse(await readBody(req));
+  } catch {
+    res.writeHead(400);
+    res.end();
+    return;
+  }
+
+  const broadcastId = body.broadcast_id;
+  const action = body.action;
+  const limit = body.limit;
+
+  if (typeof broadcastId !== 'string' || !broadcastId || (action !== 'set' && action !== 'clear')) {
+    res.writeHead(400);
+    res.end();
+    return;
+  }
+  if (action === 'set' && (!Number.isInteger(limit) || (limit as number) <= 0)) {
+    res.writeHead(400);
+    res.end();
+    return;
+  }
+
+  const key = `cfg:channel_limit:${broadcastId}`;
+  // Precheck 재확인 — 지금 값을 다시 읽어 응답에 같이 실어 보낸다.
+  const previous = await pub.get(key);
+
+  if (action === 'set') {
+    await pub.set(key, String(limit));
+  } else {
+    await pub.del(key);
+  }
+
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(
+    JSON.stringify({
+      broadcast_id: broadcastId,
+      action,
+      previous_limit: previous !== null ? Number(previous) : null,
+      limit: action === 'set' ? limit : null,
+    }),
+  );
+}
+
 // ── 서버 ──────────────────────────────────────────────────────
 
 const server = createServer((req, res) => {
@@ -147,6 +231,10 @@ const server = createServer((req, res) => {
   if (req.url === '/healthz') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{"status":"ok"}');
+    return;
+  }
+  if (req.url === '/ws/admin/channel-limit' && req.method === 'POST') {
+    void handleChannelLimitAdmin(req, res);
     return;
   }
   res.writeHead(404);

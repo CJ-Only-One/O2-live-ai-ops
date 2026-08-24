@@ -97,4 +97,15 @@ export const config = {
   // Python SDK의 hash_key와 같은 salt를 써야 API·채팅 이벤트의 user_key를
   // 같은 사용자 기준으로 조인할 수 있다.
   eventsSalt: process.env.O2_EVENTS_SALT ?? '',
+
+  /**
+   * S1(docs/scenario-experiment.md 0.5) 조치 실행 경로 — `/ws/admin/channel-limit`
+   * 인증 키. Secrets Manager/ExternalSecret 을 안 거치고 배포 매니페스트에
+   * 값을 직접 넣는다 — 시연용이고, 이 값이 새는 것보다 더 큰 권한(AWS 계정
+   * 관리자)을 팀 전원이 이미 갖고 있어(04-platform variables.tf
+   * cluster_admin_arns 설명 참고) 별도 시크릿 파이프라인을 만드는 비용이
+   * 안 맞는다는 판단. 값이 비어 있으면 라우트가 요청을 전부 거부한다
+   * (빈 문자열끼리 비교돼 열리는 사고를 막는다).
+   */
+  channelLimitAdminKey: process.env.CHANNEL_LIMIT_ADMIN_KEY ?? '',
 };

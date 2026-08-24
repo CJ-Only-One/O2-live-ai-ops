@@ -75,6 +75,7 @@
 | D-058 | Runbook success_criteria 에 기준선 상대 조건을 추가한다 | `baseline_conditions`, D-054, `Baseline` 상태의 기록값 |
 | D-059 | 조치 실행기는 Deployment replicas patch 하나, 원복도 같은 걸 쓴다 | EKS Access Entry, `deployments/scale` RBAC, canary 격리, 06-agent/04-platform 스택 분리 |
 | D-060 | `chat.send` 의 거부 사유는 `result` + `failure_code` 로 싣는다 | `rejected_code` 개명, 성공에도 `result`, 집계가 이름으로 찾는다, SDK 등록 안 함 |
+| D-061 | S1 채널 총량 조치는 chat-gateway 라우트 하나다 — 실행기 Lambda 를 안 만든다 | `cfg:channel_limit`, 과도한 D-059 복제 되돌림, `kubectl create secret`, 임시 임계값 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3747,3 +3748,50 @@ SDK 에 `chat.send` 를 등록하는 것은 별도 결정으로 남긴다 — �
 | `apps/chat-gateway/src/chat-ingress.test.ts` | 단언 네 개를 새 필드로. 정상 경로에 `result=SUCCESS` 단언을 더한다 |
 
 warm 은 안 고친다.
+
+---
+
+## D-061. S1 채널 총량 조치는 chat-gateway 라우트 하나다 — 실행기 Lambda 를 안 만든다
+
+S1(scenario-experiment.md 0.5) "채널 총량 제한" 조치를 실제로 실행할
+방법이 없었다 — `apps/chat-gateway`의 `overChannelLimit()`(main.ts)이
+`cfg:channel_limit:{broadcast_id}` 를 읽긴 하지만, 그 키를 SET 하는
+쪽이 없었다.
+
+**처음엔 D-059(scale_deployment)를 그대로 복제해 새 Lambda + 새 VPC
+보안 그룹 + RESP2 프로토콜 직접 구현을 만들었다 — 실제로 03-data 에
+apply 까지 했다가 되돌렸다.** 잘못이었다. D-059 는 EKS API 서버라는
+**새로운 인증 수단**(IAM Access Entry)이 필요해서 외부 Lambda 중계가
+정당했다. S1 은 다르다 — 대상이 Valkey 하나뿐이고, `chat-gateway` 가
+**이미** 그 Valkey 에 TLS 로 연결돼 있고(같은 `pub` 커넥션),
+**이미** 일반 HTTP 서버를 갖고 있다(`/healthz`). 없는 인증 수단도,
+없는 네트워크 경로도 아니었다 — 있는 것 위에 라우트 하나만 얹으면
+끝나는 일을 별도 인프라 스택으로 다시 지었다.
+
+**최종: `POST /ws/admin/channel-limit` 라우트 하나가 조치(`action:
+"set"`)와 원복(`"clear"`)을 둘 다 맡는다.** ALB 인그레스가 `/ws` 를
+prefix 로 이미 chat-gateway 에 매핑해 뒀으므로(`O2-live-deploy`
+frontend-ingress.yaml) `/ws/admin/*` 도 새 인그레스 설정 없이 바로
+도달한다. Precheck 재확인은 SET/DEL 전에 현재 값을 GET 해서 응답에
+같이 실어 보내는 것으로 대신한다.
+
+**인증은 Secrets Manager/ExternalSecret 을 안 거친다.** 새 시크릿
+파이프라인(Secrets Manager 시크릿 + ExternalSecret + IAM 정책)을
+만드는 비용이 이 조치의 가치에 안 맞다는 판단 — 이 계정은 팀 전원이
+이미 AdministratorAccess 를 가진 개인 계정이라(04-platform
+variables.tf `cluster_admin_arns` 설명과 같은 전제) 이 키 하나가
+새는 것보다 더 큰 권한을 다들 이미 갖고 있다. 대신 `kubectl create
+secret`으로 `o2-dev`에 `chat-gateway-admin`을 직접 넣고, 배포
+매니페스트는 `secretKeyRef`로 **이름만** 참조한다 — **값은 git에
+올리지 않는다.** 시크릿을 새로 만들 때마다 사람이 한 번 더 명령을
+쳐야 하지만, 그 대가로 시크릿 관리 인프라 자체가 없다.
+
+**success_criteria 의 threshold 는 임시값이다.** 2.1 절이 "정상 사용자
+차단률 상한이 없으면 성공 판정 자체가 성립하지 않는다"고 명시했지만,
+그 값을 재는 부하테스트는 이 작업 범위 밖이다(Datadog·부하테스트는
+별도 담당). 숫자를 지어내지 않는다는 원칙(AGENTS.md)의 명시적 예외로,
+`seed_runbook.py`에 실측 전 자리값임을 크게 표시해 뒀다 — 실측 나오면
+그 값으로 덮어쓴다.
+
+관련: `docs/scenario-experiment.md` 0.5·2.1·4.1, D-059(대조 — 언제
+Lambda 중계가 정당한지), D-058.
