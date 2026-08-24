@@ -92,7 +92,8 @@
 | 정상 파드 복수 | `O2-live-deploy/api-deployment.yaml:9` **`replicas: 1`**. "정상 파드 중앙값" 도 "한 단계 증설" 도 성립하지 않는다. M-016 이 이것을 **S2 의 마지막 전제**로 못박았다. 같은 파일의 `maxSurge: 0` 블록도 주석이 "replicas 가 2 이상이 되면 지운다" 고 스스로 적어뒀다 | **고쳐야** |
 | 파드별 지연 (`latency_by_pod`) | 2026-08-24 PR #133 으로 들어왔다 — `o2warm/sketch.py:514·609`, `metrics.py:328` `latency_p95_by_pod`, `datadog.py:131` 이 `pod_name` 태그로 전송한다 | **있음** |
 | 파드 단위 이상치 모니터 | `monitor.tf:420` `[O2][시나리오 5] 파드 단위 응답 지연 이상치` — `outliers(… latency_p95 … by {pod_name}, 'DBSCAN', …)`. 캐시 히트율 이상치(`monitor.tf:331`)와 별개로 붙었다 | **있음** |
-| 범용 런북 `RB-API-LATENCY-001` | `infra/06-agent/scripts/seed_runbook.py` 에 `cache_invalidation_storm` 하나뿐. `pod_load_skew` 는 TODO 주석이다 | **없음** |
+| 범용 런북 `RB-API-LATENCY-001` | 증상·진입 임계값·최대 변경량·실패/중단·원복·소유자 기준은 `scenario-experiment.md` 0.2에 정의했다. 그러나 `seed_runbook.py` 에 이 항목과 검증 증거는 없다 | **없음** |
+| 후보 런북 분리·승격 게이트 | `seed_runbook.py` 의 `pod_load_skew` 가 상태 구분 없이 실행 카탈로그 `RUNBOOKS` 에 들어가 있다. `draft/active` 상태, 후보 전용 저장 영역, 재현·안전성·롤백 검증, 운영자 승인 게이트가 없다 | **고쳐야** |
 | 자원 요청 현실화 | `api-deployment.yaml:160` `cpu: 100m` (M-009 는 300 RPS 에서 664m). **지금은 올리지 않는다** — 3절 1 참조 | **보류** |
 | replicas 동기화 예외 | Argo CD `ignoreDifferences` 가 없다 | **없음** |
 | api 에 HPA·KEDA 없을 것 | ScaledObject 는 `order-worker` 에만 붙어 있다 | **있음** |
@@ -175,8 +176,13 @@
 6. **canary Deployment 매니페스트** (`O2-live-deploy`) — main 과 같은 이미지·같은 Service
    셀렉터, **CPU 상한만** 낮게. `readinessProbe` 의 `timeoutSeconds`·`failureThreshold` 는
    **canary 에만** 올린다. 안 그러면 파드가 Service 에서 빠져 저절로 회복되거나 들락날락한다.
-7. **`RB-API-LATENCY-001`** (증상 기반 범용 런북) + `pod_load_skew` 전용 런북 —
-   `seed_runbook.py` 에 항목 추가. `labels.txt` 에 `pod_load_skew` 는 이미 있다.
+7. **런북 생명주기와 S2 런북** — 먼저 `RB-API-LATENCY-001`이
+   `scenario-experiment.md` 0.2의 범용 런북 등록 기준을 충족하도록 진입·제외 조건,
+   최대 변경량, 검증·중단·원복 기준, 소유자와 검증 증거를 만든다. S2 해결 뒤에는
+   `pod_load_skew`를 실행 카탈로그에 바로 넣지 않고 별도 후보 영역에 `draft`로 저장한다.
+   같은 원인 재현, 조치 효과, 오적용 부작용, 실패·롤백 검증과 운영자 승인을 통과한
+   뒤에만 `active` 전용 런북으로 승격한다. 현재 `seed_runbook.py`의 `pod_load_skew`는
+   이 상태와 게이트 없이 활성 카탈로그 모양으로 들어가 있으므로 승격 전 분리해야 한다.
 8. **Argo CD replicas 동기화 예외** — 대상 Deployment 의 `replicas` 를 `ignoreDifferences` 로.
    지금 없어서 조치 후 GitOps 가 되돌린다. 두 방법 중 왜 `ignoreDifferences` 인지는
    `scenario-experiment.md` 3절 "파드 수를 조치 수단으로 쓸 때" 에 있다 — api 는 정상 파드 수가
