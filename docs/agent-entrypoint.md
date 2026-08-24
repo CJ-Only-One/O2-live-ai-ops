@@ -1,9 +1,9 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 4C live-source Shadow E2E complete; all production execution gates disabled
+> **Status:** Phase 4D environment contract implemented, not applied; all production execution gates disabled
 > **Updated:** 2026-08-24
-> **Decision:** `decisions.md` D-050, D-055, and D-066
+> **Decision:** `decisions.md` D-050, D-055, D-066, and D-070
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
 
 ```yaml
@@ -39,12 +39,14 @@ implementation_state:
   datadog_monitor_id_guard: APPLIED_EXECUTION_DISABLED
   phase4c_live_source_to_dify_e2e: PASS_CHAT_DATADOG_CORRELATED_DIFY_ONCE
   phase4c_datadog_cycle_substitution: PASS_TRIGGERED_RECOVERED_SAME_CYCLE
+  phase4d_environment_contract: IMPLEMENTED_NOT_APPLIED
+  phase4d_targeted_plan: PASS_0_ADD_2_CHANGE_0_DESTROY_CODE_HASH_ONLY
   datadog_migration: PHASE4C_SHADOW_E2E_ONLY
   production_agent_handoff: DISABLED
 activation_blockers:
   - CORRELATION_WINDOW_NOT_DECIDED_FROM_TWO_SAMPLES
   - DATADOG_MONITOR_MAPPING_NOT_CONFIGURED
-  - CROSS_SOURCE_ENVIRONMENT_CANONICALIZATION_NOT_DECIDED
+  - CROSS_SOURCE_ENVIRONMENT_VALIDATION_NOT_APPLIED
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
 production_migration_blockers:
@@ -733,6 +735,29 @@ state는 0이다. 이번에 건드린 06-agent/08-chat-signal 대상 plan은 모
 운영 전에는 source별 반복 지연으로 correlation window를 정하고, 운영 Datadog monitor mapping과
 `environment` canonicalization 정책을 확정해야 한다.
 
+### 6.10 Phase 4D source environment 계약
+
+D-070에 따라 Incident의 canonical environment는 배포 stack의 `var.environment`로 고정한다.
+현재 `dev`가 environment이고 `o2-dev`는 Kubernetes namespace다. Chat은 Adapter의 배포값을
+사용하고 Datadog은 webhook의 `env` tag가 Correlator 배포값과 exact match해야 한다.
+
+Datadog 값이 다르면 정상 correlation key나 별도 provisional Incident를 만들지 않는다.
+`AMBIGUOUS/SOURCE_ENVIRONMENT_MISMATCH`로 격리하고 운영자 확인을 요구한다. 접두사를 지우거나
+namespace를 environment로 추측하는 alias 변환은 하지 않는다. 원래 Datadog 값은 signal에
+남고 normalized context는 현재 배포 environment를 유지한다.
+
+Phase 4D 구현은 schema·Correlator·단위 테스트·결정 기록까지 포함하지만 아직 Lambda에
+적용하지 않았다. 병합 후 event source와 실행 gate가 disabled인지 먼저 확인하고 Correlator와
+Generic Worker Lambda를 같은 비활성 targeted apply로 갱신한다. 새 reason code의 생산자와
+소비자 계약이므로 둘을 나눠 배포하지 않는다. 적용 후 `env:o2-dev` 합성 신호가 mismatch reason으로
+격리되고 기존 `dev` Incident에 자동 병합되지 않는지 확인한 뒤 blocker를 제거한다. Worker가
+활성화된 운영 단계에서는 이 `AMBIGUOUS` snapshot도 read-only 분석 대상이 될 수 있지만
+operator confirmation 없이 자동 조치로 넘어갈 수 없다.
+
+병합 전 실제 state 기반 targeted plan은 `0 add / 2 change / 0 destroy`였고 두 Lambda의
+`source_code_hash`만 바뀐다. IAM·환경변수·Queue·event source 변경은 없다. 이 저장 plan은
+병합 전 커밋 기준이므로 apply에 재사용하지 않고 병합 후 같은 두 target으로 다시 만든다.
+
 ## 7. 각 Phase에서 사람이 확인할 것
 
 사용자가 매 단계마다 AWS 콘솔을 직접 확인할 필요는 없다. 구현자는 CLI와 테스트로 다음
@@ -753,3 +778,4 @@ Phase 0 예시 파일:
 - `contracts/examples/agent-trigger-datadog-v1.example.json`
 - `contracts/examples/agent-incident-chat-first-v1.example.json`
 - `contracts/examples/agent-incident-correlated-v1.example.json`
+- `contracts/examples/agent-incident-environment-mismatch-v1.example.json`

@@ -215,6 +215,7 @@ def validate_envelope(payload: Any) -> dict[str, Any]:
     if correlation["reason_code"] not in {
         "CHAT_FIRST_NO_METRIC", "DATADOG_FIRST_NO_CHAT", "UNIQUE_ACTIVE_MATCH",
         "MULTIPLE_ACTIVE_MATCHES", "INSUFFICIENT_DIMENSIONS",
+        "SOURCE_ENVIRONMENT_MISMATCH",
     }:
         _fail("CORRELATION_REASON")
     matched = correlation["matched_on"]

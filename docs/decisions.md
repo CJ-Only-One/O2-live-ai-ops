@@ -84,6 +84,7 @@
 | D-067 | 노브 카탈로그는 새 테이블이 아니라 runbook 테이블의 KNOB 파티션에 둔다 | 게이트 진입 결정론화, 노브 축, 런북 없는 조치, 안 잰 값은 `None`+`measured` |
 | D-068 | S2 canary는 Deployment selector가 아니라 전용 Service 멤버십 라벨로 합류한다 | selector 충돌 방지, sync wave, Kustomize base, 실측 입력 강제, Argo replica 예외 |
 | D-069 | S1 차단률은 failure_codes 분포가 아니라 전체 chat.send 시도에서 계산한다 | CHANNEL_LIMITED, 전체 시도 분모, 고정 스칼라, Datadog 검증 축 |
+| D-070 | Incident 환경은 배포 environment와 exact match하며 namespace 별칭을 만들지 않는다 | `dev`, `o2-dev`, source mismatch, fail-safe ambiguity |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4235,3 +4236,33 @@ Agent의 S1 `Verifying`과 차단률 Monitor는 이 값을 읽고, `failure_code
 
 상한값은 아직 실측하지 않았다. 지표를 만들었다고 허용 가능한 사용자 피해가 정해진
 것은 아니므로 `measurements.md`에 강도별 결과를 남긴 뒤 Runbook threshold를 채운다.
+
+---
+
+## D-070. Incident 환경은 배포 environment와 exact match하며 namespace 별칭을 만들지 않는다
+
+Phase 4C 첫 Shadow E2E에서 Chat은 `environment=dev`, Datadog 합성 monitor는
+`env:o2-dev`를 보냈다. 증상·service·surface와 시간창이 맞아도 Correlator는 서로 다른
+Incident를 만들었다. 이 결과는 exact match 계약에는 맞지만, `o2-dev`가 배포 환경인지
+Kubernetes namespace인지 producer마다 다르게 해석하면 운영자가 두 사건을 정상으로 오인한다.
+
+이 저장소에서 canonical Incident environment는 각 Terraform stack의 `var.environment`다.
+현재 값은 `dev`이며 `o2-dev`는 `app_namespace`/`kube_namespace`다. namespace를 environment의
+별칭으로 취급하지 않는다.
+
+source별 규칙은 다음과 같다.
+
+| source | canonical environment |
+|---|---|
+| Chat Candidate | Chat Source Adapter 배포의 `var.environment` |
+| Datadog | webhook `env` tag가 Incident Correlator 배포의 `var.environment`와 exact match |
+
+Datadog environment가 다르면 접두사 제거, 소문자화 이상의 별칭 변환, namespace 추측을 하지
+않는다. Correlator는 `AMBIGUOUS/SOURCE_ENVIRONMENT_MISMATCH`로 격리하고 운영자 확인을 요구한다.
+normalized context는 현재 배포 environment를 유지하고 원래 Datadog 값은 source signal에
+남긴다. 따라서 foreign environment로 정상 correlation key를 만들거나 기존 Chat Incident에
+자동 병합하지 않는다.
+
+새 환경을 추가할 때는 모든 producer의 `var.environment`와 Datadog `env` tag를 함께 바꾼다.
+두 이름을 의도적으로 병합해야 하는 요구가 생기면 버전이 있는 명시적 mapping을 별도 결정으로
+추가한다. 현재는 alias map을 두지 않는다.

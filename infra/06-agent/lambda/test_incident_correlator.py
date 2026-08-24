@@ -233,6 +233,50 @@ class IncidentCorrelatorTest(unittest.TestCase):
         )
         self.assertEqual(result["snapshot"]["normalized_context"]["symptom_family"], "UNKNOWN")
 
+    def test_datadog_environment_mismatch_is_ambiguous_without_foreign_incident(self):
+        repository = FakeRepository()
+        sender = Sender()
+        self.datadog["evidence"]["env"] = "o2-dev"
+
+        result = self.process(self.datadog, repository, sender)
+
+        self.assertEqual(result["snapshot"]["correlation"]["state"], "AMBIGUOUS")
+        self.assertEqual(
+            result["snapshot"]["correlation"]["reason_code"],
+            "SOURCE_ENVIRONMENT_MISMATCH",
+        )
+        self.assertTrue(
+            result["snapshot"]["correlation"]["operator_confirmation_required"]
+        )
+        self.assertEqual(result["snapshot"]["normalized_context"]["environment"], "dev")
+        self.assertTrue(
+            all(
+                item["correlation_key"] != "o2-dev#LATENCY#api#READ_PATH"
+                for item in repository.incidents.values()
+            )
+        )
+
+    def test_environment_mismatch_does_not_join_matching_chat_incident(self):
+        repository = FakeRepository()
+        sender = Sender()
+        self.process(self.chat, repository, sender)
+        self.datadog["evidence"]["env"] = "o2-dev"
+
+        result = self.process(
+            self.datadog,
+            repository,
+            sender,
+            incident_id="inc_01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+        )
+
+        self.assertEqual(result["snapshot"]["correlation"]["state"], "AMBIGUOUS")
+        self.assertEqual(
+            result["snapshot"]["correlation"]["reason_code"],
+            "SOURCE_ENVIRONMENT_MISMATCH",
+        )
+        self.assertEqual(len(repository.incidents), 2)
+        self.assertEqual(len(sender.snapshots), 2)
+
     def test_duplicate_signal_does_not_create_new_revision_or_output(self):
         repository = FakeRepository()
         sender = Sender()
