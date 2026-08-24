@@ -87,3 +87,32 @@ def test_sample_counts_by_pod_are_not_sent():
 
     assert not [s for s in series if s["metric"].endswith("latency_samples_by_pod")]
     assert not [s for s in series if s["metric"].endswith("latency_p95_by_pod")]
+
+
+def test_latency_p99_is_emitted():
+    """계산만 되고 안 보내지던 값이다.
+
+    명세 S2 의 1차 조치 검증은 p50·p95·**p99** 셋을 함께 본다. `metrics.py`
+    는 오래 전부터 `latency_p99` 를 계산했지만 `DATADOG_SCALARS` 에 없어
+    Datadog 에는 영영 오지 않았다 — DynamoDB 상세에만 있었다.
+
+    **p95 로 대신할 수 없다.** 느린 파드의 몫이 전체의 5% 미만이면 p95 는
+    안 움직이고 p99 만 움직인다. 아래가 그 상황을 그대로 만든다.
+    """
+    # 정상 98건 + 느린 2건(2%) — p95 는 정상 쪽에, p99 는 느린 쪽에 걸린다.
+    events = [
+        factory.order_create(factory.BASE + i, f"u{i}", "1.1.1.1", latency=50)
+        for i in range(98)
+    ]
+    events += [
+        factory.order_create(factory.BASE + 98 + i, f"us{i}", "1.1.1.1", latency=9000)
+        for i in range(2)
+    ]
+
+    series = _series_for(events)
+    by_name = {s["metric"]: s["points"][0]["value"] for s in series if _pod_tag(s) is None}
+
+    assert "o2.warm.latency_p99" in by_name, "p99 가 series 에 없다"
+    assert by_name["o2.warm.latency_p99"] > 5000
+    # p95 는 꼬리를 못 본다 — 이것이 p99 를 따로 보내는 이유다.
+    assert by_name["o2.warm.latency_p95"] < 500
