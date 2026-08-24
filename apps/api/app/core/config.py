@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # CloudFront 를 앞에 붙이면 그때 절대 주소로 바꾼다 (D-038).
     HLS_BASE_URL: str = "/hls"
 
+    # S3(docs/scenario-experiment.md 0.7) 조치 실행 경로 —
+    # POST /api/admin/read-path-degraded 인증 키. chat-gateway 의
+    # CHANNEL_LIMIT_ADMIN_KEY(D-061)와 같은 이유로 Secrets Manager 를 안
+    # 거친다 — kubectl로 직접 넣고 이름만 참조한다. 비어 있으면 라우트가
+    # 요청을 전부 거부한다.
+    READ_PATH_DEGRADED_ADMIN_KEY: str = ""
+
     @property
     def allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
