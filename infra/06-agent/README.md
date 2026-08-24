@@ -174,6 +174,18 @@ Incident로 안전하게 분리돼 source 간 environment canonicalization 필�
 전체 plan의 별도 기존 IAM 1개·Lambda 4개 update는 적용하지 않았다. 상세 근거는
 `docs/agent-entrypoint.md` 6.9, M-020, T-026에 있다.
 
+Phase 4D는 source environment 계약을 강제한다(D-070). canonical 값은 `var.environment`이며
+현재 `dev`다. `o2-dev`는 Kubernetes namespace라 alias로 취급하지 않는다. Datadog `env`가
+배포값과 다르면 Correlator는 정상 correlation key를 만들지 않고
+`AMBIGUOUS/SOURCE_ENVIRONMENT_MISMATCH`로 격리한다. 이 변경은 아직 적용하지 않았고, 병합 후
+Correlator와 Generic Worker Lambda를 같은 비활성 targeted apply로 갱신한 뒤 mismatch가 기존
+Incident에 자동 병합되지 않는지 검증한다. 두 Lambda는 새 reason code의 생산자·소비자라
+나눠 배포하지 않는다. `AMBIGUOUS` snapshot은 향후 Worker 활성화 시에도 operator confirmation을
+요구한다.
+
+병합 전 실제 state 기반 targeted plan은 `0 add / 2 change / 0 destroy`이며 두 Lambda의
+code hash만 변경한다. 저장 plan은 병합 전 커밋 기준이라 apply에 재사용하지 않는다.
+
 ## Incident Correlator Phase 3B
 
 D-055에 따라 `agent.trigger.v1`은 Agent 호출이 아니라 상관관계 전 source 신호다.

@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "event_type": "agent.incident.v1",
+  "incident_id": "inc_01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+  "revision": 1,
+  "idempotency_key": "incident:inc_01ARZ3NDEKTSV4RRFFQ69G5FAZ:revision:1",
+  "lifecycle": "OPEN",
+  "analysis_reason": "AMBIGUITY_RECORDED",
+  "opened_at": "2026-08-23T00:00:16.000Z",
+  "updated_at": "2026-08-23T00:00:16.000Z",
+  "correlation": {
+    "state": "AMBIGUOUS",
+    "strategy": "DETERMINISTIC_V1",
+    "confidence": "LOW",
+    "reason_code": "SOURCE_ENVIRONMENT_MISMATCH",
+    "matched_on": [],
+    "operator_confirmation_required": true
+  },
+  "normalized_context": {
+    "environment": "dev",
+    "symptom_family": "UNKNOWN",
+    "suspected_surfaces": [
+      "UNKNOWN"
+    ],
+    "services": [],
+    "broadcast_ids": []
+  },
+  "signals": [
+    {
+      "schema_version": "1.0",
+      "trigger_id": "trg_01ARZ3NDEKTSV4RRFFQ69G5FAX",
+      "source": "DATADOG_MONITOR",
+      "source_schema": "datadog.alert.v1",
+      "trigger_type": "MONITOR_ALERT",
+      "idempotency_key": "datadog:cycle_example_001:Triggered",
+      "occurred_at": "2026-08-23T00:00:16.000Z",
+      "trace_id": null,
+      "evidence": {
+        "event_id": "evt_example_001",
+        "cycle_key": "cycle_example_001",
+        "monitor_id": "monitor_example",
+        "transition": "Triggered",
+        "priority": "P2",
+        "env": "o2-dev",
+        "service": "api",
+        "alert_title": "Read latency monitor triggered",
+        "alert_body": "Synthetic environment mismatch example.",
+        "alert_query": "example_metric > example_threshold",
+        "host": "",
+        "tags": "env:o2-dev,service:api",
+        "link": ""
+      },
+      "guardrails": {
+        "analysis_mode": "READ_ONLY",
+        "automatic_remediation_allowed": false,
+        "must_preserve_uncertainty": true,
+        "raw_chat_included": false
+      }
+    }
+  ],
+  "guardrails": {
+    "analysis_mode": "READ_ONLY",
+    "automatic_remediation_allowed": false,
+    "must_preserve_uncertainty": true,
+    "raw_chat_included": false,
+    "single_incident_action_lock_required": true
+  }
+}

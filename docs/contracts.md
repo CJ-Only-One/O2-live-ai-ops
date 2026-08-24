@@ -713,6 +713,7 @@ Agent Worker가 Signal Queue를 직접 소비하거나 Chat 데이터를 Datadog
 | `correlation.state` | `PROVISIONAL`, `CORRELATED`, `AMBIGUOUS` |
 | `correlation.strategy` | 현재는 규칙 기반 `DETERMINISTIC_V1`만 |
 | `normalized_context` | 환경·증상군·대상 surface/service/broadcast를 source와 독립적으로 표현 |
+| `normalized_context.environment` | 배포 `var.environment`의 canonical 값; Datadog `env` 불일치는 `SOURCE_ENVIRONMENT_MISMATCH`로 격리 |
 | `signals` | 원문 없이 검증된 `agent.trigger.v1` 1-20개 |
 | `analysis_reason` | 최초 탐지, 첫 cross-source 증거, 심각도 변화, 모호성, 복구 증거 중 하나 |
 
@@ -720,7 +721,8 @@ Agent Worker가 Signal Queue를 직접 소비하거나 Chat 데이터를 Datadog
 증상군, 호환되는 대상 범위, correlation window 내 event time을 만족하는 OPEN Incident가
 정확히 하나일 때만 자동 병합한다. 후보가 없으면 새 `PROVISIONAL` Incident를 만들고,
 후보가 둘 이상이거나 비교 차원이 부족하면 `AMBIGUOUS`로 기록해 운영자 확인 전까지 강제
-병합하지 않는다.
+병합하지 않는다. Datadog의 `env`가 Correlator 배포 environment와 다를 때도
+`AMBIGUOUS/SOURCE_ENVIRONMENT_MISMATCH`로 기록하며 namespace 별칭을 추측하지 않는다(D-070).
 
 Chat-first는 revision 1로 즉시 read-only 분석할 수 있다. Datadog이 늦게 도착하면 같은
 `incident_id`의 revision 2가 되고 `analysis_reason=CROSS_SOURCE_EVIDENCE_ADDED`가 된다.

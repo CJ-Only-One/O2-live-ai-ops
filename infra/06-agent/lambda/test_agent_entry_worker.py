@@ -30,6 +30,9 @@ class AgentEntryWorkerTest(unittest.TestCase):
         worker._cached_api_key = None
         self.chat_first = load_example("agent-incident-chat-first-v1.example.json")
         self.correlated = load_example("agent-incident-correlated-v1.example.json")
+        self.environment_mismatch = load_example(
+            "agent-incident-environment-mismatch-v1.example.json"
+        )
         self.environment_patch = mock.patch.dict(
             os.environ,
             {
@@ -46,6 +49,9 @@ class AgentEntryWorkerTest(unittest.TestCase):
     def test_accepts_provisional_and_correlated_incident_examples(self):
         self.assertEqual(worker.validate_envelope(self.chat_first)["revision"], 1)
         self.assertEqual(worker.validate_envelope(self.correlated)["revision"], 2)
+        self.assertEqual(
+            worker.validate_envelope(self.environment_mismatch)["revision"], 1
+        )
 
     def test_iam_policy_allows_finalize_transaction_operations(self):
         terraform = (

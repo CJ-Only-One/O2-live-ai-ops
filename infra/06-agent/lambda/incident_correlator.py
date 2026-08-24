@@ -356,12 +356,27 @@ def normalize_trigger(trigger: dict[str, Any], settings: dict[str, Any]) -> dict
         mapping = settings["datadog_monitor_map"].get(evidence["monitor_id"])
         broadcast_ids = []
         environment = evidence["env"]
+        if environment != settings["environment"]:
+            return {
+                "complete": False,
+                "ambiguity_reason": "SOURCE_ENVIRONMENT_MISMATCH",
+                "event_epoch": occurred_at_epoch,
+                "context": {
+                    "environment": settings["environment"],
+                    "symptom_family": "UNKNOWN",
+                    "suspected_surfaces": ["UNKNOWN"],
+                    "services": [],
+                    "broadcast_ids": broadcast_ids,
+                },
+                "correlation_key": None,
+            }
         if mapping is not None and evidence["service"] != mapping["service"]:
             mapping = None
 
     if mapping is None or not environment:
         return {
             "complete": False,
+            "ambiguity_reason": "INSUFFICIENT_DIMENSIONS",
             "event_epoch": occurred_at_epoch,
             "context": {
                 "environment": environment or settings["environment"],
@@ -390,6 +405,7 @@ def normalize_trigger(trigger: dict[str, Any], settings: dict[str, Any]) -> dict
     )
     return {
         "complete": True,
+        "ambiguity_reason": None,
         "event_epoch": occurred_at_epoch,
         "context": context,
         "correlation_key": correlation_key,
@@ -419,7 +435,7 @@ def _snapshot(
             "state": "AMBIGUOUS",
             "strategy": "DETERMINISTIC_V1",
             "confidence": "LOW",
-            "reason_code": "INSUFFICIENT_DIMENSIONS",
+            "reason_code": normalized["ambiguity_reason"],
             "matched_on": [],
             "operator_confirmation_required": True,
         }

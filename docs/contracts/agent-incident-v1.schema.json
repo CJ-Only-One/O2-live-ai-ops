@@ -207,7 +207,8 @@
             "DATADOG_FIRST_NO_CHAT",
             "UNIQUE_ACTIVE_MATCH",
             "MULTIPLE_ACTIVE_MATCHES",
-            "INSUFFICIENT_DIMENSIONS"
+            "INSUFFICIENT_DIMENSIONS",
+            "SOURCE_ENVIRONMENT_MISMATCH"
           ]
         },
         "matched_on": {

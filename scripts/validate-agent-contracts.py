@@ -87,9 +87,13 @@ def main() -> None:
     validator = build_validator()
     chat_first = load_json(EXAMPLES / "agent-incident-chat-first-v1.example.json")
     correlated = load_json(EXAMPLES / "agent-incident-correlated-v1.example.json")
+    environment_mismatch = load_json(
+        EXAMPLES / "agent-incident-environment-mismatch-v1.example.json"
+    )
 
     require_valid(validator, "chat-first example", chat_first)
     require_valid(validator, "correlated example", correlated)
+    require_valid(validator, "environment-mismatch example", environment_mismatch)
 
     missing_datadog = copy.deepcopy(correlated)
     missing_datadog["signals"] = missing_datadog["signals"][:1]
@@ -109,7 +113,7 @@ def main() -> None:
     duplicate_signal["signals"].append(copy.deepcopy(duplicate_signal["signals"][0]))
     require_invalid(validator, "duplicate trigger_id", duplicate_signal)
 
-    print("Agent contract validation passed: 2 positive, 4 negative cases")
+    print("Agent contract validation passed: 3 positive, 4 negative cases")
 
 
 if __name__ == "__main__":
