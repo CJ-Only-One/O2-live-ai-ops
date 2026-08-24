@@ -4,8 +4,11 @@
 쓰지 않는 것이 이 파일의 규칙이다 — 안 잰 축은 아예 계산하지 않고 None 을
 돌려 호출자가 "모른다" 를 그대로 다루게 한다.
 
-order-worker 는 여기서 다루지 않는다. KEDA 가 SQS 큐 길이로 소유하고 있어
-(order-worker-scaledobject.yaml) 워머가 만지면 소유자가 둘이 된다.
+서비스마다 쓰는 필드가 다르다. api·chat-gateway 는 Deployment 의 replicas 를
+직접 잡고, order-worker 는 그 필드를 KEDA 가 소유하므로
+(order-worker-scaledobject.yaml) ScaledObject 의 minReplicaCount 만 올린다.
+여기서 내는 것은 어느 쪽이든 "목표 파드 수" 하나이고, 그 값을 어느 필드에
+쓸지는 main.reconcile_scale 이 정한다.
 """
 
 import math
