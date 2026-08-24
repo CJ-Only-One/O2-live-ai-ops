@@ -15,6 +15,11 @@
 # related_docs·usage_stats·escalation_target 은 아직 스키마에 안 넣는다.
 # 서비스 레벨 정보라 따로 관리하기로 한 항목들이다.
 #
+# ★ DEF 아이템의 success_criteria 에는 D-058 로 baseline_conditions 가
+#   추가됐다 — conditions(절대 SLO)와 별도 목록이고, Baseline 상태에서
+#   기록한 값(예: baseline_p95_ms)을 relative_to 로 가리킨다. 스키마리스라
+#   테이블·이 파일은 안 바뀐다. 시딩값은 scripts/seed_runbook.py 참조.
+#
 # ★ labels.txt 의 runbooks/<label>.md(사람이 읽는 마크다운 대응 문서)와는
 #   다른 것이다. 이 테이블은 에이전트가 자동으로 조회·실행하는 기계 판독용
 #   카탈로그다 — 이름이 같아서 헷갈리기 쉽다.

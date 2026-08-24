@@ -13,6 +13,9 @@ export type ChatIngressConnection = {
 type Dependencies = {
   maxMessageLength: number;
   overRateLimit: (conn: ChatIngressConnection) => Promise<boolean>;
+  // S1(scenario-experiment.md 0.5) 조치인 채널 총량 제한. 평시엔 노브가 꺼져
+  // 있어 개인별 overRateLimit 만 적용되고, 이건 인시던트 중에만 걸린다.
+  overChannelLimit: (conn: ChatIngressConnection) => Promise<boolean>;
   emitChatSend: (payload: ChatSendPayload, ctx: EmitContext) => void;
   emitChatSignal: (input: ChatSignalInput) => Promise<unknown>;
   publishFanout: (conn: ChatIngressConnection, message: string) => Promise<unknown>;
@@ -38,6 +41,12 @@ export function createChatIngressHandler(deps: Dependencies) {
     }
     if (await deps.overRateLimit(conn)) {
       deps.emitChatSend({ ...base, rejected_code: 'RATE_LIMITED' }, ctx);
+      return;
+    }
+    // 개인 한도 통과분만 채널 총량과 비교한다 — 총량 제한은 "다들 개인
+    // 한도 안에 있는데 인원이 많아서 넘친다"는 S1 전제를 재현하는 조치다.
+    if (await deps.overChannelLimit(conn)) {
+      deps.emitChatSend({ ...base, rejected_code: 'CHANNEL_LIMITED' }, ctx);
       return;
     }
 

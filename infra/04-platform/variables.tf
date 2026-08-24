@@ -184,6 +184,17 @@ variable "datastore_state_key" {
   default     = "datastore/terraform.tfstate"
 }
 
+variable "agent_state_key" {
+  description = <<-EOT
+    06-agent 스택의 state 키. "agent/"가 아니라 "dify/"다 — 그 스택이 소유하는
+    것이 Dify 호스트라 그렇게 이름 붙였다(06-agent/versions.tf 참조).
+    action_executor_access.tf 가 조치 실행기 Lambda 의 Role ARN 을 여기서 읽어
+    EKS Access Entry 의 principal_arn 으로 쓴다.
+  EOT
+  type        = string
+  default     = "dify/terraform.tfstate"
+}
+
 variable "app_namespace" {
   description = "애플리케이션 네임스페이스. 매니페스트 저장소의 00-namespace.yaml 이 만든다"
   type        = string
