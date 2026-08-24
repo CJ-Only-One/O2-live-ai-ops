@@ -1,6 +1,6 @@
 app:
   description: >-
-    agent.trigger.v1 transport contract validation only. No production source,
+    agent.incident.v1 invocation contract validation only. No production source,
     team workflow, Bedrock, or remediation.
   icon: 🤖
   icon_background: '#E4FBCC'
@@ -52,13 +52,13 @@ workflow:
       zIndex: 0
     nodes:
     - data:
-        desc: Required serialized agent.trigger.v1 envelope.
+        desc: Required serialized agent.incident.v1 snapshot.
         selected: false
         title: 시작
         type: start
         variables:
         - default: ''
-          hint: Serialized agent.trigger.v1. Raw chat is forbidden.
+          hint: Serialized agent.incident.v1. Raw chat is forbidden.
           label: custom_alert_json
           max_length: 30000
           options: []
@@ -87,13 +87,26 @@ workflow:
           from datetime import datetime
 
           TOP_LEVEL_FIELDS = {
+              "schema_version", "event_type", "incident_id", "revision",
+              "idempotency_key", "lifecycle", "analysis_reason", "opened_at",
+              "updated_at", "correlation", "normalized_context", "signals",
+              "guardrails"
+          }
+          TRIGGER_FIELDS = {
               "schema_version", "trigger_id", "source", "source_schema",
               "trigger_type", "idempotency_key", "occurred_at", "trace_id",
               "evidence", "guardrails"
           }
           GUARDRAIL_FIELDS = {
               "analysis_mode", "automatic_remediation_allowed",
-              "must_preserve_uncertainty", "raw_chat_included"
+              "must_preserve_uncertainty", "raw_chat_included",
+              "single_incident_action_lock_required"
+          }
+          TRIGGER_GUARDRAILS = {
+              "analysis_mode": "READ_ONLY",
+              "automatic_remediation_allowed": False,
+              "must_preserve_uncertainty": True,
+              "raw_chat_included": False,
           }
           SOURCE_RULES = {
               "DATADOG_MONITOR": {
@@ -142,104 +155,73 @@ workflow:
                   fail("INVALID_JSON")
 
               require_exact_keys(payload, TOP_LEVEL_FIELDS, "TOP_LEVEL_FIELDS")
-              if payload["schema_version"] != "1.0":
-                  fail("SCHEMA_VERSION")
-              if not isinstance(payload["trigger_id"], str) or not re.fullmatch(
-                  r"trg_[0-9A-HJKMNP-TV-Z]{26}", payload["trigger_id"]
+              if payload["schema_version"] != "1.0" or payload["event_type"] != "agent.incident.v1":
+                  fail("SCHEMA_OR_EVENT_TYPE")
+              incident_id = payload["incident_id"]
+              if not isinstance(incident_id, str) or not re.fullmatch(
+                  r"inc_[0-9A-HJKMNP-TV-Z]{26}", incident_id
               ):
-                  fail("TRIGGER_ID")
-              source = payload["source"]
-              if source not in SOURCE_RULES:
-                  fail("SOURCE")
-              rule = SOURCE_RULES[source]
-              if payload["source_schema"] != rule["source_schema"]:
-                  fail("SOURCE_SCHEMA")
-              if payload["trigger_type"] != rule["trigger_type"]:
-                  fail("TRIGGER_TYPE")
+                  fail("INCIDENT_ID")
+              revision = payload["revision"]
+              if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+                  fail("REVISION")
               key = payload["idempotency_key"]
-              if not isinstance(key, str) or not 1 <= len(key) <= 256:
+              if key != f"incident:{incident_id}:revision:{revision}":
                   fail("IDEMPOTENCY_KEY")
-              require_datetime(payload["occurred_at"], "OCCURRED_AT")
-              if payload["trace_id"] is not None and (
-                  not isinstance(payload["trace_id"], str)
-                  or len(payload["trace_id"]) > 128
-              ):
-                  fail("TRACE_ID")
+              require_datetime(payload["opened_at"], "OPENED_AT")
+              require_datetime(payload["updated_at"], "UPDATED_AT")
 
               guardrails = payload["guardrails"]
               require_exact_keys(guardrails, GUARDRAIL_FIELDS, "GUARDRAIL_FIELDS")
-              if guardrails != {
-                  "analysis_mode": "READ_ONLY",
-                  "automatic_remediation_allowed": False,
-                  "must_preserve_uncertainty": True,
-                  "raw_chat_included": False,
-              }:
+              if guardrails != dict(
+                  TRIGGER_GUARDRAILS,
+                  single_incident_action_lock_required=True,
+              ):
                   fail("GUARDRAIL_VALUES")
 
-              evidence = payload["evidence"]
-              require_exact_keys(evidence, rule["evidence_fields"], "EVIDENCE_FIELDS")
-              if source == "DATADOG_MONITOR":
-                  if evidence["transition"] not in {
-                      "Triggered", "Re-Triggered", "Recovered", "Warn", "No Data",
-                      "Renotify"
-                  }:
-                      fail("DATADOG_TRANSITION")
-                  if not isinstance(evidence["event_id"], str) or not evidence["event_id"]:
-                      fail("DATADOG_EVENT_ID")
-                  if not isinstance(evidence["cycle_key"], str) or not evidence["cycle_key"]:
-                      fail("DATADOG_CYCLE_KEY")
-              else:
-                  if evidence["candidate_type"] != "USER_PERCEIVED_LATENCY":
-                      fail("CHAT_CANDIDATE_TYPE")
-                  if evidence["suspected_surface"] not in {
-                      "READ_PATH", "PLAYBACK", "CHAT", "UNKNOWN"
-                  }:
-                      fail("CHAT_SURFACE")
-                  if evidence["confidence"] not in {"MEDIUM", "LOW"}:
-                      fail("CHAT_CONFIDENCE")
-                  if (
-                      evidence["metric_status"] != "NOT_CHECKED"
-                      or evidence["root_cause"] != "UNDETERMINED"
-                  ):
-                      fail("CHAT_UNCERTAINTY")
-                  if evidence["requires_metric_corroboration"] is not True:
-                      fail("CHAT_METRIC_GATE")
-                  for field in ("matched_messages", "unique_users"):
-                      if (
-                          not isinstance(evidence[field], int)
-                          or isinstance(evidence[field], bool)
-                          or evidence[field] < 1
-                      ):
-                          fail("CHAT_POSITIVE_COUNTS")
-                  for field in ("strong_signal_count", "weak_signal_count"):
-                      if (
-                          not isinstance(evidence[field], int)
-                          or isinstance(evidence[field], bool)
-                          or evidence[field] < 0
-                      ):
-                          fail("CHAT_NONNEGATIVE_COUNTS")
-                  rules = evidence["matched_rule_ids"]
-                  if (
-                      not isinstance(rules, list)
-                      or not rules
-                      or len(rules) != len(set(rules))
-                  ):
-                      fail("CHAT_RULE_IDS")
+              correlation = payload["correlation"]
+              if correlation.get("strategy") != "DETERMINISTIC_V1" or correlation.get("state") not in {
+                  "PROVISIONAL", "CORRELATED", "AMBIGUOUS"
+              }:
+                  fail("CORRELATION")
+              signals = payload["signals"]
+              if not isinstance(signals, list) or not 1 <= len(signals) <= 20:
+                  fail("SIGNALS")
+              sources = set()
+              for signal in signals:
+                  require_exact_keys(signal, TRIGGER_FIELDS, "TRIGGER_FIELDS")
+                  source = signal["source"]
+                  if source not in SOURCE_RULES:
+                      fail("SOURCE")
+                  sources.add(source)
+                  rule = SOURCE_RULES[source]
+                  if signal["source_schema"] != rule["source_schema"]:
+                      fail("SOURCE_SCHEMA")
+                  if signal["trigger_type"] != rule["trigger_type"]:
+                      fail("TRIGGER_TYPE")
+                  if signal["guardrails"] != TRIGGER_GUARDRAILS:
+                      fail("TRIGGER_GUARDRAILS")
+                  require_exact_keys(signal["evidence"], rule["evidence_fields"], "EVIDENCE_FIELDS")
+              if correlation["state"] == "CORRELATED" and not {
+                  "CHAT_INCIDENT_CANDIDATE", "DATADOG_MONITOR"
+              }.issubset(sources):
+                  fail("CORRELATED_SOURCES")
 
               return {
                   "result": json.dumps({
                       "accepted": True,
+                      "event_type": "agent.incident.v1",
                       "idempotency_key": key,
-                      "source": source,
-                      "source_schema": rule["source_schema"],
+                      "incident_id": incident_id,
+                      "revision": revision,
                       "status": "ACCEPTED"
                   }, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
               }
         code_language: python3
         dependencies: []
         desc: >-
-          Validates source pairing, exact field sets, uncertainty preservation, and
-          read-only guardrails. It never returns evidence or raw input.
+          Validates Incident revision identity, nested source pairing, exact evidence
+          fields, and read-only guardrails. It never returns evidence or raw input.
         outputs:
           result:
             children: null

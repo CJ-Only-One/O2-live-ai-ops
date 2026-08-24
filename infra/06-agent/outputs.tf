@@ -67,7 +67,7 @@ output "alert_relay_log_command" {
   ])
 }
 
-# ── Agent 공통 진입점 (Phase 3 전: 비활성) ────────────────────────
+# ── Agent 공통 진입점 (기본 비활성) ──────────────────────────────
 
 output "agent_entry_queue_url" {
   description = "agent.trigger.v1 전용 Queue. Phase 1B event source는 disabled"
@@ -85,13 +85,13 @@ output "agent_entry_idempotency_table" {
 }
 
 output "agent_entry_worker_name" {
-  description = "Phase 1B에서는 event source와 실행 플래그가 모두 disabled인 Generic Worker"
+  description = "agent.incident.v1을 전용 Dify 테스트 앱으로 전달하는 기본 비활성 Generic Worker"
   value       = aws_lambda_function.agent_entry_worker.function_name
 }
 
 output "agent_entry_event_source_enabled" {
-  description = "자동 Agent 호출 event source 활성화 여부"
-  value       = aws_lambda_event_source_mapping.agent_entry.enabled
+  description = "Agent Invocation Queue의 Generic Worker 자동 소비 활성화 여부"
+  value       = aws_lambda_event_source_mapping.agent_invocation_worker.enabled
 }
 
 output "agent_entry_execution_enabled" {
@@ -122,7 +122,7 @@ output "incident_correlator_execution_enabled" {
 }
 
 output "agent_invocation_queue_url" {
-  description = "agent.incident.v1 전용 Queue. Phase 3B에는 consumer가 없음"
+  description = "agent.incident.v1 전용 Queue. Generic Worker event source 기본값은 disabled"
   value       = aws_sqs_queue.agent_invocation.url
 }
 

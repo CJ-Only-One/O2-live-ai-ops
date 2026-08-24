@@ -19,7 +19,7 @@ Dify 콘솔에 들어가지 않고도 워크플로가 무엇을 하는지 읽을
 | 파일 | 무엇 |
 |---|---|
 | `alert-triage.yml` | Datadog 알림 입력으로 내보낸 과거 workflow DSL |
-| `agent-entry-contract-test-v1.yml` | Chat·Datadog 공통 envelope를 LLM 없이 검증하는 격리 테스트 workflow DSL |
+| `agent-entry-contract-test-v1.yml` | 병합된 `agent.incident.v1` revision을 LLM 없이 검증하는 격리 테스트 workflow DSL |
 
 > **2026-08-23 runtime drift 확인:** Lambda API key가 가리키는 실제 게시 앱은 이 DSL보다
 > 새롭고 `behavior`, `custom_alert_json` 입력을 추가로 가진다. 이 파일을 현재 배포본의
@@ -29,8 +29,13 @@ Dify 콘솔에 들어가지 않고도 워크플로가 무엇을 하는지 읽을
 
 `agent-entry-contract-test-v1.yml`은 기존 팀 앱과 API key를 재사용하지 않는다. Start 입력은
 required paragraph `custom_alert_json` 하나이고, Code 노드는 `source`별 exact field set과
-`READ_ONLY`, uncertainty 보존, raw chat 제외를 검사한다. 성공 응답에는 evidence나 입력
+`READ_ONLY`, uncertainty 보존, raw chat 제외뿐 아니라 Incident id/revision 멱등 키와
+`CORRELATED`의 Chat·Datadog source 동시 포함을 검사한다. 성공 응답에는 evidence나 입력
 원문을 복사하지 않는다. 이 앱에는 Bedrock·Datadog Pull·자동 조치 노드가 없다.
+
+2026-08-24 Phase 3D 저장소 DSL은 `agent.incident.v1` 계약으로 갱신됐지만 실환경 게시 앱은
+아직 이전 `agent.trigger.v1` 계약이다. Worker event source를 켜기 전에 이 DSL을 전용 앱에
+반영·게시하고 Service API 정상 Incident 2개와 raw chat 거부를 다시 확인해야 한다.
 
 이 파일은 AI와 코드 리뷰가 안정적으로 비교할 수 있도록 runtime UUID와 UI 표시 label을
 정규화한 canonical DSL이다. 실행 계약은 node label이 아니라 `custom_alert_json` variable,

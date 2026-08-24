@@ -108,14 +108,14 @@ data "aws_iam_policy_document" "agent_entry_worker" {
   }
 
   statement {
-    sid    = "ConsumeAgentTriggerQueue"
+    sid    = "ConsumeAgentInvocationQueue"
     effect = "Allow"
     actions = [
       "sqs:ReceiveMessage",
       "sqs:DeleteMessage",
       "sqs:GetQueueAttributes",
     ]
-    resources = [aws_sqs_queue.agent_entry.arn]
+    resources = [aws_sqs_queue.agent_invocation.arn]
   }
 
   statement {
@@ -123,9 +123,18 @@ data "aws_iam_policy_document" "agent_entry_worker" {
     effect = "Allow"
     actions = [
       "dynamodb:GetItem",
+      "dynamodb:PutItem",
       "dynamodb:UpdateItem",
+      "dynamodb:TransactWriteItems",
     ]
     resources = [aws_dynamodb_table.agent_entry_idempotency.arn]
+  }
+
+  statement {
+    sid       = "ReadAuthoritativeIncidentRevision"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem"]
+    resources = [aws_dynamodb_table.incident_state.arn]
   }
 }
 
@@ -174,13 +183,14 @@ resource "aws_lambda_function" "agent_entry_worker" {
 
   environment {
     variables = {
-      # 기본값은 false다. 활성화하더라도 합성 key 1개 외에는 Dify를 호출하지 않는다.
-      AGENT_ENTRY_EXECUTION_ENABLED        = tostring(var.agent_entry_execution_enabled)
-      AGENT_ENTRY_ALLOWED_IDEMPOTENCY_KEYS = join(",", sort(tolist(var.agent_entry_allowed_idempotency_keys)))
+      # 기본값은 false다. 활성화하더라도 합성 Incident 1개 외에는 Dify를 호출하지 않는다.
+      AGENT_ENTRY_EXECUTION_ENABLED    = tostring(var.agent_entry_execution_enabled)
+      AGENT_ENTRY_ALLOWED_INCIDENT_IDS = join(",", sort(tolist(var.agent_entry_allowed_incident_ids)))
 
       DIFY_URL             = "http://${aws_instance.dify.private_ip}/v1/workflows/run"
       AGENT_ENTRY_SECRET   = var.agent_entry_secret_name
       IDEMPOTENCY_TABLE    = aws_dynamodb_table.agent_entry_idempotency.name
+      INCIDENT_STATE_TABLE = aws_dynamodb_table.incident_state.name
       IDEMPOTENCY_TTL      = tostring(var.agent_entry_idempotency_ttl_seconds)
       IDEMPOTENCY_LEASE    = "120"
       DIFY_TIMEOUT_SECONDS = "45"
@@ -199,19 +209,33 @@ resource "aws_lambda_function" "agent_entry_worker" {
       condition = (
         (!var.agent_entry_execution_enabled &&
           !var.agent_entry_event_source_enabled &&
-        length(var.agent_entry_allowed_idempotency_keys) == 0) ||
+        length(var.agent_entry_allowed_incident_ids) == 0) ||
         (var.agent_entry_execution_enabled &&
           var.agent_entry_event_source_enabled &&
-        length(var.agent_entry_allowed_idempotency_keys) == 1)
+        length(var.agent_entry_allowed_incident_ids) == 1)
       )
-      error_message = "Agent Entry는 disabled+empty allowlist 또는 enabled+합성 key 1개 조합만 허용한다."
+      error_message = "Agent Entry는 disabled+empty allowlist 또는 enabled+합성 Incident 1개 조합만 허용한다."
     }
   }
 }
 
-# 리소스 관계와 IAM은 validate하되 polling은 하지 않는다.
+# Phase 1B의 Signal Queue mapping은 destroy 없이 보존하되 영구 비활성화한다.
+# Worker IAM에서도 Signal Queue 소비 권한을 제거했으므로 mapping만 실수로 켜도
+# source trigger를 가져갈 수 없다. Phase 4 정리 전까지의 migration marker다.
 resource "aws_lambda_event_source_mapping" "agent_entry" {
   event_source_arn = aws_sqs_queue.agent_entry.arn
+  function_name    = aws_lambda_function.agent_entry_worker.arn
+
+  enabled = false
+
+  batch_size                         = 1
+  maximum_batching_window_in_seconds = 0
+  function_response_types            = ["ReportBatchItemFailures"]
+}
+
+# Agent Invocation Queue의 유일한 Generic Worker consumer. 기본값은 disabled다.
+resource "aws_lambda_event_source_mapping" "agent_invocation_worker" {
+  event_source_arn = aws_sqs_queue.agent_invocation.arn
   function_name    = aws_lambda_function.agent_entry_worker.arn
 
   enabled = var.agent_entry_event_source_enabled

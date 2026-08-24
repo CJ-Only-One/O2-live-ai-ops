@@ -53,17 +53,19 @@ apply 순서에서 이 스택은 `02-eks` 뒤, `04-platform` 앞이다 —
 01-network → 02-eks → (03-data ∥ 06-agent) → 04-platform
 ```
 
-## Agent 공통 진입점 Phase 1B
+## Agent 공통 진입점 Phase 1B-3D
 
-`agent_entry_transport.tf`은 Chat과 Datadog이 공통 `agent.trigger.v1` envelope로 들어오는
-전송 기반만 만든다.
+`agent_entry_transport.tf`은 Signal Queue와 별도의 Agent Invocation Queue 사이에서 사용할
+Generic Worker와 실행 ledger를 만든다. Phase 3D부터 Worker 입력은 병합 전 source trigger가
+아니라 Correlator가 만든 `agent.incident.v1` revision이다.
 
 ```text
-Agent Trigger SQS -> disabled event source -> Generic Worker -> private Dify
-          |
-          +-> DLQ
+agent.trigger.v1 Signal Queue -> Incident Correlator -> Incident State
+                                                    -> Agent Invocation Queue
+                                                    -> disabled Generic Worker
+                                                    -> private contract-test Dify
 
-Generic Worker -> DynamoDB idempotency ledger
+Generic Worker -> revision ledger + per-Incident lock
 ```
 
 Phase 1B에는 실행 게이트가 두 개 있다.
@@ -73,13 +75,18 @@ Phase 1B에는 실행 게이트가 두 개 있다.
 | SQS event source mapping | `enabled=false` |
 | Worker 환경변수 | `AGENT_ENTRY_EXECUTION_ENABLED=false` |
 
-따라서 Terraform apply만으로 Dify 호출이 생기지 않는다. Worker는 queue body를
-`agent.trigger.v1`로 검증하고, 실행이 활성화된 미래 Phase에서만 DynamoDB lease 획득 후
-전용 테스트 앱을 호출한다. 같은 `idempotency_key`의 `SUCCEEDED` 항목은 다시 호출하지
+따라서 Terraform apply만으로 Dify 호출이 생기지 않는다. Worker는 Agent Invocation Queue
+body를 `agent.incident.v1`로 검증하고, 실행이 활성화된 Shadow Phase에서만 DynamoDB의
+revision 멱등 항목과 Incident lock을 함께 획득한 뒤 전용 테스트 앱을 호출한다. 같은
+`idempotency_key`의 `SUCCEEDED` 항목은 다시 호출하지
 않는다. `IN_PROGRESS`·`FAILED`도 자동으로 Dify를 재호출하지 않고 SQS redelivery를
 DLQ까지 진행시킨다. 외부 호출은 성공했는데 ledger 확정만 실패한 애매한 구간에서 LLM을
 두 번 실행하지 않기 위한 fail-closed 정책이다. 운영자가 Dify 실행 여부를 확인한 뒤에만
 ledger를 정리하고 재투입한다.
+
+Worker는 Incident State의 최신 revision을 consistent read한다. Queue에 대기하는 동안 더
+최신 revision이 만들어졌다면 오래된 메시지는 `SUPERSEDED`로 기록하고 Dify를 호출하지
+않는다. 같은 Incident의 다른 revision이 실행 중이면 lock 획득이 실패해 SQS에서 재전달된다.
 
 전용 API key는 `o2/dev/dify-agent-entry-contract-test` Secrets Manager secret에서 실행
 시점에만 읽는다. 값은 Terraform state, 코드, 로그에 남기지 않는다.
@@ -100,7 +107,7 @@ terraform output -raw agent_entry_event_source_enabled
 aws lambda get-event-source-mapping --uuid <mapping-uuid> \
   --query '{State:State,LastProcessingResult:LastProcessingResult}' \
   --region ap-northeast-2
-aws sqs get-queue-attributes --queue-url "$(terraform output -raw agent_entry_queue_url)" \
+aws sqs get-queue-attributes --queue-url "$(terraform output -raw agent_invocation_queue_url)" \
   --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
   --region ap-northeast-2
 ```
@@ -109,10 +116,10 @@ aws sqs get-queue-attributes --queue-url "$(terraform output -raw agent_entry_qu
 0건인 것이다. 2026-08-23 실환경에서 이 조건을 모두 확인했다. Phase 3 전에는 event
 source나 실행 플래그를 켜지 않는다.
 
-Phase 3 합성 Queue E2E는 D-053에 따라 event source와 실행 플래그를 함께 켜고, 매 실행의
-합성 Chat `idempotency_key` 정확히 1개만 허용한다. 기본값은 두 게이트 `false`와 빈
-allowlist다. 미허용 key는 Secret 조회·ledger 획득·Dify 호출 전에 실패한다. 상세 상태와
-적용 순서는 `docs/agent-entrypoint.md` 6.4를 따른다.
+Phase 3D 합성 Shadow E2E는 D-053에 따라 event source와 실행 플래그를 함께 켜고, 매 실행의
+합성 `incident_id` 정확히 1개만 허용한다. 기본값은 두 게이트 `false`와 빈 allowlist다.
+미허용 Incident는 Incident State 조회·Secret 조회·ledger 획득·Dify 호출 전에 실패한다.
+상세 상태와 적용 순서는 `docs/agent-entrypoint.md` 6.7을 따른다.
 
 ## Incident Correlator Phase 3B
 
