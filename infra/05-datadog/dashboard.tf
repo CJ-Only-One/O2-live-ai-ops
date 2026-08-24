@@ -750,6 +750,99 @@ resource "datadog_dashboard" "business" {
       }
     }
   }
+
+  ###########################################################################
+  # 6. 파드별 비교 — 재분석용 (알림 대상 아님)
+  #
+  # 위의 모든 위젯은 **service 단위**다. 그래서 파드 하나만 아픈 장애가
+  # 통째로 안 보인다 — 파드 4개 중 1개가 죽어도 평균은 75%고, 그건 임계
+  # 안이다. 이 그룹만이 그 하나를 집어낸다.
+  #
+  # **알림에서 여기로 온다.** `order_latency_p95`(service 단위)가 울리고
+  # 1차 조치가 듣지 않았을 때, 명세의 자기 교정 루프가 "전부 느린 건가
+  # 파드 하나인가" 를 묻는다. 그 질문에 답하는 자리가 여기다.
+  # `latency_p95_pod_outlier` · `cache_hit_rate_pod_outlier` 가 지목한
+  # 파드를 눈으로 확인하는 곳이기도 하다.
+  #
+  # **`pod_name:N/A` 선이 하나 섞여 나온다.** service 단위로 보낸 값이
+  # 태그가 없어 그렇게 잡히는 것이다(D-057). 지우지 않고 둔다 — 파드
+  # 선들과 겹쳐 보면 그게 곧 "전체 평균" 기준선 역할을 한다.
+  ###########################################################################
+  widget {
+    group_definition {
+      title       = "6. 파드별 비교 (재분석)"
+      layout_type = "ordered"
+
+      widget {
+        timeseries_definition {
+          # 파드 하나만 위로 떨어지면 그 파드가 범인이다. 전부 같이 오르면
+          # 파드 문제가 아니라 상류(캐시·DB·PG) 문제다.
+          #
+          # 표본 5건 미만인 파드는 애초에 이 축에 안 실린다
+          # (`LATENCY_POD_MIN_SAMPLES`) — 방금 뜬 파드의 콜드 스타트가
+          # 이상치로 보이는 것을 막기 위해서다. 그래서 스케일아웃 직후
+          # 선이 몇 개 비어 있는 것은 정상이다.
+          title       = "파드별 응답시간 p95 — 하나만 느린가"
+          title_size  = "16"
+          show_legend = true
+
+          request {
+            q            = "avg:${local.p}latency_p95{${local.scope}} by {pod_name}"
+            display_type = "line"
+            style {
+              palette   = "warm"
+              line_type = "solid"
+            }
+          }
+
+          marker {
+            display_type = "warning dashed"
+            value        = "y = ${var.latency_p95_warning}"
+            label        = "p95 경고"
+          }
+
+          yaxis {
+            min          = "0"
+            include_zero = true
+          }
+        }
+      }
+
+      widget {
+        timeseries_definition {
+          # Valkey Pub/Sub 은 at-most-once 라 구독이 순간 끊긴 파드는 무효화를
+          # 놓치고 옛 값을 계속 준다. 응답은 200 이라 실패율에 안 잡히고,
+          # service 평균에도 묻힌다.
+          #
+          # 위 지연 위젯과 **같은 파드**가 떨어져 있으면 원인이 캐시 쪽이다.
+          title       = "파드별 캐시 적중률 — 하나만 식었나"
+          title_size  = "16"
+          show_legend = true
+
+          request {
+            q            = "avg:${local.p}cache_hit_rate{${local.scope}} by {pod_name}"
+            display_type = "line"
+            style {
+              palette   = "cool"
+              line_type = "solid"
+            }
+          }
+
+          marker {
+            display_type = "warning dashed"
+            value        = "y = ${var.cache_hit_rate_critical}"
+            label        = "적중률 위험"
+          }
+
+          yaxis {
+            min          = "0"
+            max          = "1"
+            include_zero = true
+          }
+        }
+      }
+    }
+  }
 }
 
 output "dashboard_url" {

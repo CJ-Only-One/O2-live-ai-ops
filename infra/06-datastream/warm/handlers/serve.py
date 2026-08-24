@@ -56,6 +56,38 @@ _client: WarmClient | None = None
 
 MAX_WINDOWS = 60
 
+# 파이프라인 생존 카나리의 service 태그. `06-datastream` 의
+# `local.canary_service` / `output.canary_service_tag` 와 같은 값이다.
+#
+# 이 값을 바꿔야 할 일이 생기면 두 곳을 같이 고친다. 여기만 고치면 카나리가
+# 다시 새어 나오고, 저쪽만 고치면 이 API 가 실재하는 서비스를 막는다.
+CANARY_SERVICE = os.getenv("O2_CANARY_SERVICE", "o2-canary")
+
+
+def _reject_canary(service: str) -> None:
+    """카나리를 실제 서비스인 것처럼 조회하는 것을 막습니다.
+
+    카나리는 **파이프라인이 살아 있음을 증명하려고 스스로 만든 트래픽**
+    입니다(D-052). 지표가 실재하기 때문에 `service=o2-canary` 로 물으면
+    그럴듯한 답이 나오는데, 그 답에는 사용자가 없습니다 — rps 는 항상 0.1,
+    실패율은 항상 0, 지연은 항상 합성값입니다.
+
+    **조용히 빈 답을 주지 않고 400 으로 거절합니다.** 빈 답은 "이 서비스는
+    지금 한산하다" 와 구분되지 않고, 에이전트는 그걸 정상으로 읽습니다.
+    막힌 이유가 응답에 적혀 있어야 다음 질문이 달라집니다.
+
+    명세 §08 *"주입은 Agent 가 읽는 저장소에 흔적을 남기지 않는다"* 와
+    맞물리는 지점입니다. Athena 쪽 대응은 `business_events` 뷰가 합니다.
+    """
+    if service and service.strip().lower() == CANARY_SERVICE:
+        raise ValueError(
+            f"'{CANARY_SERVICE}' 는 파이프라인 생존 카나리이지 실제 서비스가 "
+            "아닙니다. 이 지표는 관측 경로가 살아 있는지만 말해 주고 사용자 "
+            "트래픽을 뜻하지 않습니다 — 장애 판단의 근거로 쓸 수 없습니다. "
+            "파이프라인 자체를 의심한다면 Datadog 의 "
+            "'[O2][파이프라인] warm 경로 끊김' Monitor 를 보십시오."
+        )
+
 
 def client() -> WarmClient:
     global _client
@@ -203,6 +235,7 @@ def _dispatch(method: str, path: str, params: dict, body: dict):
             phase = (body.get("phase") or "PRE").upper()
             if not service:
                 raise ValueError("service 가 필요합니다")
+            _reject_canary(service)
             if phase not in SNAPSHOT_PHASES:
                 raise ValueError("phase 는 DETECT, PRE, POST 중 하나여야 합니다")
             return _resp(201, client().record_snapshot(
@@ -234,6 +267,7 @@ def _dispatch(method: str, path: str, params: dict, body: dict):
     service = params.get("service")
     if not service:
         raise ValueError("service 쿼리 파라미터가 필요합니다")
+    _reject_canary(service)
     count = _int_param(params, "windows", 6, 1, MAX_WINDOWS)
 
     if path.endswith("/metrics"):

@@ -504,6 +504,14 @@ class WindowSketch:
         # --- 사용자 경험 저하 신호 ---
         # 전부 "응답은 200인데 체감은 나쁜" 상황에서만 움직입니다.
         self.latency = LogHistogram()
+        # 파드별 지연 분포. cache_hit_by_pod 와 같은 이유다 — 파드 3개 중
+        # 하나만 느려도 service 단위 p95 는 나머지 둘에 희석돼 임계 안에
+        # 머문다. 그 하나를 집어내려면 pod_name 축이 있어야 한다.
+        #
+        # 카운터가 아니라 히스토그램을 파드 수만큼 든다. LogHistogram 은
+        # 희소 dict 라 실제로 쓰인 버킷만 남고(파드당 수십 개 정수),
+        # pod_name 은 K8s 가 정하는 축이라 파드 수가 원래 작다.
+        self.latency_by_pod: dict[str, LogHistogram] = {}
         self.retry_events = 0      # is_retry=true 또는 retry_count>0
         self.retry_sum = 0         # retry_count 합
         self.retry_base = 0        # 재시도 여부를 실을 수 있는 이벤트 수 (분모)
@@ -597,6 +605,8 @@ class WindowSketch:
         latency = payload.get(C.F_LATENCY)
         if isinstance(latency, (int, float)):
             self.latency.add(latency)
+            if pod_name:
+                self.latency_by_pod.setdefault(pod_name, LogHistogram()).add(latency)
 
         # 재시도. 사용자가 같은 동작을 반복한다는 것은 그 자체로
         # 체감이 나빴다는 신호입니다. 서버는 매번 성공했을 수 있습니다.
@@ -705,6 +715,8 @@ class WindowSketch:
         self.intervals.merge(other.intervals)
         self.pg_ratio.merge(other.pg_ratio)
         self.latency.merge(other.latency)
+        for pod, hist in other.latency_by_pod.items():
+            self.latency_by_pod.setdefault(pod, LogHistogram()).merge(hist)
         self.segments.merge(other.segments)
 
         if other.first_ts is not None:
@@ -742,6 +754,7 @@ class WindowSketch:
             "pg": self.pg_ratio.to_dict(),
             "ua_events": self.ua_events,
             "lat": self.latency.to_dict(),
+            "lat_pod": {pod: h.to_dict() for pod, h in self.latency_by_pod.items()},
             "retry": [self.retry_events, self.retry_sum, self.retry_base],
             "fallback": self.fallback_used,
             "cancel_reasons": self.cancel_reasons,
@@ -776,6 +789,9 @@ class WindowSketch:
         s.pg_ratio = Histogram.from_dict(d.get("pg") or {})
         s.ua_events = int(d.get("ua_events") or 0)
         s.latency = LogHistogram.from_dict(d.get("lat") or {})
+        s.latency_by_pod = {
+            pod: LogHistogram.from_dict(h or {}) for pod, h in (d.get("lat_pod") or {}).items()
+        }
         retry = d.get("retry") or [0, 0, 0]
         s.retry_events, s.retry_sum, s.retry_base = (int(x) for x in retry)
         s.fallback_used = int(d.get("fallback") or 0)

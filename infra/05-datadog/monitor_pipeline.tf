@@ -112,25 +112,46 @@ resource "datadog_monitor" "warm_pipeline_stalled" {
 # 전제로 한다. 집계가 100초 밀려 있으면 그때 읽는 값은 조치 이전 값이다.
 # **에이전트가 자기 조치의 효과를 반대로 판정한다.**
 #
-# 기본 비활성인 이유는 `aws.lambda.*` 가 이 Datadog 조직에 실제로 수집되고
-# 있는지 확인하지 못했기 때문이다(CloudWatch 원본에는 있는 것을 확인했다).
-# `enable_queue_backlog_monitor` 와 같은 이유·같은 처리다 — 없는 지표에
-# 조용히 죽는 Monitor 를 걸지 않는다.
+# **확인했다. 켠다.** 2026-08-24, Datadog API 로 조회한 결과(M-015):
 #
-# 확인 방법: Metrics Explorer 에서 `aws.lambda.iterator_age` 검색 →
-# `functionname:o2-agg` 태그로 시계열이 잡히는지 본다.
+#   sum:aws.lambda.invocations{*} by {functionname}   → series 12 (o2-agg 포함)
+#   avg:aws.lambda.iterator_age{*} by {functionname}  → functionname:o2-agg 있음
+#   sum:aws.lambda.errors{*} by {functionname}        → series 12
+#
+# 이것이 이 Monitor 를 껐던 유일한 사유였다. 사유가 해소됐으므로 기본값을
+# `true` 로 바꾼다. **사유가 낡은 채로 남으면 안 된다** — `chat_ingest_surge`
+# 가 "Kinesis 경로가 아직 없다" 는 낡은 사유를 달고 몇 주를 꺼져 있었다(F-3).
+#
+# **다만 데이터포인트가 성기다.** 24시간 구간에서 `invocations`·`errors` 는
+# 288 포인트(5분 간격이 꽉 참)인데 `iterator_age` 는 18 포인트뿐이다.
+# CloudWatch 가 스트림이 실제로 움직일 때만 이 지표를 내보내기 때문이고,
+# M-014 의 "48시간 중 42시간이 6시간당 5건" 분포와 정확히 일치한다.
+#
+# 그래서 아래 두 Monitor 의 `notify_no_data` 는 **반드시 false 여야 한다.**
+# 켜면 한산한 밤마다 울리고, `order_latency_p95` 가 사흘 만에 꺼진 것과
+# 똑같은 일이 벌어진다. 생존 감시는 위의 카나리 몫이고, 이 둘은 "밀린다"
+# 와 "터진다" 만 잡는다 — D-052 가 굳이 역할을 나눠 둔 이유가 그것이다.
 ###############################################################################
 
 variable "enable_aggregator_lag_monitor" {
   description = <<-EOT
-    집계기 지연(`warm_aggregator_lag`) Monitor 활성화 여부. 기본 `false`.
+    집계기 지연(`warm_aggregator_lag`)·오류(`warm_aggregator_errors`)
+    Monitor 활성화 여부. 기본 `true`.
 
-    `aws.lambda.iterator_age` 가 이 조직에 수집되는지 확인한 뒤 켠다.
-    CloudWatch 원본에는 값이 있다(M-014) — Datadog AWS 통합이 그 네임스페이스를
-    가져오는지가 확인 대상이다.
+    **변수 하나가 리소스 둘을 건다.** 밀림과 터짐은 원인이 이어져 있어
+    (오류 → 재시도 누적 → 지연) 따로 켤 일이 없다.
+
+    2026-08-24 이전에는 기본 `false` 였다. 사유는 "`aws.lambda.*` 가 이
+    조직에 수집되는지 확인하지 못했다" 였고, 그날 Datadog API 조회로
+    수집이 확인됐다(M-015). 사유가 사라졌으므로 기본값을 뒤집었다.
+
+    끌 이유가 생긴다면 그것은 **오탐**일 것이다. 그때는 이 변수를 끄기
+    전에 `aggregator_lag_critical_seconds` 를 먼저 본다 — 90초는 임의값이
+    아니라 자기 교정 루프의 재확인 대기와 같은 값이라, 이 값을 올리는 것은
+    "밀려도 괜찮다" 가 아니라 "루프를 다시 설계했다" 를 뜻한다.
   EOT
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "aggregator_lag_warning_seconds" {

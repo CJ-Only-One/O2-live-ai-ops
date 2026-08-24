@@ -207,7 +207,45 @@ resource "datadog_monitor" "latency_p95_high" {
   tags = concat(local.monitor_tags, ["scenario:4", "service:api", "role:sub"])
 }
 
+###############################################################################
+# 이 composite 만 게이트를 갖는다 — 서브 둘은 안 갖는다. D-056.
+#
+# 짧게: **서브 Monitor 는 알림 핸들이 없어 울리지 않고, composite 는 운다.**
+# 그래서 끌 수 있어야 하는 것은 composite 뿐이다. 그리고 서브에 `count` 를
+# 걸면 이 아래 `query` 의 `datadog_monitor.cache_hit_rate_low.id` 참조가
+# 깨진다(`[0].id` 가 되고, 게이트가 꺼지면 참조 대상이 아예 없다).
+#
+# **기본값은 `true` 다 — 지금 동작을 바꾸지 않는다.** 시나리오 4(캐시 흡수
+# 실패)는 새 명세에 대응 항목이 없을 뿐 이 시스템에서 여전히 실재하는
+# 실패 모드다. "새 명세에 없다" 는 "지워도 된다" 를 뜻하지 않는다.
+#
+# **apply 할 때 주의** — `count` 가 붙으면서 주소가
+# `datadog_monitor.cache_absorption_failure` 에서 `...[0]` 로 바뀐다.
+# 그냥 apply 하면 Datadog 쪽 Monitor 가 **삭제 후 재생성**되어 ID 와 알림
+# 이력이 바뀐다. 먼저 상태를 옮긴다:
+#
+#   terraform state mv 'datadog_monitor.cache_absorption_failure' #                      'datadog_monitor.cache_absorption_failure[0]'
+###############################################################################
+
+variable "enable_cache_absorption_monitor" {
+  description = <<-EOT
+    시나리오 4(캐시 흡수 실패) composite Monitor 활성화 여부. 기본 `true`.
+
+    끄면 서브 Monitor 둘(`cache_hit_rate_low` · `latency_p95_high`)은 계정에
+    그대로 남는다. **의도한 것이다** — 그 둘은 알림 핸들이 없어 울리지 않고,
+    상태만 계속 계산한다. 대시보드에서 "그때 캐시가 어땠나" 를 되짚을 때
+    쓸 수 있고, 다시 켤 때 임계 조정 없이 바로 붙는다.
+
+    끌 상황은 하나뿐이다 — **데모 중 시나리오와 무관한 알림이 에이전트를
+    깨우는 것을 막을 때.** 운영에서 끄지 않는다.
+  EOT
+  type        = bool
+  default     = true
+}
+
 resource "datadog_monitor" "cache_absorption_failure" {
+  count = var.enable_cache_absorption_monitor ? 1 : 0
+
   name    = "[O2][시나리오 4] 캐시 흡수 실패"
   type    = "composite"
   query   = "${datadog_monitor.cache_hit_rate_low.id} && ${datadog_monitor.latency_p95_high.id}"
@@ -318,6 +356,100 @@ resource "datadog_monitor" "cache_hit_rate_pod_outlier" {
   renotify_interval   = 0
 
   tags = concat(local.monitor_tags, ["scenario:1", "service:api", "role:page", "phase:2"])
+}
+
+###############################################################################
+# 시나리오 5 (재분석) — 파드 단위 지연 이상치
+#
+# 위 캐시 이상치 Monitor 와 **같은 쿼리이고 지표 이름만 다르다.** 일부러
+# 그렇게 뒀다 — 파드 하나가 service 평균에 묻히는 문제는 캐시든 지연이든
+# 같은 모양이고, 같은 모양은 같은 도구로 잡는 편이 읽기 쉽다.
+#
+# **이건 진입 알림이 아니다.** 진입은 `order_latency_p95`(service 단위)가
+# 하고, 이 Monitor 는 그 다음 질문 — "1차 조치가 안 들었는데, 전부 느린 건가
+# 파드 하나인가" — 에 답한다. 명세의 자기 교정 루프가 재분석 단계에서 읽는
+# 증거가 바로 이 축이다.
+#
+# 왜 우회할 수 없었나 — APM 쪽에 파드 축이 있으면 이 계측이 통째로
+# 불필요했다. 실측(M-015) 결과 `trace.fastapi.request` 의 태그 아홉 개에
+# `pod_name` 이 없다. `.hits` 에 붙는 `kube_node`·`host` 는 호스트 태그가
+# 상속된 것이지 파드 단위가 아니다. 그래서 06-datastream 에서 만든다.
+#
+# **방향을 구분하지 않는다는 것을 알고 쓴다.** `outliers()` 의 DBSCAN 은
+# "무리에서 떨어진 것" 을 잡지 "느린 것" 을 잡지 않는다. 파드 하나가 유독
+# **빠를** 때도 걸린다. 캐시 쪽 Monitor 가 이미 같은 성질을 갖고 있고,
+# 방향을 넣으려면 임계를 별도로 정해야 하는데 그 임계의 근거가 아직 없다
+# (파드별 정상 분산을 안 쟀다 — `pod_cache_outlier_tolerance` 주석과 같은
+# 상태다). 오탐 방향이 "느리지 않은데 깨웠다" 이므로 위험하지 않고,
+# 메시지에서 먼저 확인하도록 안내한다. 실측이 생기면 그때 조인다.
+###############################################################################
+
+variable "enable_pod_latency_outlier_monitor" {
+  description = <<-EOT
+    시나리오 5(파드 단위 지연 이상치) Monitor 활성화 여부. 기본 `false`.
+
+    `o2.warm.latency_p95` 에 `pod_name` 태그가 실려야 동작한다. 계측은
+    06-datastream 의 3단(`sketch` → `metrics` → `datadog`)에 들어가 있고,
+    **파드가 2개 이상 떠 있는 상태**에서
+    `avg:o2.warm.latency_p95{*} by {pod_name}` 이 파드 수만큼 갈리는 것을
+    확인한 뒤 켠다.
+
+    갈리지 않으면 3단 중 어딘가에서 태그가 빠진 것이다. 봉투에 `pod_name`
+    이 없으면 파드 축이 통째로 비는데, **그 경우에도 위젯은 오류가 아니라
+    시계열 하나(service 단위 값)만 보여준다** — T-023 이 겪은 모양이다.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "pod_latency_outlier_tolerance" {
+  description = <<-EOT
+    파드 지연 outlier 탐지(DBSCAN) 허용 오차. 기본은 캐시 쪽과 같은 2.5 다.
+
+    같은 값으로 시작하는 것이 근거 있는 선택이라서가 아니라, **다른 값을
+    고를 근거가 없기 때문**이다. 파드별 지연의 정상 분산을 아직 안 쟀다.
+    재면 `measurements.md` 에 남기고 여기를 고친다.
+  EOT
+  type        = number
+  default     = 2.5
+}
+
+resource "datadog_monitor" "latency_p95_pod_outlier" {
+  count = var.enable_pod_latency_outlier_monitor ? 1 : 0
+
+  name    = "[O2][시나리오 5] 파드 단위 응답 지연 이상치"
+  type    = "query alert"
+  message = <<-EOT
+    응답 지연이 유독 다른 파드 하나가 있습니다 — service 단위 p95 는 나머지
+    파드에 희석돼 임계 안에 머물 수 있습니다.
+
+    **먼저 방향을 봅니다.** 이 탐지는 "무리에서 떨어진 파드" 를 잡지
+    "느린 파드" 를 잡지 않습니다. 대시보드에서 `${var.metric_prefix}latency_p95`
+    를 `by {pod_name}` 으로 펼쳐, 잡힌 파드가 **위로** 떨어졌는지 확인하세요.
+    아래로 떨어진 것이면 조치할 것이 없습니다.
+
+    **왜 이런 일이 생기나**
+    - 그 파드만 CPU 가 조이고 있다 (`kubernetes.cpu.cfs.throttled.periods`).
+      단, 정상 파드에 `limits.cpu` 가 없으면 비교할 분모가 없습니다 —
+      그때는 조임 비율이 아니라 `kubernetes.cpu.usage.total` 로 봅니다
+    - 그 파드만 캐시가 식어 있다 — `cache_hit_rate_pod_outlier` 가 같은
+      파드를 지목했는지 봅니다. 같으면 원인은 캐시 쪽입니다
+    - 그 파드가 방금 떴다 — 표본 5건 미만인 파드는 애초에 이 축에
+      실리지 않지만(`LATENCY_POD_MIN_SAMPLES`), 갓 데워지는 중일 수 있습니다
+
+    **조치**: 해당 파드만 재시작하거나 스케줄에서 뺍니다. service 전체를
+    건드리기 전에 이 축을 먼저 보는 것이 이 Monitor 의 목적입니다.
+
+    @webhook-o2-dify
+  EOT
+
+  query = "avg(last_10m):outliers(avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} by {pod_name}, 'DBSCAN', ${var.pod_latency_outlier_tolerance}) > 0"
+
+  notify_no_data      = false
+  require_full_window = true
+  renotify_interval   = 0
+
+  tags = concat(local.monitor_tags, ["scenario:5", "service:api", "role:page", "phase:2"])
 }
 
 ###############################################################################

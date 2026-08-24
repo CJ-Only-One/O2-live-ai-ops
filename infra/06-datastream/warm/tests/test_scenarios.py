@@ -116,6 +116,62 @@ def test_pod_cache_skew_invisible_in_service_average_but_visible_by_pod():
     assert m["cache_hit_rate_by_pod"]["pod-1"] == 1.0
 
 
+def test_slow_pod_invisible_in_service_p95_but_visible_by_pod():
+    """시나리오 5(README) — 파드 하나가 느려도 service p95 는 임계 안에 머뭅니다.
+
+    S2 의 자기 교정 루프가 걸리는 지점입니다. 진입 알림(`order_latency_p95`)은
+    service 단위라 1차 조치 후에도 "여전히 조금 느림" 까지만 말해 줍니다.
+    **어느 파드인가**는 이 축이 있어야 나옵니다.
+    """
+    events = []
+    for pod in ("pod-1", "pod-2", "pod-3", "pod-4"):
+        for i in range(50):
+            events.append(
+                factory.order_create(
+                    factory.BASE + i, f"u{pod}{i}", "1.1.1.1",
+                    latency=(3000 if pod == "pod-4" else 60), pod_name=pod,
+                )
+            )
+
+    m = metrics_for(events, service="order-api")
+
+    # service 단위 p95 — 4개 중 1개가 50배 느려도 상위 5% 안에서만 보인다.
+    # 200건 중 느린 것이 50건(25%)이라 p95 는 오르지만, 파드 3개가 정상인
+    # 상황과 파드 4개가 조금씩 느린 상황을 이 값 하나로는 구분할 수 없다.
+    assert m["latency_p50"] < 100
+
+    # pod 축으로 쪼개면 pod-4 만 갈린다.
+    by_pod = m["latency_p95_by_pod"]
+    assert set(by_pod) == {"pod-1", "pod-2", "pod-3", "pod-4"}
+    assert by_pod["pod-4"] > 2000
+    assert all(by_pod[p] < 100 for p in ("pod-1", "pod-2", "pod-3"))
+
+
+def test_latency_pod_axis_drops_pods_with_too_few_samples():
+    """방금 뜬 파드의 첫 요청 하나가 이상치로 잡히면 안 됩니다.
+
+    LogHistogram.quantile 은 표본 1건에도 값을 냅니다. 그대로 내보내면
+    스케일아웃 직후의 정상 파드가 DBSCAN 에 이상치로 잡혀, 재분석이
+    **느린 파드가 아니라 새 파드**를 지목합니다.
+    """
+    events = [
+        factory.order_create(factory.BASE + i, f"uw{i}", "1.1.1.1", latency=60, pod_name="pod-warm")
+        for i in range(20)
+    ]
+    # 방금 뜬 파드 — 표본 2건, 그나마 첫 요청이라 느리다(콜드 스타트)
+    events += [
+        factory.order_create(factory.BASE + i, f"un{i}", "1.1.1.1", latency=4000, pod_name="pod-new")
+        for i in range(2)
+    ]
+
+    m = metrics_for(events, service="order-api")
+
+    assert "pod-warm" in m["latency_p95_by_pod"]
+    assert "pod-new" not in m["latency_p95_by_pod"]
+    # 다만 표본 수 자체는 남긴다 — 왜 빠졌는지 에이전트가 알 수 있어야 한다.
+    assert m["latency_samples_by_pod"]["pod-new"] == 2
+
+
 def test_pg_and_db_outage_have_identical_failure_rate():
     """실패율만으로는 두 장애가 완전히 같아 보입니다."""
     pg = metrics_for(factory.pg_outage(), service="payment-api", deploy=None)
