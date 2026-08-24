@@ -69,6 +69,7 @@
 | D-052 | 파이프라인 생존은 합성 카나리로 감시한다 | 실패를 삼키는 설계, `logs.enabled=false`, 트래픽 의존 no-data 의 한계, `service:o2-canary` |
 | D-053 | Phase 3 Agent E2E는 이중 합성 allowlist로 격리한다 | broadcast_id, idempotency_key, fail-closed, paired gates, rollback |
 | D-054 | 시나리오 복구 기준은 SLO 복귀와 기준선 개선을 함께 요구한다 | 자연 회복 배제, 지표 세 축, 판정 창, 주입 표식 금지 |
+| D-055 | source 신호를 먼저 Incident로 병합한 뒤 Agent를 호출한다 | correlator, agent.incident.v1, revision, ambiguity, single action lock |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3320,3 +3321,49 @@ workflow, 기존 Datadog 입력, 운영 Chat source를 테스트 대상으로 �
 
 세부 규칙과 시나리오별 기준·주입 설정은 `docs/scenario-experiment.md` 에 둔다.
 수치는 이 결정에 포함하지 않는다 — `docs/measurements.md` 가 원본이다.
+
+## D-055. source 신호를 먼저 Incident로 병합한 뒤 Agent를 호출한다
+
+D-050의 `agent.trigger.v1`은 Chat과 Datadog을 같은 모양으로 전달하지만, 같은 모양이라고
+같은 사건이 되는 것은 아니다. 두 Adapter가 각각 Generic Worker를 호출하면 S3처럼 Chat이
+먼저 오고 Datadog이 늦게 오는 경우 같은 장애를 두 번 분석하고 조치 락도 둘로 갈라진다.
+
+따라서 `agent.trigger.v1`은 **상관관계 전 source 신호**로 한정하고, Agent 앞에 durable
+Incident Correlator를 둔다.
+
+```text
+Chat/Datadog Adapter -> agent.trigger.v1 Signal Queue
+                     -> Incident Correlator -> Incident State DynamoDB
+                                            -> agent.incident.v1 Invocation Queue
+                                            -> Generic Worker -> Dify
+```
+
+자동 병합은 다음 차원이 모두 맞는 OPEN Incident가 정확히 하나일 때만 한다.
+
+1. environment
+2. normalized symptom family
+3. 고정 mapping으로 호환되는 affected surface/service
+4. correlation window 안의 source event time
+
+후보가 0개면 새 `PROVISIONAL` Incident를 만든다. 후보가 2개 이상이거나 필수 차원이 없으면
+`AMBIGUOUS`로 기록하고 운영자 확인 전까지 강제 병합하지 않는다. LLM은 상관관계 결정을
+소유하지 않으며 의미가 애매하다는 이유로 다른 사건을 합치지 않는다. correlation window의
+운영값은 추정하지 않고 Phase 3C의 실제 source 도착 지연 측정 후 정한다.
+
+Incident는 `incident_id`를 수명 동안 유지하고 material change마다 revision만 올린다.
+Chat-first revision 1은 read-only 분석을 시작할 수 있고, 늦은 Datadog 신호가 붙으면 같은
+Incident의 revision 2가 된다. 반대 순서도 같다. 첫 cross-source 증거, 심각도 변화, 복구
+증거만 후속 분석을 만들며 단순 재전달이나 비물질적 update는 저장만 한다.
+
+Agent 실행 멱등 키는 `incident:<incident_id>:revision:<revision>`이다. 같은 Incident의 실행은
+직렬화하고 조치 락은 Incident당 하나만 둔다. 실행 중 더 최신 revision이 생기면 현재 실행을
+중복 시작하지 않고 완료 후 최신 snapshot 한 건만 후속 실행한다.
+
+기존 물리 `agent-trigger` Queue는 새 구조에서 Signal Queue 역할로 유지한다. 이름만 바꾸기
+위해 Queue를 교체하지 않는다. 별도 Agent Invocation Queue를 만들고 Generic Worker를 그쪽으로
+옮긴다. 기존 Worker와 Correlator가 같은 SQS의 competing consumer가 되면 입력을 임의로
+나눠 가지므로, Worker mapping 분리 확인 전에는 Correlator event source를 활성화하지 않는다.
+
+기계 판독 계약은 `docs/contracts/agent-trigger-v1.schema.json`과
+`docs/contracts/agent-incident-v1.schema.json`, 단계와 활성화 게이트는
+`docs/agent-entrypoint.md`가 원본이다.

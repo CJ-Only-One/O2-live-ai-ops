@@ -79,9 +79,10 @@ graceful shutdown + 지터 재연결 / resource requests / readiness·liveness �
 먼저 읽는다. **Valkey 구독 Collector를 운영 소스로 만들지 않는다.** 분석 이벤트는
 Chat Gateway 인입 지점에서 전용 SQS로 직접 분기한다(D-047).
 
-Candidate 이후 Agent 호출을 바꾸면 `docs/agent-entrypoint.md`, `contracts.md` 5.8,
-`docs/contracts/agent-trigger-v1.schema.json`을 먼저 읽는다. Source별 JSON은 Adapter
-앞에서만 다르고 Agent Queue부터는 `agent.trigger.v1`이어야 한다(D-050).
+Candidate 이후 Agent 호출을 바꾸면 `docs/agent-entrypoint.md`, `contracts.md` 5.8-5.9,
+`docs/contracts/agent-trigger-v1.schema.json`, `docs/contracts/agent-incident-v1.schema.json`을
+먼저 읽는다. Source별 JSON은 Adapter 앞에서만 다르고 Signal Queue는 `agent.trigger.v1`,
+Agent Invocation Queue는 `agent.incident.v1`이어야 한다(D-050, D-055).
 
 ## 문서를 고칠 때
 

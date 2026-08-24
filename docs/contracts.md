@@ -9,7 +9,8 @@
 > | 캐시·Valkey 키 | 4 |
 > | 이벤트 발행 | 5 |
 > | 채팅 분석 신호·Candidate | 3.8 · 5.6 · 5.7 |
-> | AI Agent 공통 진입점 | 5.8 · `contracts/agent-trigger-v1.schema.json` |
+> | AI Agent source 신호 | 5.8 · `contracts/agent-trigger-v1.schema.json` |
+> | AI Agent Incident revision | 5.9 · `contracts/agent-incident-v1.schema.json` |
 
 애플리케이션을 만들기 전에 **서비스 사이에 오가는 것의 모양**을 먼저 고정한다.
 여기 적힌 것은 나중에 바꾸면 여러 서비스를 동시에 고쳐야 하는 항목들이다.
@@ -662,6 +663,55 @@ Agent를 다시 호출하지 않는다. Agent Worker는 envelope 전체를 직�
 
 상세 처리 흐름, 실패 격리, Phase gate는
 [`agent-entrypoint.md`](agent-entrypoint.md)가 원본이다.
+
+### 5.9 AI Agent Incident revision (`agent.incident.v1`)
+
+`agent.trigger.v1`은 source 신호 하나이며 Incident 자체가 아니다. Chat과 Datadog trigger를
+각각 Dify에 보내지 않고 Incident Correlator가 진행 중 사건에 붙인 뒤
+`agent.incident.v1` snapshot을 Agent Invocation Queue로 보낸다. 기계 판독 원본은
+[`agent-incident-v1.schema.json`](contracts/agent-incident-v1.schema.json)이다(D-055).
+
+경계별 계약은 다음과 같다.
+
+| 경계 | 허용 계약 | 의미 |
+|---|---|---|
+| Source Adapter 전 | source별 JSON | Datadog alert와 Chat Candidate는 달라도 됨 |
+| Signal Queue | `agent.trigger.v1` | 상관관계 전의 단일 관측 |
+| Incident State | revisioned Incident | 여러 trigger를 같은 사건에 귀속 |
+| Agent Invocation Queue | `agent.incident.v1` | Agent가 분석할 최신 사건 snapshot |
+
+핵심 필드:
+
+| 필드 | 계약 |
+|---|---|
+| `incident_id` | 사건 수명 동안 고정하는 `inc_` + ULID |
+| `revision` | material change가 있을 때만 증가하는 정수 |
+| `idempotency_key` | `incident:<incident_id>:revision:<revision>` |
+| `correlation.state` | `PROVISIONAL`, `CORRELATED`, `AMBIGUOUS` |
+| `correlation.strategy` | 현재는 규칙 기반 `DETERMINISTIC_V1`만 |
+| `normalized_context` | 환경·증상군·대상 surface/service/broadcast를 source와 독립적으로 표현 |
+| `signals` | 원문 없이 검증된 `agent.trigger.v1` 1-20개 |
+| `analysis_reason` | 최초 탐지, 첫 cross-source 증거, 심각도 변화, 모호성, 복구 증거 중 하나 |
+
+`CORRELATED`는 Chat과 Datadog trigger를 각각 하나 이상 포함해야 한다. 같은 환경, 같은
+증상군, 호환되는 대상 범위, correlation window 내 event time을 만족하는 OPEN Incident가
+정확히 하나일 때만 자동 병합한다. 후보가 없으면 새 `PROVISIONAL` Incident를 만들고,
+후보가 둘 이상이거나 비교 차원이 부족하면 `AMBIGUOUS`로 기록해 운영자 확인 전까지 강제
+병합하지 않는다.
+
+Chat-first는 revision 1로 즉시 read-only 분석할 수 있다. Datadog이 늦게 도착하면 같은
+`incident_id`의 revision 2가 되고 `analysis_reason=CROSS_SOURCE_EVIDENCE_ADDED`가 된다.
+반대 순서도 같은 규칙이다. 같은 Incident의 Agent 실행은 직렬화하며 새 revision이 실행 중에
+도착하면 완료 후 최신 revision 한 건만 후속 실행한다. 이 규칙으로 사건은 하나로 유지하면서
+오래된 분석의 중복 실행과 이중 조치를 막는다.
+
+예시 원본:
+
+- `contracts/examples/agent-incident-chat-first-v1.example.json`
+- `contracts/examples/agent-incident-correlated-v1.example.json`
+
+correlation window의 운영 숫자는 아직 계약하지 않는다. Phase 3C에서 두 source의 실제 도착
+지연을 측정한 뒤 `measurements.md` 근거로 정한다.
 
 ---
 
