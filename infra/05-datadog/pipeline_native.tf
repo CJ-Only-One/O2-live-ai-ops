@@ -164,15 +164,15 @@ resource "datadog_dashboard" "pipeline_native" {
 
       widget {
         timeseries_definition {
-          title = "Order batch duration p95 by pod"
-          request { q = "p95:o2.app.operation.duration{env:${var.environment},service:order-worker,operation:order.batch} by {pod_name}" }
+          title = "Order batch duration avg by pod"
+          request { q = "avg:o2.app.operation.duration{env:${var.environment},service:order-worker,operation:order.batch} by {pod_name}" }
         }
       }
 
       widget {
         timeseries_definition {
-          title = "Inventory read duration p95 by pod"
-          request { q = "p95:o2.app.operation.duration{env:${var.environment},service:api,operation:inventory.read} by {pod_name}" }
+          title = "Inventory read duration avg by pod"
+          request { q = "avg:o2.app.operation.duration{env:${var.environment},service:api,operation:inventory.read} by {pod_name}" }
         }
       }
     }
