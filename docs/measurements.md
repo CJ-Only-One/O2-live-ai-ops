@@ -1257,6 +1257,43 @@ trigger의 event time은 같게 고정했다.
 바꿀 때. 실제 두 Adapter를 연결하면 source 발생 시각·Signal Queue 도착 시각의 차이를
 별도 행으로 추가하고 그 분포로 운영 window를 결정한다.
 
+### 실제 Source Adapter 전달 지연 (Phase 4B)
+
+**조건 (2026-08-24)** — Correlator와 Generic Worker는 disabled로 유지하고 Chat·Datadog
+Source Adapter만 실행별 allowlist 하나와 명시 cutover로 일시 활성화했다. Chat은 원문 없는
+privacy-safe Candidate INSERT, Datadog은 운영 monitor와 분리한 일회용 custom metric
+monitor가 별도 Shadow webhook만 호출했다. 지연은 envelope `occurred_at`에서 SQS
+`SentTimestamp`까지다.
+
+| 순서 | Source | transition | source-to-Queue | ReceiveCount | 결과 |
+|---|---|---|---:|---:|---|
+| Chat-first | Chat | Candidate INSERT | 7,995ms | 1 | PASS |
+| Chat-first | Datadog | Triggered | 68,400ms | 2 | PASS |
+| Chat-first | Datadog | Recovered | 63,400ms | 1 | PASS |
+| Datadog-first | Datadog | Triggered | 63,611ms | 1 | PASS |
+| Datadog-first | Chat | Candidate INSERT | 8,743ms | 1 | PASS |
+| 종료 | Datadog | Recovered | 62,828ms | 1 | PASS |
+
+첫 Datadog Triggered의 ReceiveCount 2는 경로 재시도가 아니다. 측정용 `jq`가 millisecond
+RFC3339를 처음 파싱하지 못해 SQS visibility timeout 뒤 같은 메시지를 다시 받은 결과이며,
+지연은 첫 enqueue의 원래 `SentTimestamp`로 계산했다. Adapter 로그는 Datadog ENQUEUED 4,
+Chat ENQUEUED 2, 두 Adapter FAILED 0이었다.
+
+이번 순서 실험은 앞 source의 Queue 도착을 확인한 뒤 다음 source를 넣었으므로 source 간
+event-time 차이는 의도적인 조작값이다. transport 표본만 보면 Chat 7.995-8.743초, Datadog
+Triggered 63.611-68.400초이며 source transport 차이는 54.868-60.405초다. 표본이 source별
+2개뿐이고 Datadog monitor 평가 주기 영향이 크므로 운영 correlation window는 아직 정하지
+않는다. 반복 자동화 표본의 상위 분위수와 실제 source 발생 간격을 합쳐 결정해야 한다.
+
+테스트 한계는 두 가지다. 첫째, allowlist를 사전에 고정하기 위해 Shadow payload의
+`cycle_key`를 합성값으로 일시 대체했으므로 `$ALERT_CYCLE_KEY` 치환 자체는 검증하지 않았다.
+둘째, 신규 custom metric의 값보다 tag-filter index가 늦게 반영돼 초기 `run:` 쿼리는 빈
+series였고 격리 전용 metric name의 `{*}`를 감시했다. 후속 재조회에서는 `all-tags`에
+`env`·`run`·`service`가 모두 있고 같은 filtered query도 series 1을 반환했다. 운영에서는
+이 우회를 쓰지 않고 tag-filter가 조회될 때까지 prewarm한다. 종료 후 webhook payload를
+복원하고 일회용 monitor를 삭제했으며 모든 관련 Queue/DLQ와 합성 Candidate가 0, 두 대상
+재-plan이 `No changes`임을 확인했다.
+
 ---
 
 ## M-018. Agent Invocation Worker 첫 Shadow E2E와 fail-closed
