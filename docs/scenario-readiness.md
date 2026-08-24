@@ -105,7 +105,7 @@
 | Candidate → Agent 호출 handoff | `agent-entrypoint.md` 0절 `agent_handoff_status=NOT_CONFIGURED` | **없음** |
 | 읽기 요청당 CPU 감소 노브 | 없음. S3 의 유일한 조치다 | **없음** |
 | 사람/자동화 두 패턴 부하 | `loadtest/read-path.js` 의 `__ENV` 는 `BASE_URL`·`BROADCAST_ID`·`RATE`·`DURATION` 넷뿐. 세션 키·UA·지터·클릭 이벤트 분기가 없다 | **없음** |
-| 부하 생성기에 표식 없을 것 | 커스텀 헤더 없음 (`scenario-experiment.md` 3.1) | **있음** |
+| 부하 생성기에 표식 없을 것 | 커스텀 헤더 없음 (`scenario-experiment.md` 2.1) | **있음** |
 | 채팅 본문 미저장 | `apps/chat-gateway/src/events.ts` — 길이·해시·중복만 싣는다 | **있음** |
 | 감별 지표 (`ua_diversity`·`interval_cv`·집중도) | `o2warm/metrics.py` 에 있다 | **있음** |
 
@@ -178,7 +178,9 @@
 7. **`RB-API-LATENCY-001`** (증상 기반 범용 런북) + `pod_load_skew` 전용 런북 —
    `seed_runbook.py` 에 항목 추가. `labels.txt` 에 `pod_load_skew` 는 이미 있다.
 8. **Argo CD replicas 동기화 예외** — 대상 Deployment 의 `replicas` 를 `ignoreDifferences` 로.
-   지금 없어서 조치 후 GitOps 가 되돌린다.
+   지금 없어서 조치 후 GitOps 가 되돌린다. 두 방법 중 왜 `ignoreDifferences` 인지는
+   `scenario-experiment.md` 3절 "파드 수를 조치 수단으로 쓸 때" 에 있다 — api 는 정상 파드 수가
+   기준값이라 git 에 남아야 하므로 `order-worker` 처럼 필드를 빼는 방식을 쓸 수 없다.
 9. **Candidate → Agent handoff** — `agent_handoff_status` 를 실제로 연결한다. 실행 게이트
     둘(`chat_source_adapter_execution_enabled` · `chat_source_adapter_event_source_enabled`)은
     한 줄 실수를 막으려고 일부러 분리해둔 것이므로 순서대로 켠다.
@@ -198,10 +200,10 @@
 
 1. **시나리오 셋 밖 모니터의 `@webhook-o2-dify`** — 지금 6개에 붙어 있고 그중 캐시·주문 큐는
    현재 셋에 없다. 부하가 같이 때리면 측정 중 Agent 가 깨어나 무언가 바꾼다.
-   webhook 을 떼거나 Downtime 대상 목록에 명시한다(`scenario-experiment.md` 3절 원칙 ④).
+   webhook 을 떼거나 Downtime 대상 목록에 명시한다(`scenario-experiment.md` 2.1 넷째 원칙).
 2. **ALB 액세스 로그** — 파드별 지연 후보에서 제외한다. S3 전달 지연이 커서 반복 실험·녹화와 상극이다.
-3. **api 에 HPA·KEDA 부착** — 되돌리는 주체가 늘어난다(`scenario-experiment.md` 6절).
-4. **FIS · Chaos Mesh** — 주입 원칙 ①(부하 아니면 설정, 둘 중 하나)이 이미 배제했다.
+3. **api 에 HPA·KEDA 부착** — 되돌리는 주체가 늘어난다(`scenario-experiment.md` 3절 "파드 수를 조치 수단으로 쓸 때").
+4. **FIS · Chaos Mesh** — 주입 원칙 첫째(부하 아니면 설정, 둘 중 하나)가 이미 배제했다(`scenario-experiment.md` 2.1).
 5. **`seed_runbook.py` 의 TODO 를 전부 채우는 것** — 지금 필요한 것은 범용 지연 런북과
    `pod_load_skew` 둘뿐이다. 나머지는 만들지 않는다.
 6. **좁은 발화자 프로필을 S1 주입에 쓰는 것** — M-010 재현용으로만 남긴다.
