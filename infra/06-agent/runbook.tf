@@ -7,6 +7,14 @@
 #       ACTION#{action_id}     유형당 여러 개. risk_level·expected_effect·blast_radius·
 #                              parameters_schema 보관
 #
+# ★ PK 값 하나가 RCA 유형이 아니다 — `rca_type="KNOB"` 는 노브 카탈로그
+#   파티션이고 SK 는 `KNOB#{action_id}` 다(D-067). 게이트 진입을 LLM 서술이
+#   아니라 조회로 판정하기 위한 표이고, 축이 원인이 아니라 노브라서 따로 둔다.
+#   같은 노브가 여러 rca_type 의 조치로 쓰이고, S3 처럼 **런북이 없는
+#   시나리오의 조치**도 집이 있어야 하기 때문이다.
+#   테이블·IAM·조회 Lambda 를 새로 만들지 않는다 — PK 값만 다르다.
+#   lambda/runbook_lookup.py 가 조치마다 노브를 붙여 돌려준다.
+#
 # ★ parameters_schema.source 는 두 갈래다 — observability.*(런타임 관측값, Node 7 이
 #   observability 키 아래로 몰아넣은 것) vs static:xxx(고정 정책값). 이 구분은 테이블
 #   스키마가 아니라 ACTION 아이템 안 값의 관례라 여기 코드엔 드러나지 않지만,

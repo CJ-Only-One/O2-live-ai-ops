@@ -118,6 +118,11 @@ Datadog 의 일이 아닙니다.
 해당하고 `datadog.py`의 `build_series()`에 있습니다. `user_key`·`campaign_id`
 처럼 입력값이 카디널리티를 정하는 축은 절대 여기 넣지 않습니다.
 
+S1의 `channel_limited_rate`는 `chat.send|CHANNEL_LIMITED` 건수를 성공·실패를
+포함한 `chat.send` 전체 시도로 나눈 고정 스칼라입니다. `failure_codes`의
+`CHANNEL_LIMITED=1.0`은 실패 사유 중 100%라는 뜻일 뿐 전체 발화 차단률이 아니므로
+복구 판정에 대신 쓸 수 없습니다.
+
 **파드 축은 메트릭 이름을 새로 만들지 않습니다.** `latency_p95` 는 service
 단위로 한 번, 파드마다 한 번씩 같은 이름으로 나갑니다 — 태그만 다릅니다
 (D-057). 그래서 `avg:o2.warm.latency_p95{*} by {pod_name}` 을 치면 파드

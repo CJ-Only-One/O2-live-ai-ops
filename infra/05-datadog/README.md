@@ -137,6 +137,7 @@ US1 기본값으로 보내면 403이 나고, `datadog.py` 가 그것을 삼켜 �
 | 지표 | 뜻 | 무엇이 이 값을 올리는가 |
 |---|---|---|
 | `overall_failure_rate` | `result=FAILED` 인 시도의 비율 | PG·DB·재고 장애. **어느 것인지는 이 값으로 못 가린다** → 그룹 3 |
+| `channel_limited_rate` | 전체 `chat.send` 중 `CHANNEL_LIMITED` 비율 | S1 채널 총량 조치가 정상 사용자 발화를 얼마나 차단했는지 |
 | `latency_p95` | 느린 5%가 겪은 응답시간 (ms) | 평균이 멀쩡한 채로 꼬리만 나빠질 수 있다 |
 | `retry_rate` | 재시도 이벤트 ÷ 재시도 가능 이벤트 | **서버가 200을 줘도 오른다.** 사용자가 다시 눌렀다는 것 자체가 체감 저하의 증거다 |
 | `cancel_rate` | 취소 ÷ 주문 생성 | 취소는 사후·비동기라 요청 시점에는 아무 신호가 없다 |
@@ -206,7 +207,7 @@ US1 기본값으로 보내면 403이 나고, `datadog.py` 가 그것을 삼켜 �
 | `version_detail` | 버전별 시도·실패 내역. 맵 |
 | `segments` · `segment_skew` | 축별 편차 순위. 맵과 리스트 |
 | `cancel_reasons` · `click_detail` | 분포. 맵 |
-| `baseline_rps` · `latency_p99` | `DATADOG_SCALARS` 목록에 없다 |
+| `baseline_rps` | `DATADOG_SCALARS` 목록에 없다 |
 
 **이 경계가 Hot/Warm 분리의 실체다.** 대시보드는 "무엇이 나쁜가"까지 답하고,
 "누가·어느 구간이 나쁜가"는 에이전트가 DynamoDB 에서 본다.
@@ -310,7 +311,7 @@ state key 는 `observability/datadog-new-org/terraform.tfstate` 다. 디렉터�
 
 ## 비용
 
-커스텀 메트릭은 시계열 단위로 과금된다. `DATADOG_SCALARS` 20개 × 서비스 수 +
+커스텀 메트릭은 시계열 단위로 과금된다. `DATADOG_SCALARS` 22개 × 서비스 수 +
 `failure_rate`(이벤트 6종) + `confidence` 다. 서비스 3개면 약 78개.
 
 **대시보드를 만들다 태그를 늘리고 싶어지는 순간이 비용이 새는 지점이다.**
