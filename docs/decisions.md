@@ -85,6 +85,7 @@
 | D-068 | S2 canary는 Deployment selector가 아니라 전용 Service 멤버십 라벨로 합류한다 | selector 충돌 방지, sync wave, Kustomize base, 실측 입력 강제, Argo replica 예외 |
 | D-069 | S1 차단률은 failure_codes 분포가 아니라 전체 chat.send 시도에서 계산한다 | CHANNEL_LIMITED, 전체 시도 분모, 고정 스칼라, Datadog 검증 축 |
 | D-070 | Incident 환경은 배포 environment와 exact match하며 namespace 별칭을 만들지 않는다 | `dev`, `o2-dev`, source mismatch, fail-safe ambiguity |
+| D-071 | 조치 상태 머신의 결정론적 절반만 Lambda 로 뺀다 — 대기는 Dify 가 한다 | 실행 락, 기준값, 재분석 1회, 세 갈래 판정, `incident_state` 재사용 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4266,3 +4267,77 @@ normalized context는 현재 배포 environment를 유지하고 원래 Datadog �
 새 환경을 추가할 때는 모든 producer의 `var.environment`와 Datadog `env` tag를 함께 바꾼다.
 두 이름을 의도적으로 병합해야 하는 요구가 생기면 버전이 있는 명시적 mapping을 별도 결정으로
 추가한다. 현재는 alias map을 두지 않는다.
+## D-071. 조치 상태 머신의 결정론적 절반만 Lambda 로 뺀다 — 대기는 Dify 가 한다
+
+`scenario-experiment.md` 0.4 의 상태 머신에는 성격이 다른 두 종류가 섞여 있다.
+조치안을 고르고 사람에게 설명하는 것은 LLM 이 해도 되지만, **실행 락 · 기준값 ·
+재분석 상한 · 검증 판정은 값으로 정해지는 것**이라 LLM 이 만들면 안 된다.
+같은 상황에서 같은 답이 나와야 실험이 반복 가능하고 녹화가 테이크마다 달라지지
+않는다. 게이트 진입을 노브 카탈로그 조회로 정한 D-067 과 같은 논리를 조치 이후
+구간으로 넓힌 것이다.
+
+그 넷만 `lambda/action_state.py` 로 뺀다. 연산은 둘이다.
+
+| op | 언제 | 무엇 |
+|---|---|---|
+| `baseline` | `Acting` 직전 | 실행 락 획득 · 기준값 기록 · 멱등 키 · 런북 반복 금지 |
+| `judge` | 검증 창이 끝난 뒤 | 네 갈래 판정 · 재분석 카운터 |
+
+### 대기 타이머는 여기 두지 않는다
+
+검증 대기는 Dify 워크플로가 한다. Lambda 를 재워 기다리면 그 시간만큼 과금되고
+Dify HTTP 노드의 600초 벽에도 그대로 걸린다. 이 함수는 **대기가 끝난 뒤 한 번**
+불린다. Step Functions 를 새로 들이지 않는 이유도 같다 — 대기가 이미 다른 곳에
+있으니 상태 기계 엔진을 하나 더 살 이유가 없다.
+
+### 저장은 `incident_state` 를 그대로 쓴다
+
+pk 규약이 둘 는다. correlator 의 항목과 겹치지 않는다.
+
+    SIGNAL#{digest}                    correlator — source 신호 claim
+    INCIDENT#{incident_id}             correlator — 인시던트 스냅샷
+    ACTION#{incident_id}#{action_id}   조치 시도 기록
+    LOCK#{incident_id}                 인시던트당 하나뿐인 실행 락
+
+조치 상태는 인시던트 상태의 일부라 같은 TTL 로 같이 만료되는 편이 맞다.
+테이블을 새로 만들면 만료를 두 곳에서 관리하게 된다.
+
+### 락은 revision 직렬화와 다른 문제다
+
+correlator 가 이미 revision 을 직렬화한다. 그런데도 조치 락이 따로 필요하다 —
+**대가 게이트에서 사람이 승인을 고민하는 동안 다른 조치가 들어올 수 있고**,
+그러면 기준값이 두 조치의 영향을 섞어 받는다. 락은 인시던트당 하나이고
+판정 시점에 푼다. 재분석은 새 조치를 고르는 단계라 락을 쥔 채로 두면 다음
+조치가 못 들어온다.
+
+### 갈래를 `diagnostic_contamination` 하나로 정하지 않는다
+
+0.4 는 "`Judging` 의 세 갈래는 `diagnostic_contamination` 을 조회해 정한다" 고
+적었지만, 그대로 구현하면 **`KeepAndReanalyze` 가 영영 안 나온다.** 등록된 노브
+셋이 전부 오염 참이기 때문이다(D-067). 그러면 S2 의 "1차 증설은 무해하니
+그대로 두고 재분석한다"(0.6) 가 성립하지 않는다.
+
+먼저 방향을 보고, 그다음에 오염을 본다.
+
+| 관측 | 판정 | 왜 |
+|---|---|---|
+| 절대 SLO 복귀 **AND** 기준선 대비 개선 | `RESOLVED` | D-054 |
+| 악화 | `ROLLBACK_NOW` | 틀린 조치다 |
+| 변화 없음 + 오염 | `ROLLBACK_NOW` | 효과도 없이 다음 진단만 흐린다 |
+| 개선됐지만 미달 | `KEEP_AND_REANALYZE` | 불완전한 조치다. S2 1차 검증이 이 칸 |
+| 재분석 1회 초과 | `ESCALATED` | 사람에게 넘긴다 |
+
+**틀린 조치와 불완전한 조치는 다르다** 가 0.4 의 문장이고, 그것을 방향으로
+가른 것이다.
+
+### 기준값이 없으면 통과로 세지 않는다
+
+`baseline_conditions` 의 `relative_to` 가 가리키는 값이 기록에 없으면
+**미달로 센다.** 없는 것을 만족으로 세면 기준선 검사가 조용히 사라지고,
+자연 회복이 조치 효과로 기록된다 — D-054 가 막으려던 바로 그 일이다.
+
+### 안 쟀다
+
+악화·개선을 가르는 5% 는 **자리값이지 측정한 잡음 폭이 아니다.** 이 값으로
+판정이 뒤집히는 경우는 사람이 본다. 반복 실행의 지표 산포를 재면
+`measurements.md` 에 남기고 이 값을 바꾼다.
