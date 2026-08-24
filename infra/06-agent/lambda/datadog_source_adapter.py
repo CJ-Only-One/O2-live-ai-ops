@@ -1,9 +1,9 @@
 """Normalize a Datadog webhook payload into agent.trigger.v1.
 
 This is a shadow-only ingress. It has its own Function URL and never invokes
-the legacy Worker or Dify. Terraform deploys it disabled with an empty cycle
+the legacy Worker or Dify. Terraform deploys it disabled with an empty monitor
 allowlist and a 2100 cutover. A Shadow run must enable all three guards for one
-synthetic Datadog cycle before a message can reach the Agent Signal Queue.
+synthetic Datadog monitor before a message can reach the Agent Signal Queue.
 
 Logs contain request ids, statuses, and stable error codes only. Webhook bodies,
 alert text, queue bodies, and secrets are never logged.
@@ -244,11 +244,11 @@ def validate_source(payload: Any) -> tuple[dict[str, Any], int]:
     return normalized, occurred_at_epoch
 
 
-def _allowed_cycle_key() -> str:
-    raw = os.environ.get("DATADOG_SOURCE_ADAPTER_ALLOWED_CYCLE_KEYS", "")
+def _allowed_monitor_id() -> str:
+    raw = os.environ.get("DATADOG_SOURCE_ADAPTER_ALLOWED_MONITOR_IDS", "")
     values = raw.split(",") if raw else []
-    if len(values) != 1 or not 1 <= len(values[0]) <= 256:
-        raise AdapterError("SYNTHETIC_CYCLE_ALLOWLIST_INVALID")
+    if len(values) != 1 or not 1 <= len(values[0]) <= 128:
+        raise AdapterError("SYNTHETIC_MONITOR_ALLOWLIST_INVALID")
     return values[0]
 
 
@@ -322,9 +322,9 @@ def lambda_handler(event: Any, context: Any) -> dict[str, Any]:
             return _response(200, "disabled")
 
         payload, occurred_at_epoch = validate_source(_decode_body(event))
-        if payload["cycle_key"] != _allowed_cycle_key():
+        if payload["monitor_id"] != _allowed_monitor_id():
             LOGGER.info(
-                "datadog_source_adapter request=%s status=IGNORED_CYCLE_NOT_ALLOWED",
+                "datadog_source_adapter request=%s status=IGNORED_MONITOR_NOT_ALLOWED",
                 request_id,
             )
             return _response(200, "ignored")

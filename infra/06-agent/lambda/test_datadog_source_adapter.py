@@ -84,7 +84,7 @@ class DatadogSourceAdapterTest(unittest.TestCase):
         )
         self.environment = {
             "DATADOG_SOURCE_ADAPTER_EXECUTION_ENABLED": "true",
-            "DATADOG_SOURCE_ADAPTER_ALLOWED_CYCLE_KEYS": "cycle_example_001",
+            "DATADOG_SOURCE_ADAPTER_ALLOWED_MONITOR_IDS": "monitor_example",
             "DATADOG_SOURCE_ADAPTER_NOT_BEFORE_EPOCH": "0",
             "DATADOG_SOURCE_ADAPTER_SECRET_NAME": "synthetic-secret-name",
             "AGENT_TRIGGER_QUEUE_URL": "https://example.invalid/agent-trigger",
@@ -158,7 +158,7 @@ class DatadogSourceAdapterTest(unittest.TestCase):
     def test_disabled_gate_accepts_webhook_without_queue_write(self):
         result = self.invoke(
             DATADOG_SOURCE_ADAPTER_EXECUTION_ENABLED="false",
-            DATADOG_SOURCE_ADAPTER_ALLOWED_CYCLE_KEYS="",
+            DATADOG_SOURCE_ADAPTER_ALLOWED_MONITOR_IDS="",
             DATADOG_SOURCE_ADAPTER_NOT_BEFORE_EPOCH="4102444800",
         )
 
@@ -166,9 +166,23 @@ class DatadogSourceAdapterTest(unittest.TestCase):
         self.assertEqual(result["body"], "disabled")
         self.assertEqual(self.sqs.messages, [])
 
-    def test_unlisted_cycle_is_ignored_without_queue_write(self):
+    def test_new_cycle_on_allowed_monitor_is_forwarded_without_payload_rewrite(self):
         result = self.invoke(
-            function_event(source_payload(cycle_key="cycle_not_allowed"))
+            function_event(source_payload(cycle_key="datadog_generated_cycle_002"))
+        )
+
+        self.assertEqual(result["statusCode"], 200)
+        self.assertEqual(result["body"], "queued")
+        envelope = json.loads(self.sqs.messages[0]["MessageBody"])
+        self.assertEqual(envelope["evidence"]["cycle_key"], "datadog_generated_cycle_002")
+        self.assertEqual(
+            envelope["idempotency_key"],
+            "datadog:datadog_generated_cycle_002:Triggered",
+        )
+
+    def test_unlisted_monitor_is_ignored_without_queue_write(self):
+        result = self.invoke(
+            function_event(source_payload(monitor_id="monitor_not_allowed"))
         )
 
         self.assertEqual(result["statusCode"], 200)
@@ -200,10 +214,19 @@ class DatadogSourceAdapterTest(unittest.TestCase):
         self.assertEqual(self.sqs.messages, [])
 
     def test_empty_allowlist_fails_closed(self):
-        result = self.invoke(DATADOG_SOURCE_ADAPTER_ALLOWED_CYCLE_KEYS="")
+        result = self.invoke(DATADOG_SOURCE_ADAPTER_ALLOWED_MONITOR_IDS="")
 
         self.assertEqual(result["statusCode"], 500)
-        self.assertEqual(result["body"], "SYNTHETIC_CYCLE_ALLOWLIST_INVALID")
+        self.assertEqual(result["body"], "SYNTHETIC_MONITOR_ALLOWLIST_INVALID")
+        self.assertEqual(self.sqs.messages, [])
+
+    def test_multiple_monitor_allowlist_fails_closed(self):
+        result = self.invoke(
+            DATADOG_SOURCE_ADAPTER_ALLOWED_MONITOR_IDS="monitor_example,other_monitor"
+        )
+
+        self.assertEqual(result["statusCode"], 500)
+        self.assertEqual(result["body"], "SYNTHETIC_MONITOR_ALLOWLIST_INVALID")
         self.assertEqual(self.sqs.messages, [])
 
     def test_queue_failure_returns_retryable_500(self):

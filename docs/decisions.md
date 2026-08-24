@@ -80,6 +80,7 @@
 | D-063 | 집계기 지연은 샤드 수로 푼다 — `parallelization_factor` 는 쓸 수 없다 | sequence number 가드, 순서 뒤바뀜, 조용한 유실, `source` 키 |
 | D-064 | 파드별 CPU 는 조임 비율이 아니라 사용량으로 본다 — `limits.cpu` 를 안 건다 | CFS 쿼터, 분모 없음, `kubernetes.cpu.usage.total`, F-6 종결 |
 | D-065 | 큐시트 저장은 형식을 검증하지 않는다 — 쓰기 경로가 사람뿐일 때까지만 | `cue_sheet.py`, jsonschema 런타임 의존성 보류, API 라우트·AI 해석 붙일 때 재검토 |
+| D-066 | Datadog Shadow는 cycle key가 아니라 합성 monitor ID로 격리한다 | `$ALERT_CYCLE_KEY`, 사전 미확정 값, monitor allowlist, 실제 치환 검증 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4045,3 +4046,43 @@ cue-sheet-v1.schema.json` 을 다시 검증하지 않는다. `segment_type` 이 
 
 버전 역행 방지·오프셋 필수·`updated_at` 정합성은 이미 `save_cue_sheet`
 안에서 처리한다 — 이 결정이 남겨두는 구멍은 **형식 검증** 하나뿐이다.
+
+---
+
+## D-066. Datadog Shadow는 cycle key가 아니라 합성 monitor ID로 격리한다
+
+Phase 4A의 첫 guard는 허용할 Datadog `cycle_key`를 Terraform 변수에 정확히 하나 넣도록
+했다. Signal Queue 전송 범위를 한 alert cycle로 제한하려는 의도는 맞았지만, Datadog의
+`$ALERT_CYCLE_KEY`는 monitor가 실제로 울린 뒤에야 생긴다. 활성화 전에 allowlist를 넣어야
+하는 guard와 값을 알 수 있는 시점이 서로 모순됐다.
+
+첫 Phase 4B 측정에서는 이 모순을 피하려고 Shadow webhook payload의 `cycle_key`를 합성
+고정값으로 일시 교체했다. transport와 Triggered/Recovered 전달은 확인했지만 실제
+`$ALERT_CYCLE_KEY` 치환은 검증하지 못했다. 이 방법을 반복하면 테스트가 통과해도 production
+payload의 핵심 상관 키는 한 번도 시험하지 않은 채 남는다.
+
+### 결정
+
+Datadog Source Adapter의 합성 격리 키를 **사전에 알 수 있는 전용 monitor ID**로 바꾼다.
+
+- 실행 `false`, allowlist empty, 2100 cutover가 기본값이다.
+- 활성화할 때는 합성 monitor ID 정확히 하나와 명시 cutover가 있어야 한다.
+- Payload의 `monitor_id`가 allowlist와 다르면 정상 `ignored`로 끝낸다.
+- 빈 값이나 복수 monitor allowlist는 fail-closed한다.
+- `cycle_key`는 Datadog이 보낸 값을 수정하지 않고 evidence와
+  `datadog:<cycle_key>:<transition>` 멱등 키에 그대로 사용한다.
+- Correlator와 Generic Worker는 별도 disabled gate를 유지한다.
+
+monitor ID는 monitor 생성 API 응답에서 trigger 전에 알 수 있다. 따라서 전용 monitor를
+먼저 만들고 그 ID만 allowlist에 넣은 뒤, 원래 15필드 payload의 `$ALERT_CYCLE_KEY`를 그대로
+둔 상태로 Triggered와 Recovered가 같은 cycle인지 검증할 수 있다.
+
+### 잃는 것과 보완
+
+한 monitor가 여러 alert cycle을 만들 수 있으므로 cycle allowlist보다 허용 범위가 넓다.
+이를 합성 전용 monitor, 단일 monitor ID, 명시 cutover, 짧은 활성 시간, 종료 후 event source
+비활성·monitor 삭제로 보완한다. 운영 monitor ID는 이 allowlist에 넣지 않는다.
+
+코드 병합만으로 실환경 guard는 바뀌지 않는다. 병합 후 비활성 targeted plan에서 Lambda
+환경변수 이름 교체와 코드 해시 update만 있는지 확인하고 적용한 다음, 실제 cycle-key
+치환 Shadow를 별도 단계로 수행한다.
