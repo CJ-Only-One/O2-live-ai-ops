@@ -44,6 +44,7 @@
 | T-026 | Chat과 Datadog이 같은 장애인데 Incident가 두 개 생긴다 | `dev`, `o2-dev`, environment exact match, canonicalization |
 | T-027 | 시험 파일을 저장소에 넣었는데 CI 가 한 번도 안 돌린다 | 명시 파일 목록, 두 가지 시험 양식, `NO TESTS RAN` 종료 코드 5 |
 | T-028 | 로컬에서는 통과한 `test_history.py`가 CI에서 `NoRegionError`로 죽는다 | boto3 import-time client, AWS_DEFAULT_REGION, EC2 metadata, hermetic test |
+| T-029 | Chat Source Adapter는 성공했는데 DLQ가 늘어난다 | disabled DynamoDB Stream, maximum record age, on-failure destination, cutover는 handler 안쪽 |
 
 
 ---
@@ -1448,3 +1449,28 @@ GitHub Runner에는 없다. 테스트가 AWS API를 호출해서 실패한 것�
 **왜 늦게 찾았나** — CI에 시험을 연결하기 전에는 개발자 Mac의 AWS 설정을 테스트 전제로
 착각했다. 로컬에서 boto3가 설치돼 있는 경로와 없는 경로는 검사했지만, **boto3는 있고 AWS
 설정은 없는 Runner 경로**를 검사하지 않았다.
+
+---
+
+## T-029. Chat Source Adapter는 성공했는데 DLQ가 늘어난다
+
+**증상** — 합성 Chat Candidate는 Adapter 로그에서 `status=ENQUEUED`, Lambda `Errors=0`이고
+Signal Queue까지 정상 전달됐다. 그런데 E2E 종료 시 Adapter DLQ visible count가 1 증가해
+“현재 Candidate 처리 실패”처럼 보였다.
+
+**원인** — DynamoDB Stream event source mapping을 오래 비활성화했다가 다시 켜면 마지막
+checkpoint 이후 Candidate record를 다시 본다. 이 mapping은 `maximum_record_age_in_seconds=300`
+과 on-failure SQS destination을 사용한다. 이미 5분을 넘긴 record는 Lambda handler까지 오지
+않고 destination으로 이동한다. 따라서 handler 안의 `CHAT_SOURCE_ADAPTER_NOT_BEFORE_EPOCH`
+cutover로는 이 record를 `IGNORED_BEFORE_ACTIVATION` 처리할 수 없다.
+
+**조치** — E2E 실행기는 작업 Queue는 반드시 빈 상태에서 시작하지만 기존 DLQ는 삭제하지
+않는다. Signal·Invocation DLQ는 시작 baseline 증가 여부를 검사한다. Stream Adapter DLQ는
+테스트 종료 시 메시지를 잠깐 읽고 visibility를 즉시 0으로 복구하면서, 이번 합성
+`broadcast_id`가 포함됐는지 본문을 출력하지 않고 검사한다. 현재 Candidate가 없고 Adapter
+로그가 `ENQUEUED`라면 오래된 record의 DLQ 이동과 이번 실행 실패를 분리할 수 있다.
+
+**왜 늦게 찾았나** — DLQ 증가는 보통 handler 오류로 해석하지만, record-age 폐기는 handler
+호출 전에 일어나 Lambda `Errors`와 애플리케이션 로그가 모두 정상이다. DLQ 전송 시각,
+mapping의 최대 record age, 성공한 Candidate sequence를 함께 보지 않으면 서로 모순된 상태처럼
+보인다.
