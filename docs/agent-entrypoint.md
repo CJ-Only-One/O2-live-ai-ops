@@ -1,7 +1,7 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 3D disabled deployment complete; Shadow found IAM finalize gap and was rolled back
+> **Status:** Phase 3D disabled deployment and Shadow E2E complete; production execution remains disabled
 > **Updated:** 2026-08-24
 > **Decision:** `decisions.md` D-050 and D-055
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
@@ -22,7 +22,7 @@ implementation_state:
   phase3c_signal_queue_correlation_e2e: PASS
   phase3c_source_pipeline_delay_measurement: NOT_RUN
   phase3d_dify_incident_contract_dsl: PUBLISHED
-  phase3d_shadow_e2e: DIFY_PASS_LEDGER_FINALIZE_FAIL_IAM_DELETEITEM
+  phase3d_shadow_e2e: PASS
   idempotency_ledger: DEPLOYED_EMPTY
   dedicated_test_workflow: PUBLISHED_INCIDENT_CODE_ONLY
   dedicated_test_workflow_ui_contract_tests: PASS
@@ -36,8 +36,6 @@ activation_blockers:
   - CORRELATION_WINDOW_NOT_MEASURED
   - DATADOG_MONITOR_MAPPING_NOT_CONFIGURED
   - SOURCE_PIPELINE_DELAY_MEASUREMENT_NOT_RUN
-  - PHASE3D_IAM_DELETEITEM_FIX_NOT_MERGED_OR_APPLIED
-  - PHASE3D_SHADOW_RERUN_REQUIRED
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
 production_migration_blockers:
@@ -582,8 +580,20 @@ event source와 실행 플래그는 즉시 `false`, allowlist는 empty로 복귀
 `UseIdempotencyLedger`에 `DeleteItem` 하나만 추가하며 targeted plan은 `0 add, 1 change,
 0 destroy`다. 실패 메시지는 Message ID·body·attribute의 합성 Incident ID를 확인한 뒤
 개별 삭제했고, revision ledger·lock·Incident State도 한 조건부 transaction으로 정리했다.
-Queue·DLQ와 세 DynamoDB key는 모두 비어 있다. 이 fix를 main에 병합·적용하기 전에는 Shadow를
-재실행하지 않는다.
+Queue·DLQ와 세 DynamoDB key는 모두 비어 있는 상태로 복구했다.
+
+IAM 수정 병합 후 `DeleteItem` 한 개만 추가되는 plan(`0 add, 1 change, 0 destroy`)을 적용했고,
+대상 재-plan은 `No changes`였다. 새 합성 Incident ID와 revision 2를 사용한 재측정에서 첫
+메시지는 Worker ledger `SUCCEEDED`, attempt 1로 완료됐고 Dify run도 정확히 한 건만
+`succeeded`였다. Incident lock은 정상 삭제됐다. 동일 revision의 같은 메시지를 다시 넣자
+Worker는 `DUPLICATE`로 종료했고 ledger의 attempt와 Dify run ID는 바뀌지 않았다. 첫 실행은
+cold start를 포함해 6,176.10ms, 중복 차단 실행은 143.43ms였다.
+
+재측정 직후 event source를 `Disabled`, 실행 플래그를 `false`, allowlist를 empty로 복귀했고,
+Queue·DLQ 0건, Worker/DLQ alarm `OK`, 합성 ledger·lock·Incident State 삭제를 확인했다. 최종
+대상 재-plan도 `No changes`였다. 따라서 Phase 3D Shadow 기능 게이트는 통과했지만 production
+Agent handoff는 계속 비활성이다. 남은 활성화 blocker는 실제 source 전달 지연 측정과 운영
+correlation window 결정, Datadog monitor mapping 구성이다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 
