@@ -122,6 +122,7 @@ data "aws_iam_policy_document" "agent_entry_worker" {
     sid    = "UseIdempotencyLedger"
     effect = "Allow"
     actions = [
+      "dynamodb:DeleteItem",
       "dynamodb:GetItem",
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",

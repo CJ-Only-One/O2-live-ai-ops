@@ -33,9 +33,10 @@ required paragraph `custom_alert_json` 하나이고, Code 노드는 `source`별 
 `CORRELATED`의 Chat·Datadog source 동시 포함을 검사한다. 성공 응답에는 evidence나 입력
 원문을 복사하지 않는다. 이 앱에는 Bedrock·Datadog Pull·자동 조치 노드가 없다.
 
-2026-08-24 Phase 3D 저장소 DSL은 `agent.incident.v1` 계약으로 갱신됐지만 실환경 게시 앱은
-아직 이전 `agent.trigger.v1` 계약이다. Worker event source를 켜기 전에 이 DSL을 전용 앱에
-반영·게시하고 Service API 정상 Incident 2개와 raw chat 거부를 다시 확인해야 한다.
+2026-08-24에 이 DSL을 기존 전용 테스트 앱 ID에 가져오고 게시했다. 게시 전 초안과 게시 후
+Service API에서 정상 `CORRELATED` Incident는 `ACCEPTED`, `raw_chat_included=true`는
+`CONTRACT_REJECTED:GUARDRAIL_VALUES`였고 모두 LLM 0 token이었다. 기존 팀 앱은 변경하지
+않았다. 게시본을 바꿀 때는 먼저 현재 DSL을 내보내고 같은 정상·거부 검증을 반복한다.
 
 이 파일은 AI와 코드 리뷰가 안정적으로 비교할 수 있도록 runtime UUID와 UI 표시 label을
 정규화한 canonical DSL이다. 실행 계약은 node label이 아니라 `custom_alert_json` variable,
