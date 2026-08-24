@@ -108,9 +108,29 @@ async function overRateLimit(conn: ChatIngressConnection): Promise<boolean> {
   return count > config.rateLimitPerMinute;
 }
 
+/**
+ * S1(docs/scenario-experiment.md 0.5) 조치 — 채널 총량 제한.
+ *
+ * `cfg:channel_limit:{broadcastId}` 가 그 방송의 노브다. 키가 없으면(평시)
+ * 총량 제한을 아예 안 건다 — Agent 가 인시던트 중에만 이 키를 SET 한다.
+ * 카운터는 overRateLimit 과 같은 Valkey INCR+EXPIRE 패턴이고, 파드 로컬로
+ * 만들지 않는다 — chat-gateway 가 여러 replicas 라 로컬 카운터면 실제
+ * 상한이 파드 수만큼 배가된다(4.1).
+ */
+async function overChannelLimit(conn: ChatIngressConnection): Promise<boolean> {
+  const limit = await pub.get(`cfg:channel_limit:${conn.broadcastId}`);
+  if (limit === null) return false;
+
+  const key = `chat:total:${conn.broadcastId}`;
+  const count = await pub.incr(key);
+  if (count === 1) await pub.expire(key, 60);
+  return count > Number(limit);
+}
+
 const handleChat = createChatIngressHandler({
   maxMessageLength: config.maxMessageLength,
   overRateLimit,
+  overChannelLimit,
   emitChatSend,
   emitChatSignal,
   publishFanout: (conn, msg) =>

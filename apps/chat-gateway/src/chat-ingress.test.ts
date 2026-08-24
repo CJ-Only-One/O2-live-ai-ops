@@ -10,6 +10,7 @@ import type { ChatSignalInput } from './chat-signal.js';
 
 function fixture(overrides: {
   rateLimited?: boolean;
+  channelLimited?: boolean;
   emitChatSignal?: (input: ChatSignalInput) => Promise<unknown>;
 }) {
   const telemetry: Array<{ payload: ChatSendPayload; ctx: EmitContext }> = [];
@@ -26,6 +27,7 @@ function fixture(overrides: {
   const handle = createChatIngressHandler({
     maxMessageLength: 200,
     overRateLimit: async () => overrides.rateLimited ?? false,
+    overChannelLimit: async () => overrides.channelLimited ?? false,
     emitChatSend: (payload, ctx) => telemetry.push({ payload, ctx }),
     emitChatSignal: async (input) => {
       signals.push(input);
@@ -71,6 +73,15 @@ test('rate limited: 원문 SQS와 Valkey 모두 보내지 않는다', async () =
   assert.equal(state.signals.length, 0);
   assert.equal(state.fanout.length, 0);
   assert.equal(state.telemetry[0].payload.rejected_code, 'RATE_LIMITED');
+});
+
+test('channel limited: 개인 한도는 통과했지만 총량 제한에 걸린다', async () => {
+  const state = fixture({ channelLimited: true });
+  await state.handle(state.conn, '느려요');
+
+  assert.equal(state.signals.length, 0);
+  assert.equal(state.fanout.length, 0);
+  assert.equal(state.telemetry[0].payload.rejected_code, 'CHANNEL_LIMITED');
 });
 
 test('AC-008: SQS Promise가 거부돼도 Valkey 팬아웃은 성공한다', async () => {

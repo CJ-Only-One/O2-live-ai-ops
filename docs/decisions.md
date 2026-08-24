@@ -72,6 +72,8 @@
 | D-055 | source 신호를 먼저 Incident로 병합한 뒤 Agent를 호출한다 | correlator, agent.incident.v1, revision, ambiguity, single action lock |
 | D-056 | 안 쓰는 Monitor 는 지우지 않고 알림 경로만 끊는다 | `role:sub`, 알림 핸들 없음, composite 참조, `state mv` |
 | D-057 | 파드별 지연은 새 메트릭이 아니라 `latency_p95` 의 태그로 낸다 | `pod_name` 태그, `cache_hit_rate` 패턴, 최소 표본, APM 우회 불가 |
+| D-058 | Runbook success_criteria 에 기준선 상대 조건을 추가한다 | `baseline_conditions`, D-054, `Baseline` 상태의 기록값 |
+| D-059 | 조치 실행기는 Deployment replicas patch 하나, 원복도 같은 걸 쓴다 | EKS Access Entry, `deployments/scale` RBAC, canary 격리, 06-agent/04-platform 스택 분리 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3563,3 +3565,89 @@ trace 지표에 `pod_name` 이 이미 붙어 있으면 이 작업 전체가 불�
 오류가 아니라 **시계열 하나(service 단위 값)** 만 보여주고, 그건 정상과
 구분되지 않는다.
 
+---
+
+## D-058. Runbook success_criteria 에 기준선 상대 조건을 추가한다
+
+D-054 가 "SLO 복귀 AND 기준선 대비 개선" 을 요구했는데, `runbook.tf` 의
+`success_criteria` 스키마는 고정 임계값(`conditions: [{metric, comparison,
+threshold}]`) 하나뿐이었다. 기준선 대비를 표현할 자리가 없어서, S1·S2·S3
+셋 다 D-054 를 만족하는 런북 항목을 못 쓰는 상태였다.
+
+**고정 임계값 목록(`conditions`)은 그대로 두고, 옆에 새 목록을 하나
+얹는다.**
+
+```
+success_criteria = {
+  conditions: [ {metric, comparison, threshold}, ... ],          # 기존, 절대 SLO
+  baseline_conditions: [ {metric, comparison, relative_to}, ... ] # 신규, 기준선 대비
+}
+```
+
+`relative_to` 는 고정 숫자가 아니라 `"baseline_p95_ms"` 처럼 `Baseline`
+상태에서 이미 기록해 둔 값의 이름을 가리킨다(0.4 절 불변조건 — `Baseline`
+없이 `Acting` 으로 못 간다, 이 기록이 그 값이다). 둘 다 있으면 AND, 어느
+한쪽이 빈 배열이면 그 축은 통과로 친다 — S3 처럼 절대 임계가 없는 시나리오도
+그대로 쓸 수 있어야 하기 때문이다.
+
+**허용 오차(tolerance)는 여기서 정하지 않는다.** "기준선과 같아야 하는지,
+얼마나 더 나빠도 되는지"는 시나리오마다 다르고 아직 실측이 없어서, 지어내는
+대신 `docs/scenario-experiment.md` §2 에 시나리오별로 "안 쟀다" 로 남겨둔다.
+
+**스키마 변경 없음.** DynamoDB 는 스키마리스고 `runbook_lookup.py` 는 아이템을
+그대로 JSON 직렬화해 돌려주므로, `runbook.tf`·Lambda 코드 둘 다 안 건드려도
+된다. `scripts/seed_runbook.py` 의 시딩값에서 새 키를 쓰기 시작하면 그걸로
+끝이다.
+
+관련: `docs/scenario-experiment.md` 0.4(`Baseline`), 1.1(원칙 ①), D-054.
+
+---
+
+## D-059. 조치 실행기는 Deployment replicas patch 하나, 원복도 같은 걸 쓴다
+
+S2(scenario-experiment.md 0.6) "느린 파드 격리"를 실제로 실행할 방법이
+없었다 — `ACTION_API_BASE_URL`이 가리키는 실제 Action Handler가 저장소
+어디에도 없고, 지금까지는 전부 시뮬레이션이었다.
+
+**Pod 를 직접 지우지 않는다.** Deployment 가 즉시 같은 스펙으로 재생성하기
+때문에 격리가 안 된다. **Deployment 자체의 replicas 를 0 으로 patch한다.**
+그리고 "원복"을 별도 메커니즘으로 안 만든다 — 격리(0으로)와 원복(원래
+값으로)은 같은 patch 를 다른 replicas 값으로 부르는 것뿐이다. 조치
+실행기(`infra/06-agent/action_executor.tf`,
+`lambda/scale_deployment.py`) 하나가 둘 다 처리한다.
+
+**클러스터 접근은 EKS Access Entry(02-eks 가 이미 authentication_mode=
+"API") + 이 실행기 전용 IAM Role.** 권한은 o2-dev 네임스페이스의
+`deployments/scale` 서브리소스, get·patch 뿐이다. `cluster_admin_arns`
+(04-platform variables.tf)와 이름이 비슷해 보이지만 성격이 다르다 — 그쪽은
+이미 AdministratorAccess 를 가진 사람들이라 EKS 권한을 좁혀도 보안 경계가
+아니라고 그 변수 설명에 적혀 있다. 이 Role 은 다른 AWS 권한이 없는 Lambda
+실행 역할이므로, 여기서 좁히는 것이 처음으로 진짜 보안 경계가 된다 —
+실행기가 잘못된 인자를 받아도(프롬프트 인젝션 포함) o2-dev 의 스케일 조정
+말고는 클러스터에서 할 수 있는 게 없다.
+
+**IAM Role(06-agent)과 RBAC(04-platform)이 스택을 가른다.** "클러스터 안
+권한은 04-platform 이 코드로 갖는다"(D-008)는 기존 규칙을 그대로 따른
+것이고, `app_data_access.tf`가 03-data 를 remote state 로 읽는 것과 같은
+모양으로 04-platform 이 06-agent 를 읽는다(`agent_state_key`). apply
+순서는 06-agent(Role 생성)가 04-platform(그 Role 을 access entry 에
+매핑)보다 먼저이므로 AGENTS.md 의 기존 apply 순서와 어긋나지 않는다.
+
+**Lambda 는 VPC 밖에 둔다.** EKS 엔드포인트가 퍼블릭이라(02-eks
+`endpoint_public_access=true`) `runbook_lookup.tf`와 같은 이유로 ENI 가
+필요 없다. 인증은 kubectl/aws-iam-authenticator 바이너리 없이, STS
+GetCallerIdentity 를 presign 해 `k8s-aws-v1.` 토큰으로 감싸는 표준 스펙을
+botocore 만으로 직접 구현했다.
+
+**Precheck 은 실행기가 직접 다시 확인한다.** Dify 의 Precheck 노드가 이미
+한 번 확인했더라도, 실행기는 patch 전에 현재 replicas 를 다시 GET 해서
+이미 목표치면 patch 를 건너뛴다(멱등) — 시간차로 상태가 바뀌었을 가능성을
+실행기 스스로 방어한다.
+
+**시나리오 문서 4.2 절의 canary Deployment(장애 주입용)와는 다른
+것이다.** 그건 실험 셋업이고, 이 결정은 Agent 가 실제로 무언가를
+조치한다고 판단했을 때 실행되는 쪽이다. 둘을 혼동하면 "canary"라는
+이름 하나로 같은 것을 가리킨다고 착각하기 쉽다.
+
+관련: `docs/scenario-experiment.md` 0.6·4.2·6, D-008, D-043(SigV4 못 하는
+Dify HTTP 노드라 Lambda 릴레이를 쓰는 이유, runbook_lookup 과 같음).
