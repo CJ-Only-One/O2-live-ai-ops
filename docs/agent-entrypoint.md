@@ -15,8 +15,8 @@ implementation_state:
   generic_dify_worker: DEPLOYED_EXECUTION_DISABLED
   phase3_synthetic_guard: DEPLOYED_EXECUTION_DISABLED
   incident_correlation_contract: COMPLETE
-  incident_correlator: NOT_STARTED
-  agent_invocation_queue: NOT_STARTED
+  incident_correlator: IMPLEMENTED_NOT_APPLIED
+  agent_invocation_queue: IMPLEMENTED_NOT_APPLIED
   idempotency_ledger: DEPLOYED_EMPTY
   dedicated_test_workflow: PUBLISHED_CODE_ONLY
   dedicated_test_workflow_ui_contract_tests: PASS
@@ -27,8 +27,9 @@ implementation_state:
   datadog_migration: NOT_STARTED
   production_agent_handoff: DISABLED
 activation_blockers:
-  - INCIDENT_CORRELATOR_NOT_IMPLEMENTED
-  - AGENT_INVOCATION_QUEUE_NOT_IMPLEMENTED
+  - PHASE_3B_INFRASTRUCTURE_NOT_APPLIED
+  - CORRELATION_WINDOW_NOT_MEASURED
+  - DATADOG_MONITOR_MAPPING_NOT_CONFIGURED
   - PHASE_3_CORRELATION_E2E_NOT_RUN
 operational_followups:
   - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
@@ -435,6 +436,35 @@ correlation window 값은 아직 측정하지 않았으므로 Phase 3C의 양방
 별도 Agent Invocation Queue를 만들고 Generic Worker를 그쪽으로 옮긴다. Correlator와 기존
 Worker가 같은 SQS의 competing consumer가 되는 순간 신호가 임의 소비되므로, 기존 Worker
 mapping을 비활성·분리했다고 확인하기 전에는 Correlator event source를 켜지 않는다.
+
+Phase 3B 구현은 `infra/06-agent/incident_correlation.tf`과
+`lambda/incident_correlator.py`에 있다. 구성은 다음과 같다.
+
+| 구성 | Phase 3B 상태 |
+|---|---|
+| 기존 `agent-trigger` Queue | 물리 교체 없이 Signal Queue로 유지 |
+| Incident State DynamoDB | Incident snapshot, correlation pointer, source signal claim 저장 |
+| Incident Correlator | 실행 플래그 `false`, event source `false` |
+| correlation window | `0`; 0인 동안 활성화 precondition 실패 |
+| Chat mapping | S3 범위의 `READ_PATH → LATENCY/api`만 명시 |
+| Datadog monitor mapping | 빈 map; monitor ID를 명시하기 전 추측하지 않음 |
+| Agent Invocation Queue | 생성 대상이지만 Phase 3B consumer 없음 |
+| Generic Worker / Dify | 기존 비활성 경로 그대로, 신규 Queue 미연결 |
+
+source signal claim과 Incident revision 갱신은 한 DynamoDB transaction으로 묶는다. Queue
+전송 전 claim은 `PENDING`, 성공 후 `EMITTED`가 된다. 전송이 실패하면 같은 snapshot을
+재전송하고 새 revision을 만들지 않는다. 전송 성공 후 claim 확정만 실패해 중복 전송되는
+경우는 Phase 3D Worker의 revision 멱등 키가 막는다.
+
+같은 correlation key의 첫 Chat·Datadog이 동시에 `0 matches`를 읽는 경쟁은 correlation
+pointer의 조건부 transaction으로 직렬화한다. 한쪽만 신규 Incident를 만들고 패자는 재시도한다.
+GSI에 `AMBIGUOUS` Incident가 남아 있어도 자동 병합 후보에서는 제외한다.
+
+단위 테스트는 Chat→Datadog, Datadog→Chat, window 밖 분리, 복수 후보 ambiguity, mapping
+부족, 중복, pending replay, 비물질적 same-source update, 원문 필드 거부, 비활성 gate,
+DynamoDB transaction 3항목 구성을 포함한다. 로컬 Python과 Lambda Python 3.12에서 통과했고,
+생성된 provisional/correlated snapshot은 `agent.incident.v1` Schema를 통과했다. 아직
+Terraform apply와 Phase 3C 합성 E2E는 수행하지 않았다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 

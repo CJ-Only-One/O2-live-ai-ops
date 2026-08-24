@@ -44,6 +44,7 @@
 |---|---|
 | **있음** | 그대로 쓸 수 있다 |
 | **설계만** | 계약·결정 문서는 있고 구현이 없다 |
+| **구현됨** | 저장소 코드와 검증은 있고 실환경에는 아직 적용하지 않았다 |
 | **비활성** | 구현·배포는 됐고 실행 게이트가 꺼져 있다 |
 | **고쳐야** | 있는데 시나리오 조건과 어긋난다 |
 | **깨져 있음** | 있다고 보이는데 실제로는 동작하지 않는다 |
@@ -64,7 +65,7 @@
 | 노브 카탈로그 (가역성·예산·precondition·검증 지표) | `infra/06-agent/runbook.tf` 는 `rca_type` 축의 런북 스키마다. 노브 카탈로그는 별개 축 | **없음** |
 | 게이트 진입 결정론적 판정 | LLM 자유 서술. 테이크마다 달라진다 | **없음** |
 | 상태 머신 · 검증 대기 타이머 · 재분석 1회 분기 | 없음. 정의는 `scenario-experiment.md` 0.4 에 있다 | **없음** |
-| `Deduped` 병합 (Incident Correlator) | 계약·설계 완료 — D-055, `contracts.md` 5.9, `contracts/agent-incident-v1.schema.json` + 예제 둘. `agent-entrypoint.md` 는 `incident_correlator: NOT_STARTED`, `agent_invocation_queue: NOT_STARTED` | **설계만** |
+| `Deduped` 병합 (Incident Correlator) | D-055와 `agent.incident.v1` 계약. `infra/06-agent/incident_correlation.tf` + `lambda/incident_correlator.py` 구현·테스트 완료, 실환경 미적용 | **구현됨** |
 | Slack 승인 왕복 | `infra/06-agent/slack_approval.tf` — Lambda 둘 + DynamoDB | **있음** |
 | 런북 카탈로그 + 조회 | `runbook.tf` + `runbook_lookup.tf` (Lambda + Function URL, `x-api-key`) | **있음** |
 | 인시던트 히스토리 (S3 + S3 Vectors) | `history.tf`, `history_o2.tf`. O2 전용 분리까지 완료 | **있음** |
@@ -161,9 +162,9 @@
    `verification_metrics` · `diagnostic_contamination` · `rollback_method` 등.
    **게이트 진입을 LLM 이 아니라 이 조회로 판정한다** — 녹화 성공률을 가장 크게 올리는 항목이다.
    `runbook.tf` 의 DynamoDB 패턴을 그대로 재사용한다.
-4. **Incident Correlator + Agent Invocation Queue** — 계약과 설계는 D-055 로 끝났고 구현이
-   `NOT_STARTED` 다. `agent.trigger.v1` Signal Queue → Correlator → Incident State →
-   `agent.incident.v1` Invocation Queue → Generic Worker.
+4. **Incident Correlator + Agent Invocation Queue** — D-055 계약과 비활성 Terraform·Lambda
+   구현은 끝났고 실환경 적용과 Phase 3C 합성 E2E가 남았다. `agent.trigger.v1` Signal Queue
+   → Correlator → Incident State → `agent.incident.v1` Invocation Queue → Generic Worker.
    기존 `agent-trigger` Queue 는 이름만 바꾸려고 교체하지 않는다.
    **Worker mapping 분리를 확인하기 전에는 Correlator event source 를 켜지 않는다** —
    competing consumer 가 되면 입력을 임의로 나눠 가진다.

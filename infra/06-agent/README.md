@@ -114,6 +114,40 @@ Phase 3 합성 Queue E2E는 D-053에 따라 event source와 실행 플래그를 
 allowlist다. 미허용 key는 Secret 조회·ledger 획득·Dify 호출 전에 실패한다. 상세 상태와
 적용 순서는 `docs/agent-entrypoint.md` 6.4를 따른다.
 
+## Incident Correlator Phase 3B
+
+D-055에 따라 `agent.trigger.v1`은 Agent 호출이 아니라 상관관계 전 source 신호다.
+Phase 3B는 기존 `agent-trigger` Queue의 물리 이름을 유지하면서 다음 비활성 경로를 추가한다.
+
+```text
+agent.trigger.v1 Signal Queue
+  -> disabled Incident Correlator
+  -> Incident State DynamoDB
+  -> agent.incident.v1 Agent Invocation Queue
+  -> consumer 없음
+```
+
+| 게이트 | 기본값 |
+|---|---|
+| Correlator event source | `false` |
+| `INCIDENT_CORRELATOR_EXECUTION_ENABLED` | `false` |
+| correlation window | `0` |
+| 합성 source allowlist | empty |
+| Datadog monitor mapping | empty |
+
+window `0`은 미설정 상태다. Phase 3C에서 두 source 도착 지연을 측정하기 전에는 값을
+지어내지 않는다. event source와 실행 플래그를 켜더라도 window가 0이거나 합성 allowlist가
+1-3개가 아니면 Terraform precondition이 실패한다. 기존 Agent Worker event source와
+Correlator도 동시에 활성화할 수 없다.
+
+Chat은 현재 S3 범위인 `READ_PATH → LATENCY/api` mapping만 갖는다. Datadog은 alert 제목이나
+본문을 해석하지 않고 명시한 monitor ID mapping만 사용한다. mapping이 없거나 같은 조건의
+OPEN Incident가 둘 이상이면 `AMBIGUOUS`로 기록하고 강제 병합하지 않는다.
+
+Phase 3B apply만으로는 Signal Queue를 소비하지 않고 Agent Invocation Queue에도 consumer가
+없으므로 Dify 호출은 0건이어야 한다. 적용·검증 순서는 `docs/agent-entrypoint.md` 6.5가
+원본이다.
+
 ### 1. 버전 고정
 
 ```bash
