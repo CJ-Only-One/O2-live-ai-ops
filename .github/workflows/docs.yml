@@ -14,6 +14,7 @@ on:
       - '.github/workflows/docs.yml'
       - 'scripts/check-docs-index.sh'
       - 'scripts/validate-agent-contracts.py'
+      - 'scripts/validate-cue-sheet.py'
   push:
     branches: [main]
     paths:
@@ -22,6 +23,7 @@ on:
       - 'CLAUDE.md'
       - '.github/workflows/docs.yml'
       - 'scripts/validate-agent-contracts.py'
+      - 'scripts/validate-cue-sheet.py'
 
 permissions:
   contents: read
@@ -53,3 +55,9 @@ jobs:
         run: |
           python -m pip install jsonschema==4.23.0
           python scripts/validate-agent-contracts.py
+
+      # 큐시트는 사람이 손으로 쓰는 문서라 스키마만으로는 안 걸리는 실수가 남는다
+      # — 오프셋 없는 시각, 특가에 sku_id 누락, 근거 없는 web_search 판정.
+      # 그 셋을 교차 검사로 막는다.
+      - name: 큐시트 Schema와 예시 검증
+        run: python scripts/validate-cue-sheet.py
