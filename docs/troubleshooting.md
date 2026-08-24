@@ -42,6 +42,7 @@
 | T-024 | 없는 메트릭을 조회했는데 404 가 아니라 빈 태그 목록이 온다 | `/api/v2/metrics/.../all-tags`, 200+`tags:[]`, `/api/v1/search`, `trace.fastapi.request` |
 | T-025 | 새 custom metric 값은 보이는데 tag-filter monitor가 계속 No Data다 | metric ingestion, tag index propagation, `all-tags`, prewarm, `{*}` 금지 |
 | T-026 | Chat과 Datadog이 같은 장애인데 Incident가 두 개 생긴다 | `dev`, `o2-dev`, environment exact match, canonicalization |
+| T-027 | 시험 파일을 저장소에 넣었는데 CI 가 한 번도 안 돌린다 | 명시 파일 목록, 두 가지 시험 양식, `NO TESTS RAN` 종료 코드 5 |
 
 
 ---
@@ -1384,3 +1385,42 @@ Correlator는 environment·symptom·service·surface를 exact match하며, 환�
 **왜 늦게 찾았나** — 사람에게 `dev`와 `o2-dev`는 같은 환경처럼 보였고 source별 정상화
 결과를 나란히 비교하지 않았다. exact match는 오류 대신 독립 Incident라는 그럴듯한 결과를
 내므로, Dify를 열기 전에 Incident State를 확인할 때까지 불일치가 드러나지 않았다.
+
+---
+
+## T-027. 시험 파일을 저장소에 넣었는데 CI 가 한 번도 안 돌린다
+
+**증상** — `lambda/test_runbook_lookup.py` 와 `lambda/test_action_state.py` 를
+저장소에 넣고 CI 가 초록인 것을 확인했다. 그런데 **그 시험들은 한 번도 실행되지
+않았다.** `test_history.py` 는 저장소에 들어온 뒤로 지금까지 그랬다.
+
+**원인 둘이 겹쳐 있다.**
+
+첫째, `tf.yml` 의 시험 단계가 **파일을 명시 목록으로 나열**한다. 디스커버리가
+아니라서 새 파일을 넣어도 저절로 안 걸린다. 목록에 없는 시험은 존재하지 않는
+것과 같다.
+
+둘째, 목록에 넣어도 안 된다. `06-agent` 의 시험이 두 양식으로 쓰여 있다.
+
+| 양식 | 예 | `python3 -m unittest <파일>` |
+|---|---|---|
+| `unittest.TestCase` | `test_incident_correlator.py` | 돈다 |
+| 단독 스크립트 (`if __name__ == "__main__"`) | `test_history.py` · `test_runbook_lookup.py` · `test_action_state.py` | `NO TESTS RAN` |
+
+단독 스크립트 양식은 `TestCase` 하위 클래스가 없어 수집이 0건이다.
+
+**종료 코드는 파이썬 판마다 다르다.** 3.14 에서 확인한 값은 5 이고 그러면 CI 가
+빨갛게 죽는다. 예전 판은 0 을 냈다 — 그 경우 초록으로 지나간다. 어느 쪽이든
+**시험은 안 돈다**는 것이 같고, 앞의 경우는 "왜 깨지지" 로, 뒤의 경우는 조용히
+넘어간다.
+
+**조치** — 단독 스크립트를 직접 실행하는 단계를 `tf.yml` 에 더했다. 세 파일을
+`TestCase` 로 고쳐 기존 목록에 합치는 방법도 있지만, 실행 줄 셋을 더하는 쪽이
+작고 `test_history.py` 까지 같이 걸린다. `python3 lambda/test_x.py` 는 단언이
+깨지면 예외로 죽어 0 이 아닌 코드를 낸다 — 실제로 판정 한 줄을 뒤집어 1 이
+나오는 것을 확인했다.
+
+**왜 늦게 찾았나** — CI 로그의 `Ran 52 tests` 를 보고 "시험이 돈다" 로 읽었다.
+그 52건이 **어느 파일에서 나온 것인지** 는 안 셌다. 시험을 추가했으면 건수가
+늘었는지를 봐야 하는데 초록만 봤다. 파일 목록을 손으로 관리하는 CI 에서는
+**추가한 시험이 로그에 나타나는지**를 매번 확인해야 한다.
