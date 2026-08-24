@@ -114,9 +114,21 @@ Datadog 의 일이 아닙니다.
 
 카디널리티가 **입력값이 아니라 고정된 열거값**으로 갈리는 지표는 예외로
 태그 분해를 허용합니다 — `failure_rate`(event 종류), `event_rate`(event 종류),
-`cache_hit_rate`(pod_name, 파드 수는 K8s가 정함)가 여기 해당하고
-`datadog.py`의 `build_series()`에 있습니다. `user_key`·`campaign_id`처럼
-입력값이 카디널리티를 정하는 축은 절대 여기 넣지 않습니다.
+`cache_hit_rate`·`latency_p95`(pod_name, 파드 수는 K8s가 정함)가 여기
+해당하고 `datadog.py`의 `build_series()`에 있습니다. `user_key`·`campaign_id`
+처럼 입력값이 카디널리티를 정하는 축은 절대 여기 넣지 않습니다.
+
+**파드 축은 메트릭 이름을 새로 만들지 않습니다.** `latency_p95` 는 service
+단위로 한 번, 파드마다 한 번씩 같은 이름으로 나갑니다 — 태그만 다릅니다
+(D-054). 그래서 `avg:o2.warm.latency_p95{*} by {pod_name}` 을 치면 파드
+시계열 외에 `pod_name:N/A` 가 하나 더 나옵니다. service 단위로 보낸 값이
+태그가 없어서 그렇게 잡히는 것이고, 정상입니다.
+
+파드별 지연은 **표본 5건 미만인 파드를 뺍니다**(`LATENCY_POD_MIN_SAMPLES`).
+10초 윈도우에서 방금 뜬 파드는 요청을 한두 건만 받는데, 표본 한 건짜리
+p95 를 outlier 탐지에 넣으면 **스케일아웃했다는 사실만으로** 이상치가
+됩니다. 뺀 파드의 표본 수는 `latency_samples_by_pod` 에 남습니다(맵이라
+Datadog 으로는 안 갑니다).
 
 ### 세 경로에서 Warm 이 맡는 것
 

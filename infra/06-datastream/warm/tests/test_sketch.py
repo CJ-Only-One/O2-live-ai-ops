@@ -31,6 +31,16 @@ def _split_build(events, chunks):
     return merged
 
 
+def _split_build_svc(service, events, chunks):
+    """_split_build 와 같지만 service 를 지정합니다."""
+    size = max(1, len(events) // chunks)
+    parts = [events[i:i + size] for i in range(0, len(events), size)]
+    merged = WindowSketch(service, window_start(factory.BASE))
+    for p in parts:
+        merged.merge(build(service, window_start(factory.BASE), p))
+    return merged
+
+
 def test_merge_is_associative_on_counts():
     events = factory.normal(n_users=50, per_user=4, rng=random.Random(11))
     events = [e for e in events if not e["event_name"].startswith("client.")]
@@ -200,3 +210,77 @@ def test_roundtrip_serialization():
     a = restored.intervals.cv_weighted_median()[0]
     b = s.intervals.cv_weighted_median()[0]
     assert abs(a - b) < 1e-3
+
+
+def test_latency_by_pod_isolates_one_slow_pod():
+    """파드 하나만 느려도 service 단위 분포에 묻히지 않는지.
+
+    시나리오 5(README) 의 재분석 근거다 — 1차 조치가 듣지 않았을 때
+    에이전트가 "어느 파드인가" 로 내려가려면 이 축이 있어야 한다.
+    """
+    events = []
+    ts = factory.BASE
+    for pod in ("pod-a", "pod-b", "pod-c"):
+        for i in range(10):
+            latency = 2000 if pod == "pod-c" else 50  # pod-c 만 느리다
+            events.append(
+                factory.order_create(ts + i, f"u{pod}{i}", "1.1.1.1", latency=latency, pod_name=pod)
+            )
+
+    s = build("order-api", window_start(factory.BASE), events)
+
+    assert set(s.latency_by_pod) == {"pod-a", "pod-b", "pod-c"}
+    assert all(h.n == 10 for h in s.latency_by_pod.values())
+    # 느린 파드만 꼬리가 올라가 있다.
+    assert s.latency_by_pod["pod-c"].quantile(0.95) > 1500
+    assert s.latency_by_pod["pod-a"].quantile(0.95) < 100
+    # service 단위 히스토그램은 30건 전부를 합쳐 들고 있다 — p95 하나로는
+    # 어느 파드인지 알 수 없다는 것이 이 축이 필요한 이유다.
+    assert s.latency.n == 30
+
+
+def test_latency_by_pod_merges_across_batches():
+    events = []
+    ts = factory.BASE
+    for pod in ("pod-a", "pod-b"):
+        for i in range(6):
+            events.append(
+                factory.order_create(
+                    ts + i, f"u{pod}{i}", "1.1.1.1",
+                    latency=(900 if pod == "pod-b" else 40), pod_name=pod,
+                )
+            )
+
+    whole = build("order-api", window_start(factory.BASE), events)
+    for chunks in (2, 3, 5):
+        merged = _split_build_svc("order-api", events, chunks)
+        assert set(merged.latency_by_pod) == set(whole.latency_by_pod), chunks
+        for pod, hist in whole.latency_by_pod.items():
+            assert merged.latency_by_pod[pod].n == hist.n, (chunks, pod)
+            assert merged.latency_by_pod[pod].b == hist.b, (chunks, pod)
+
+
+def test_latency_by_pod_roundtrips():
+    events = [
+        factory.order_create(factory.BASE, "u1", "1.1.1.1", latency=30, pod_name="pod-a"),
+        factory.order_create(factory.BASE + 1, "u2", "1.1.1.1", latency=1800, pod_name="pod-b"),
+    ]
+    s = build("order-api", window_start(factory.BASE), events)
+    restored = WindowSketch.from_dict(s.to_dict())
+
+    assert set(restored.latency_by_pod) == set(s.latency_by_pod) == {"pod-a", "pod-b"}
+    for pod in s.latency_by_pod:
+        assert restored.latency_by_pod[pod].to_dict() == s.latency_by_pod[pod].to_dict()
+
+
+def test_latency_without_pod_name_stays_out_of_pod_axis():
+    """pod_name 이 없는 봉투는 service 집계에만 들어간다.
+
+    SDK 구버전이나 파드 밖에서 발행된 이벤트가 빈 문자열 키로 끼어들면
+    outlier 탐지에 정체 불명의 시계열이 하나 생긴다.
+    """
+    events = [factory.order_create(factory.BASE + i, f"u{i}", "1.1.1.1", latency=100) for i in range(5)]
+    s = build("order-api", window_start(factory.BASE), events)
+
+    assert s.latency.n == 5
+    assert s.latency_by_pod == {}

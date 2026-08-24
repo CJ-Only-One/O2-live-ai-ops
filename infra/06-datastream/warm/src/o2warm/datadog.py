@@ -123,6 +123,23 @@ def build_series(metrics: dict, *, prefix: str | None = None, env: str | None = 
             }
         )
 
+    # 같은 이유로 파드별 지연도 pod_name 태그만 얹어 보냅니다 — 파드 하나가
+    # 느려도 service 단위 latency_p95 는 나머지 파드에 희석돼 임계 안에
+    # 머뭅니다. 메트릭 이름은 `latency_p95` 그대로이고 태그만 다릅니다
+    # (cache_hit_rate 와 같은 방식). `latency_p95_by_pod` 는 metrics.py 가
+    # 표본 부족 파드를 이미 걸러낸 뒤의 맵입니다.
+    for pod, value in (metrics.get("latency_p95_by_pod") or {}).items():
+        if value is None:
+            continue
+        series.append(
+            {
+                "metric": f"{prefix}latency_p95",
+                "type": GAUGE,
+                "points": [{"timestamp": ts, "value": float(value)}],
+                "tags": tags + [f"pod_name:{pod}"],
+            }
+        )
+
     conf = metrics.get("confidence") or {}
     if conf.get("score") is not None:
         series.append(

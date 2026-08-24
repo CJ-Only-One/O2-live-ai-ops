@@ -55,9 +55,9 @@ def click(ts, user, ua, *, action="COUPON_BUTTON_CLICK", device="MOBILE_APP"):
     )
 
 
-def order_create(ts, user, ip, *, channel="LIVE", latency=140):
+def order_create(ts, user, ip, *, channel="LIVE", latency=140, pod_name=None):
     return envelope(
-        "order.create", ts, service="order-api", user=user, ip=ip,
+        "order.create", ts, service="order-api", user=user, ip=ip, pod_name=pod_name,
         payload={"order_id": f"O{int(ts*1000)}{random.randint(0,999)}",
                  "items": [{"product_id": "SKU-1", "qty": 1}],
                  "total_amount": 25000, "channel": channel, "latency_ms": latency},

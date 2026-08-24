@@ -22,6 +22,14 @@ from .windows import iso_from_epoch, iso_now
 
 TOP_CONTRIBUTORS = 5
 
+# 파드별 p95 를 만들기 위해 요구하는 최소 표본 수.
+#
+# 10초 윈도우라 방금 뜬 파드는 요청을 한두 건만 받고 지나간다. 표본
+# 한 건짜리 p95 는 그 한 건의 값 그대로이고, outlier 탐지(DBSCAN)에
+# 들어가면 **정상 파드가 스케일아웃했다는 사실만으로** 이상치가 된다.
+# S2 재분석이 지목해야 하는 것은 "느린 파드" 이지 "새 파드" 가 아니다.
+LATENCY_POD_MIN_SAMPLES = 5
+
 
 def _ratio(num: float, den: float) -> float | None:
     return round(num / den, 4) if den else None
@@ -308,6 +316,21 @@ def derive(
         "latency_p95": sk.latency.quantile(0.95),
         "latency_p99": sk.latency.quantile(0.99),
         "latency_samples": sk.latency.n,
+
+        # 파드 하나만 느려도 service p95 는 나머지 파드에 희석돼 임계 안에
+        # 머문다(README 시나리오 5의 재분석 근거). cache_hit_rate_by_pod 와
+        # 같은 축·같은 이유다.
+        #
+        # 표본이 적은 파드는 뺀다. LogHistogram.quantile 은 표본 1개에도
+        # 값을 내주는데, 그 값을 outlier 탐지에 넣으면 방금 뜬 파드의 첫
+        # 요청 하나가 이상치로 잡힌다. 파드가 실제로 느린 것과 아직 덜
+        # 데워진 것을 구분하지 못하면 재분석이 엉뚱한 파드를 지목한다.
+        "latency_p95_by_pod": {
+            pod: hist.quantile(0.95)
+            for pod, hist in sk.latency_by_pod.items()
+            if hist.n >= LATENCY_POD_MIN_SAMPLES
+        },
+        "latency_samples_by_pod": {pod: hist.n for pod, hist in sk.latency_by_pod.items()},
 
         # 사용자가 같은 동작을 반복했다는 것 자체가 체감 저하의 증거입니다.
         # 서버는 매번 성공했을 수 있습니다.
