@@ -76,6 +76,7 @@
 | D-059 | 조치 실행기는 Deployment replicas patch 하나, 원복도 같은 걸 쓴다 | EKS Access Entry, `deployments/scale` RBAC, canary 격리, 06-agent/04-platform 스택 분리 |
 | D-060 | `chat.send` 의 거부 사유는 `result` + `failure_code` 로 싣는다 | `rejected_code` 개명, 성공에도 `result`, 집계가 이름으로 찾는다, SDK 등록 안 함 |
 | D-061 | S1 채널 총량 조치는 chat-gateway 라우트 하나다 — 실행기 Lambda 를 안 만든다 | `cfg:channel_limit`, 과도한 D-059 복제 되돌림, `kubectl create secret`, 임시 임계값 |
+| D-062 | S3 조치는 api 라우트 하나 — runbook 카탈로그에는 안 넣는다 | `cfg:read_path_degraded`, `inventory.check` 생략, 원인 라벨 없음, 행동 기준 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -3795,3 +3796,38 @@ secret`으로 `o2-dev`에 `chat-gateway-admin`을 직접 넣고, 배포
 
 관련: `docs/scenario-experiment.md` 0.5·2.1·4.1, D-059(대조 — 언제
 Lambda 중계가 정당한지), D-058.
+
+---
+
+## D-062. S3 조치는 api 라우트 하나 — runbook 카탈로그에는 안 넣는다
+
+S3(scenario-experiment.md 0.7) "읽기 요청당 CPU 감소"를 실행할 방법이
+없었다(scenario-readiness.md 2.4 — S3 의 유일한 조치인데 없음).
+
+**D-061 과 같은 이유로 api 서비스에 라우트 하나만 추가한다** — 새
+Lambda 를 안 만든다. `POST /api/admin/read-path-degraded` 가
+`cfg:read_path_degraded:{broadcast_id}` 를 SET·DEL 한다.
+`app/services/broadcast.py` 의 `get_snapshot()` 이 이 키가 켜져 있으면
+`inventory.check` 이벤트 발행만 건너뛴다 — 응답(재고·가격)은 전혀 안
+바뀌므로 사용자 차단은 항상 0 이다(S3 성공 기준의 "정확" 축).
+발행 자체가 이미 "실패해도 요청을 안 막는" 부가 작업으로 설계돼 있어
+(`_emit_inventory_check` 기존 주석) 건드려도 안전하다.
+
+**노브 조회에 로컬 캐시(1초)를 쓴다.** `cache.get_or_load` 는 loader 가
+`None` 을 돌려주면 캐시하지 않는 설계라(존재 안 함과 미확인을 구분하려는
+목적, `cache.py`), 노브가 꺼진 평시에 그대로 쓰면 캐시가 항상 비어
+매 요청 Valkey 를 친다. 그래서 loader 가 `None` 대신 빈 문자열을 돌려
+"꺼짐"도 캐시되게 했다.
+
+**runbook 카탈로그(seed_runbook.py)에는 안 넣는다.** 그 테이블은
+`rca_type`(진단된 원인) 축으로 조회된다. S3 는 원인이 확정되기 전에
+정보 게이트에서 바로 HoldAction 으로 가는 조치라 애초에 원인 라벨이
+없다 — labels.txt 자신이 "라벨은 원인이다" 라고 못박아서, 여기 쓰려고
+가짜 원인을 만들면 그 불변조건을 깬다. S3 의 success_criteria 도
+지금 스키마(절대/기준선 임계값)와 안 맞는다 — 1순위 기준이 "정상 사용자
+차단 0"·"Agent 가 한쪽으로 단정 안 함" 같은 행동 판정이라 메트릭
+비교식으로 못 담는다. 이 조치를 언제 부를지는 Dify 워크플로우의
+HoldAction 분기에 직접 박는 것이 맞고, 그건 Dify 쪽 작업이라 이 범위
+밖이다.
+
+관련: `docs/scenario-experiment.md` 0.7·2.3, D-061.

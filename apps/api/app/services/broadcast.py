@@ -142,6 +142,32 @@ def get_product(broadcast_id: str, sku_id: str) -> dict | None:
     return None
 
 
+def _degraded_key(broadcast_id: str) -> str:
+    return f"cfg:read_path_degraded:{broadcast_id}"
+
+
+def _read_path_degraded(broadcast_id: str) -> bool:
+    """S3(scenario-experiment.md 0.7) 조치 노브. 켜져 있으면 요청당 부가
+    작업(inventory.check 발행)을 건너뛴다 — 응답 내용은 안 바뀌므로 사용자
+    차단은 0 그대로다.
+
+    매 요청 Valkey 를 직접 보지 않는다 — 로컬 캐시(1초)로 감싸서, 평시
+    수백 RPS 에서도 실제 Valkey 조회는 초당 1회로 묶인다.
+
+    ★ `get_or_load` 는 loader 가 None 을 돌려주면 캐시에 안 넣는다
+      (cache.py — "존재 안 함"과 "아직 안 캐움"을 구분 못 하면 미스가
+      계속 하위로 샌다). 노브가 꺼진 평시가 바로 그 None 경로라, 그대로
+      쓰면 캐시가 항상 비어 매 요청 Valkey 를 친다 — 그래서 빈 문자열을
+      캐시 가능한 "꺼짐" 값으로 쓴다.
+    """
+    cached = get_or_load(
+        _degraded_key(broadcast_id),
+        LOCAL_TTL,
+        lambda: valkey.get(_degraded_key(broadcast_id)) or "",
+    )
+    return bool(cached)
+
+
 def _emit_inventory_check(meta: dict, stocks: dict[str, int], origin: dict, latency_ms: int) -> None:
     """스냅샷 조회 1건당 이벤트 1건 (contracts.md 5.1).
 
@@ -187,7 +213,8 @@ def get_snapshot(broadcast_id: str) -> dict | None:
     stocks = _stock_display(sku_ids)
 
     latency_ms = int((time.perf_counter() - started) * 1000)
-    _emit_inventory_check(meta, stocks, origin, latency_ms)
+    if not _read_path_degraded(broadcast_id):
+        _emit_inventory_check(meta, stocks, origin, latency_ms)
 
     # 캐시에 담긴 dict 를 그대로 고치면 다음 요청이 남의 재고를 본다.
     return {
