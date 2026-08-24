@@ -148,6 +148,14 @@ Phase 3B apply만으로는 Signal Queue를 소비하지 않고 Agent Invocation 
 없으므로 Dify 호출은 0건이어야 한다. 적용·검증 순서는 `docs/agent-entrypoint.md` 6.5가
 원본이다.
 
+2026-08-24 병합본에서 Phase 3B 대상 저장 plan `13 add, 0 change, 0 destroy`만 적용했다.
+적용 후 Correlator와 기존 Generic Worker event source는 모두 `Disabled`, Correlator 실행
+플래그는 `false`, window는 `0`, 합성 allowlist와 Datadog mapping은 비어 있었다. Signal
+Queue/DLQ와 Invocation Queue/DLQ는 모두 0건이고, Invocation Queue consumer와 Correlator
+Log Stream도 0개였다. Incident State는 `ACTIVE`, `PAY_PER_REQUEST`, SSE·TTL·PITR enabled,
+GSI `ACTIVE`, item 0이었다. 전체 stack 재-plan의 기존 `5 change`는 별도 검토 대상으로
+남겼으며 적용하지 않았다.
+
 ### 1. 버전 고정
 
 ```bash
