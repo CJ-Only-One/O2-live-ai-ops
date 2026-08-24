@@ -133,8 +133,8 @@ Datadog synthetic monitor
                                                            -> consumer disabled
 ```
 
-기본값은 실행 `false`, 합성 cycle allowlist empty, cutover 2100-01-01이다. 활성화할 때는
-합성 cycle key 정확히 1개와 명시 cutover가 함께 있어야 Terraform precondition을 통과한다.
+기본값은 실행 `false`, 합성 monitor ID allowlist empty, cutover 2100-01-01이다. 활성화할 때는
+합성 monitor ID 정확히 1개와 명시 cutover가 함께 있어야 Terraform precondition을 통과한다.
 Correlator와 Generic Worker를 별도로 켜지 않으므로 Adapter apply만으로 Dify는 호출되지 않는다.
 
 권한은 기존 O2 webhook secret read, Signal Queue `SendMessage`, 기본 Lambda 로그뿐이다.
@@ -151,6 +151,17 @@ empty, 2100 cutover로 복귀했으며 Shadow webhook은 운영형 payload로 �
 붙이지 않았다. 관련 Queue/DLQ 0과 대상 재-plan `No changes`를 확인했다. 상세 절차·한계는
 `docs/agent-entrypoint.md` 6.8과 M-017이 원본이다. 전체 stack plan의 별도 기존 IAM 1개·Lambda
 3개 update는 계속 대상 저장 plan에서 제외해야 한다.
+
+첫 Phase 4B 실측에서는 사전에 알 수 없는 cycle key를 allowlist에 넣기 위해 webhook payload를
+합성값으로 일시 바꿨다. D-066 후속 구현은 이 한계를 없애려고 guard를 합성 monitor ID로
+교체했다. `cycle_key`는 Datadog 원본을 그대로 envelope와 멱등 키에 사용한다. 이 변경은 아직
+실환경에 적용하지 않았으며, 병합 후 비활성 targeted apply와 실제 `$ALERT_CYCLE_KEY`
+Triggered/Recovered 검증이 필요하다.
+
+병합 전 검증은 Lambda 전체 50건 통과(1건 skip), `terraform validate` 통과, 비활성 targeted
+plan `0 add / 1 update / 0 destroy`다. 잘못된 `enabled+empty+2100` 입력은 precondition으로
+차단됐고, `enabled+monitor ID 1개+명시 cutover`만 통과했다. 전체 plan에는 이번 Adapter 외 기존
+IAM 1건·Lambda 3건 update가 있으므로 저장한 targeted plan 이외의 변경은 적용하지 않는다.
 
 ## Incident Correlator Phase 3B
 

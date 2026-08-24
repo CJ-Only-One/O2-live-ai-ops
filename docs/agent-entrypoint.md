@@ -36,6 +36,7 @@ implementation_state:
   phase4b_synthetic_monitor: DELETED_AFTER_TEST
   phase4b_source_delay_samples: CHAT_7995_8743MS_DATADOG_TRIGGERED_68400_63611MS
   phase4b_legacy_new_dual_run: NOT_RUN_LEGACY_DIFY_INTENTIONALLY_EXCLUDED
+  datadog_monitor_id_guard: IMPLEMENTED_NOT_APPLIED
   datadog_migration: PHASE4B_SOURCE_DELAY_ONLY
   production_agent_handoff: DISABLED
 activation_blockers:
@@ -623,7 +624,7 @@ evidence에는 포함되지만 로그에는 request ID·상태·content-free err
 | 경계 | 기본값·권한 |
 |---|---|
 | 실행 플래그 | `false` |
-| 합성 cycle allowlist | empty; 활성화 시 정확히 1개 |
+| 합성 monitor ID allowlist | empty; 활성화 시 정확히 1개 |
 | cutover | 2100-01-01; 활성화 시 명시한 epoch |
 | 인증 | 기존 O2 webhook secret을 Secrets Manager에서 실행 시 읽고 `x-dd-secret` 비교 |
 | IAM | 해당 secret read, Signal Queue send, 로그 쓰기만 허용 |
@@ -644,7 +645,7 @@ Phase 4A 병합 후 순서는 다음으로 고정한다.
 2. Function URL은 공유 문서에 남기지 않고, 기존 O2 webhook과 같은 secret header를 쓰는
    별도 Datadog Shadow webhook으로 등록
 3. 합성 monitor 하나에만 기존 webhook과 Shadow webhook을 함께 붙임
-4. Correlator·Generic Worker는 계속 disabled로 두고, Datadog Adapter는 합성 cycle 1개,
+4. Correlator·Generic Worker는 계속 disabled로 두고, Datadog Adapter는 합성 monitor ID 1개,
    Chat Adapter는 합성 broadcast 1개와 명시 cutover로만 일시 활성화
 5. Signal Queue 메시지의 envelope `occurred_at`과 SQS `SentTimestamp`를 source별로 기록
 6. Chat source-to-Queue, Datadog source-to-Queue, 두 source event-time 차이, 두 Queue 도착
@@ -680,6 +681,15 @@ Recovered가 같은 고정 cycle로 도착하는 것은 검증했지만 Datadog�
 index가 늦게 반영돼 초기 `run:` 쿼리가 빈 series였다. 테스트는 격리 전용 metric name의
 `{*}`만 감시했고, 후속 조회에서 세 tag와 filtered series가 모두 나타난 것을 확인했다.
 운영 monitor에서는 `{*}`로 우회하지 않고 tag-filter 조회가 가능해질 때까지 prewarm한다.
+
+D-066 후속 구현은 이 사전 미확정 문제를 제거하기 위해 guard를 합성 monitor ID 하나로
+바꿨다. 실제 `cycle_key`는 payload와 멱등 키에 그대로 남는다. 현재 브랜치에서는 코드·
+Terraform·계약 테스트만 변경했고 실환경 Lambda에는 아직 적용하지 않았다. 병합 후 비활성
+targeted apply를 먼저 수행하고, 원래 `$ALERT_CYCLE_KEY` payload로 Triggered/Recovered가 같은
+cycle인지 확인해야 `DATADOG_ALERT_CYCLE_KEY_SUBSTITUTION_NOT_VERIFIED` blocker를 제거한다.
+병합 전에는 Lambda 전체 50건(1건 skip), Terraform validate, 비활성 targeted plan
+`0 add / 1 update / 0 destroy`, 잘못된 활성 입력 차단까지 확인했다. 전체 plan의 기존 별도
+4 updates는 targeted apply 대상에 포함하지 않는다.
 
 종료 후 두 Adapter는 실행 `false`, allowlist empty, 2100 cutover로 복귀했고 Chat event source는
 `Disabled`다. 합성 monitor는 삭제 후 GET 404를 확인했고 Shadow webhook은 운영형 15필드

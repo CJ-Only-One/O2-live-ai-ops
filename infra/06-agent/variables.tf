@@ -231,17 +231,17 @@ variable "datadog_source_adapter_execution_enabled" {
   default     = false
 }
 
-variable "datadog_source_adapter_allowed_cycle_keys" {
-  description = "신규 Signal Queue 전송을 허용할 합성 Datadog cycle key. 활성화 시 정확히 1개"
+variable "datadog_source_adapter_allowed_monitor_ids" {
+  description = "신규 Signal Queue 전송을 허용할 합성 Datadog monitor ID. 활성화 시 정확히 1개"
   type        = set(string)
   default     = []
 
   validation {
     condition = alltrue([
-      for value in var.datadog_source_adapter_allowed_cycle_keys :
-      can(regex("^[^,:]{1,128}$", value))
+      for value in var.datadog_source_adapter_allowed_monitor_ids :
+      can(regex("^[^,]{1,128}$", value))
     ])
-    error_message = "Datadog Source Adapter allowlist는 쉼표·콜론 없는 1~128자 합성 cycle key만 허용한다."
+    error_message = "Datadog Source Adapter allowlist는 쉼표 없는 1~128자 합성 monitor ID만 허용한다."
   }
 }
 

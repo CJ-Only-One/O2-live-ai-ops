@@ -4,8 +4,8 @@
 # 기존 webhook은 그대로 Worker/Dify를 호출하고, 이 Lambda는 agent.trigger.v1 Signal
 # Queue까지만 보낸다. 따라서 신규 경로 장애가 기존 알림 분석 경로를 막지 않는다.
 #
-# 기본값은 execution false, cycle allowlist empty, cutover 2100-01-01이다. 활성화
-# Shadow에서도 합성 cycle 하나만 허용한다. Correlator와 Generic Worker는 별도
+# 기본값은 execution false, monitor allowlist empty, cutover 2100-01-01이다. 활성화
+# Shadow에서도 합성 monitor 하나만 허용한다. Correlator와 Generic Worker는 별도
 # gate이므로 이 Adapter를 켜는 것만으로 Dify를 호출할 수 없다.
 
 locals {
@@ -75,11 +75,11 @@ resource "aws_lambda_function" "datadog_source_adapter" {
 
   environment {
     variables = {
-      DATADOG_SOURCE_ADAPTER_EXECUTION_ENABLED  = tostring(var.datadog_source_adapter_execution_enabled)
-      DATADOG_SOURCE_ADAPTER_ALLOWED_CYCLE_KEYS = join(",", sort(tolist(var.datadog_source_adapter_allowed_cycle_keys)))
-      DATADOG_SOURCE_ADAPTER_NOT_BEFORE_EPOCH   = tostring(var.datadog_source_adapter_not_before_epoch)
-      DATADOG_SOURCE_ADAPTER_SECRET_NAME        = var.alert_secret_name_o2
-      AGENT_TRIGGER_QUEUE_URL                   = aws_sqs_queue.agent_entry.url
+      DATADOG_SOURCE_ADAPTER_EXECUTION_ENABLED   = tostring(var.datadog_source_adapter_execution_enabled)
+      DATADOG_SOURCE_ADAPTER_ALLOWED_MONITOR_IDS = join(",", sort(tolist(var.datadog_source_adapter_allowed_monitor_ids)))
+      DATADOG_SOURCE_ADAPTER_NOT_BEFORE_EPOCH    = tostring(var.datadog_source_adapter_not_before_epoch)
+      DATADOG_SOURCE_ADAPTER_SECRET_NAME         = var.alert_secret_name_o2
+      AGENT_TRIGGER_QUEUE_URL                    = aws_sqs_queue.agent_entry.url
     }
   }
 
@@ -93,13 +93,13 @@ resource "aws_lambda_function" "datadog_source_adapter" {
     precondition {
       condition = (
         (!var.datadog_source_adapter_execution_enabled &&
-          length(var.datadog_source_adapter_allowed_cycle_keys) == 0 &&
+          length(var.datadog_source_adapter_allowed_monitor_ids) == 0 &&
         var.datadog_source_adapter_not_before_epoch == 4102444800) ||
         (var.datadog_source_adapter_execution_enabled &&
-          length(var.datadog_source_adapter_allowed_cycle_keys) == 1 &&
+          length(var.datadog_source_adapter_allowed_monitor_ids) == 1 &&
         var.datadog_source_adapter_not_before_epoch < 4102444800)
       )
-      error_message = "Datadog Source Adapter는 disabled+empty+2100 cutoff 또는 enabled+합성 cycle 1개+명시 cutoff만 허용한다."
+      error_message = "Datadog Source Adapter는 disabled+empty+2100 cutoff 또는 enabled+합성 monitor ID 1개+명시 cutoff만 허용한다."
     }
   }
 }
