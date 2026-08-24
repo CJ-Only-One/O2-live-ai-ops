@@ -1,7 +1,7 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 3A synthetic guards deployed with execution gates disabled
+> **Status:** Phase 3B Incident Correlator deployed with execution gates disabled
 > **Updated:** 2026-08-24
 > **Decision:** `decisions.md` D-050 and D-055
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
@@ -15,8 +15,8 @@ implementation_state:
   generic_dify_worker: DEPLOYED_EXECUTION_DISABLED
   phase3_synthetic_guard: DEPLOYED_EXECUTION_DISABLED
   incident_correlation_contract: COMPLETE
-  incident_correlator: IMPLEMENTED_NOT_APPLIED
-  agent_invocation_queue: IMPLEMENTED_NOT_APPLIED
+  incident_correlator: DEPLOYED_EXECUTION_DISABLED
+  agent_invocation_queue: DEPLOYED_NO_CONSUMER
   idempotency_ledger: DEPLOYED_EMPTY
   dedicated_test_workflow: PUBLISHED_CODE_ONLY
   dedicated_test_workflow_ui_contract_tests: PASS
@@ -27,7 +27,6 @@ implementation_state:
   datadog_migration: NOT_STARTED
   production_agent_handoff: DISABLED
 activation_blockers:
-  - PHASE_3B_INFRASTRUCTURE_NOT_APPLIED
   - CORRELATION_WINDOW_NOT_MEASURED
   - DATADOG_MONITOR_MAPPING_NOT_CONFIGURED
   - PHASE_3_CORRELATION_E2E_NOT_RUN
@@ -448,7 +447,7 @@ Phase 3B 구현은 `infra/06-agent/incident_correlation.tf`과
 | correlation window | `0`; 0인 동안 활성화 precondition 실패 |
 | Chat mapping | S3 범위의 `READ_PATH → LATENCY/api`만 명시 |
 | Datadog monitor mapping | 빈 map; monitor ID를 명시하기 전 추측하지 않음 |
-| Agent Invocation Queue | 생성 대상이지만 Phase 3B consumer 없음 |
+| Agent Invocation Queue | 배포됨; Phase 3B consumer 없음 |
 | Generic Worker / Dify | 기존 비활성 경로 그대로, 신규 Queue 미연결 |
 
 source signal claim과 Incident revision 갱신은 한 DynamoDB transaction으로 묶는다. Queue
@@ -463,8 +462,33 @@ GSI에 `AMBIGUOUS` Incident가 남아 있어도 자동 병합 후보에서는 �
 단위 테스트는 Chat→Datadog, Datadog→Chat, window 밖 분리, 복수 후보 ambiguity, mapping
 부족, 중복, pending replay, 비물질적 same-source update, 원문 필드 거부, 비활성 gate,
 DynamoDB transaction 3항목 구성을 포함한다. 로컬 Python과 Lambda Python 3.12에서 통과했고,
-생성된 provisional/correlated snapshot은 `agent.incident.v1` Schema를 통과했다. 아직
-Terraform apply와 Phase 3C 합성 E2E는 수행하지 않았다.
+생성된 provisional/correlated snapshot은 `agent.incident.v1` Schema를 통과했다.
+
+2026-08-24 병합본에서 Phase 3B 신규 리소스만 제한한 저장 plan을 적용했다. 적용 전
+계획은 `13 add, 0 change, 0 destroy`였고, 실행 플래그 `false`, event source `false`,
+correlation window `0`, 빈 합성 allowlist, 빈 Datadog monitor mapping, Agent Invocation
+Queue consumer 0개를 기계적으로 확인했다. 기존 `06-agent` Lambda와 IAM 변경은 이
+저장 plan에 포함하지 않았다.
+
+적용 후 실환경 확인 결과는 다음과 같다.
+
+| 검증 항목 | 결과 |
+|---|---|
+| 대상 apply | `13 added, 0 changed, 0 destroyed` |
+| Incident Correlator | `Active`, Python 3.12, reserved concurrency 2 |
+| Correlator 실행 플래그 | `false`; window `0`, allowlist empty, Datadog mapping `{}` |
+| Correlator event source | `Disabled`, batch size 1, 처리 결과 없음 |
+| 기존 Generic Worker event source | `Disabled`, 처리 결과 없음 |
+| Agent Invocation Queue consumer | 0개 |
+| Signal Queue/DLQ · Invocation Queue/DLQ | visible, in-flight, delayed 모두 0 |
+| Incident State | `ACTIVE`, `PAY_PER_REQUEST`, SSE·TTL·PITR enabled, GSI `ACTIVE`, item 0 |
+| Correlator 실행 흔적 | CloudWatch Log Stream 0개 |
+| 신규 경로의 Dify 호출 가능성 | Correlator 미실행, 두 Queue consumer 없음으로 차단 |
+| 전체 `06-agent` 재-plan | `0 add, 5 change, 0 destroy`; 기존 Lambda 4개와 연관 IAM 변경만 남음 |
+
+따라서 Phase 3B는 `DEPLOYED_EXECUTION_DISABLED`다. Queue age 알람은 신규·무트래픽
+Queue라 최초 확인 시 `INSUFFICIENT_DATA`였고, DLQ·Lambda Error 알람은 `OK`였다.
+Phase 3C 합성 E2E 전에는 어떤 event source나 실행 플래그도 변경하지 않는다.
 
 ## 7. 각 Phase에서 사람이 확인할 것
 
