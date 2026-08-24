@@ -83,3 +83,48 @@ def set_replicas(ns: str, deployment: str, replicas: int) -> bool:
     except (httpx.HTTPError, K8sUnavailable):
         logger.exception("replicas patch 실패: %s -> %s", deployment, replicas)
         return False
+
+
+# ── KEDA ScaledObject ────────────────────────────────────────
+#
+# order-worker 는 Deployment 의 replicas 를 만지면 안 된다. KEDA 가 그 필드를
+# 소유하고 SQS 큐 길이로 계속 조절하므로, 직접 patch 하면 다음 조절 주기에
+# 되돌려진다(매니페스트에 replicas 필드 자체가 없는 이유이기도 하다).
+#
+# 대신 ScaledObject 의 minReplicaCount(바닥)만 올린다. KEDA 는 그 위에서
+# 계속 자기 일을 한다 — 워머가 미리 올려둔 것으로 부족하면 KEDA 가 더 올린다.
+
+
+def _scaledobject_path(ns: str, name: str) -> str:
+    return f"/apis/keda.sh/v1alpha1/namespaces/{ns}/scaledobjects/{name}"
+
+
+def get_min_replicas(ns: str, name: str) -> int | None:
+    """ScaledObject 의 현재 minReplicaCount.
+
+    이 필드는 생략 가능하다(KEDA 기본값 0). 없으면 0 으로 읽는다 — None 은
+    "조회 실패" 라는 뜻으로만 쓴다.
+    """
+    try:
+        with _client() as client:
+            res = client.get(_scaledobject_path(ns, name))
+            res.raise_for_status()
+            return res.json().get("spec", {}).get("minReplicaCount", 0)
+    except (httpx.HTTPError, K8sUnavailable):
+        logger.exception("minReplicaCount 조회 실패: %s", name)
+        return None
+
+
+def set_min_replicas(ns: str, name: str, replicas: int) -> bool:
+    try:
+        with _client() as client:
+            res = client.patch(
+                _scaledobject_path(ns, name),
+                json={"spec": {"minReplicaCount": replicas}},
+                headers={"Content-Type": "application/merge-patch+json"},
+            )
+            res.raise_for_status()
+            return True
+    except (httpx.HTTPError, K8sUnavailable):
+        logger.exception("minReplicaCount patch 실패: %s -> %s", name, replicas)
+        return False

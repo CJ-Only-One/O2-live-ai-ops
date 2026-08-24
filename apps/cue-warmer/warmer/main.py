@@ -273,7 +273,15 @@ def reconcile_scale(bodies: list[dict], now: datetime) -> int:
     ns = settings.APP_NAMESPACE
     changed = 0
     for service, target in targets.items():
-        current = k8s.get_replicas(ns, service)
+        # order-worker 만 만지는 리소스가 다르다. KEDA 가 Deployment 의
+        # replicas 를 소유하므로 그걸 patch 하면 다음 조절 주기에 되돌려진다
+        # — ScaledObject 의 minReplicaCount(바닥)를 올려 KEDA 가 그 위에서
+        # 계속 조절하게 둔다.
+        keda = service in settings.KEDA_MANAGED
+        read = k8s.get_min_replicas if keda else k8s.get_replicas
+        write = k8s.set_min_replicas if keda else k8s.set_replicas
+
+        current = read(ns, service)
         if current is None:
             continue
 
@@ -281,7 +289,7 @@ def reconcile_scale(bodies: list[dict], now: datetime) -> int:
         if current == target or (not reverting and current >= target):
             continue
 
-        if k8s.set_replicas(ns, service, target):
+        if write(ns, service, target):
             logger.info(
                 "%s: %s %d -> %d",
                 "원복" if reverting else "사전 확장",

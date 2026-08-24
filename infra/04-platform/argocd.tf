@@ -134,10 +134,12 @@ resource "helm_release" "argocd_apps" {
           server    = "https://kubernetes.default.svc"
           namespace = "o2-dev"
         }
-        # replicas 를 사람 아닌 것이 만지는 Deployment 는 이 목록에 넣는다.
-        # 정상 기준값을 Git 에 남겨야 실험 종료 후 되돌릴 기준이 생기므로
-        # 필드를 지우지 않고 이 필드만 selfHeal 대상에서 제외한다.
-        # (KEDA 가 소유하는 order-worker 는 아예 필드가 없어 해당 없음)
+        # 파드 수를 사람 아닌 것이 만지는 리소스는 이 목록에 넣는다.
+        # 정상 기준값을 Git 에 남겨야 실험·방송 종료 후 되돌릴 기준이 생기므로
+        # 필드를 지우지 않고 그 필드만 selfHeal 대상에서 제외한다.
+        #
+        # **리소스와 필드를 정확히 지정해야 적용된다 — 와일드카드가 아니다.**
+        # 대상을 늘리면 여기도 같이 늘려야 한다.
         #
         # 넣지 않으면 늘린 쪽과 Argo 가 서로 되돌리기를 무한 반복한다.
         # 양쪽 다 자기 일을 정상적으로 했다고만 로그를 남겨 알아채기 늦다
@@ -169,6 +171,21 @@ resource "helm_release" "argocd_apps" {
             name         = "chat-gateway"
             namespace    = "o2-dev"
             jsonPointers = ["/spec/replicas"]
+          },
+          {
+            # order-worker 만 만지는 필드가 다르다. Deployment 의 replicas 는
+            # KEDA 가 소유하므로(매니페스트에 그 필드가 아예 없다) 워머는
+            # ScaledObject 의 minReplicaCount — 바닥 — 만 올리고, KEDA 는 그
+            # 위에서 큐 길이를 보고 계속 조절한다. 특가 전에 미리 올려둔 것으로
+            # 부족하면 KEDA 가 더 올린다(D-041 의 층 구조).
+            #
+            # maxReplicaCount 는 넣지 않는다. 그건 한계가 아니라 실측에서 나온
+            # 목표값이라(파드당 49 msg/s 로 12까지 선형, M-014) 사람만 바꾼다.
+            group        = "keda.sh"
+            kind         = "ScaledObject"
+            name         = "order-worker"
+            namespace    = "o2-dev"
+            jsonPointers = ["/spec/minReplicaCount"]
           },
         ]
         syncPolicy = {
