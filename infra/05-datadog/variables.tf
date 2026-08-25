@@ -263,6 +263,12 @@ variable "enable_chat_incident_monitors" {
   default     = false
 }
 
+variable "enable_s1_dify_webhook" {
+  description = "S1 E2E 시 기존 @webhook-o2-dify 경로로 Agent를 깨운다. 운영 기본값은 false."
+  type        = bool
+  default     = false
+}
+
 variable "chat_propagation_p95_warning_ms" {
   description = <<-EOT
     S1 전파 p95 경고 임계 (ms).
