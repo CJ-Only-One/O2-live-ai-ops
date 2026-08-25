@@ -38,6 +38,42 @@ resource "aws_eks_addon" "pre_node" {
   resolve_conflicts_on_update = "PRESERVE"
 }
 
+# coredns 와 metrics-server 는 복제본이 둘인데 배치 제약이 없어 같은 노드에
+# 올라간다. 실제로 2026-08-25 에 넷 다 한 노드에 몰려 있었다. coredns 가
+# 통째로 사라지면 새 파드가 뜰 때까지 클러스터의 모든 이름 해석이 실패한다 —
+# 앱 파드가 몰린 것보다 파급이 크다.
+#
+# 애드온이라 매니페스트 저장소가 아니라 configuration_values 로 넣는다.
+# 두 애드온 모두 스키마에 topologySpreadConstraints 가 있다.
+#
+# whenUnsatisfiable 을 ScheduleAnyway 로 둔다. DoNotSchedule 이면 한쪽 AZ 에
+# 자리가 없을 때 파드가 아예 안 뜨는데, 이 둘은 클러스터 기반 구성요소라
+# 뜨지 못하는 편이 몰려 있는 것보다 나쁘다. 스케줄러가 자리가 있는 한
+# 반드시 가르므로 평시에는 DoNotSchedule 과 결과가 같다.
+locals {
+  # 라벨은 실제 파드에서 확인한 값이다 — coredns 는 k8s-app: kube-dns,
+  # metrics-server 는 app.kubernetes.io/name 을 쓴다. 애드온마다 다르므로
+  # 하나로 묶을 수 없다.
+  core_addon_spread_by_addon = {
+    coredns = jsonencode({
+      topologySpreadConstraints = [{
+        maxSkew           = 1
+        topologyKey       = "topology.kubernetes.io/zone"
+        whenUnsatisfiable = "ScheduleAnyway"
+        labelSelector     = { matchLabels = { "k8s-app" = "kube-dns" } }
+      }]
+    })
+    metrics-server = jsonencode({
+      topologySpreadConstraints = [{
+        maxSkew           = 1
+        topologyKey       = "topology.kubernetes.io/zone"
+        whenUnsatisfiable = "ScheduleAnyway"
+        labelSelector     = { matchLabels = { "app.kubernetes.io/name" = "metrics-server" } }
+      }]
+    })
+  }
+}
+
 resource "aws_eks_addon" "post_node" {
   for_each = toset(local.addons_post_node)
 
@@ -47,6 +83,10 @@ resource "aws_eks_addon" "post_node" {
 
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "PRESERVE"
+
+  # 라벨 셀렉터가 애드온마다 달라 각자 만든다. 나머지 애드온은 복제본이
+  # 하나뿐(DaemonSet 포함)이라 흩을 것이 없으므로 넣지 않는다.
+  configuration_values = lookup(local.core_addon_spread_by_addon, each.key, null)
 
   # CoreDNS는 스케줄될 노드가 없으면 Degraded 상태로 apply가 실패한다.
   depends_on = [aws_eks_node_group.default]
