@@ -38,7 +38,9 @@ else:
     _BOTO3_STUBBED = False
 
 # worker 는 이 둘만 필수로 읽는다. 이력 관련 변수는 일부러 비워 둔다 —
-# 그게 O2 파이프라인의 상태이고, import 가 죽지 않아야 한다.
+# O2 파이프라인은 2026-08-22 부터 실제로는 이력이 켜져 있지만(history_o2.tf),
+# 이 zip 을 공유하는 파이프라인이 그 변수 없이도 안 죽어야 한다는 것 자체를
+# 이 점검이 보장한다.
 os.environ.setdefault("ALERT_SECRET_NAME", "dummy")
 os.environ.setdefault("DIFY_URL", "http://127.0.0.1/v1/workflows/run")
 os.environ.setdefault("WORKER_FUNCTION", "dummy")
@@ -55,7 +57,7 @@ if _BOTO3_STUBBED:
 
 
 def test_import_survives_without_history_env():
-    """O2 파이프라인은 이 변수들이 없다. 대괄호로 읽으면 여기서 죽는다."""
+    """이 점검은 이력 변수를 일부러 안 준다. 대괄호로 읽으면 여기서 죽는다."""
     assert worker.HISTORY_ENABLED is False
     assert worker.HISTORY_BUCKET is None
 
@@ -116,6 +118,29 @@ def test_incident_key_falls_back():
     assert worker._incident_key({"cycle_key": "c1", "event_id": "e1"}) == "c1"
     assert worker._incident_key({"cycle_key": "", "event_id": "e1"}) == "e1"
     assert worker._incident_key({}) == "unknown"
+
+
+def test_last_action_taken_reads_final_attempt():
+    """조치가 실행된 인시던트는 action_taken 이 'none'으로 고정되면 안 된다."""
+    import json as _json
+
+    outputs = {
+        "final_report_json": _json.dumps(
+            {
+                "attempt_log": [
+                    {"status": "NO_RECOVERY", "action_result": {"action_id": "isolate_slow_pod"}},
+                    {"status": "RESOLVED", "action_result": {"action_id": "limit_channel_volume"}},
+                ]
+            }
+        )
+    }
+    assert worker._last_action_taken(outputs) == "limit_channel_volume"
+
+
+def test_last_action_taken_defaults_to_none():
+    """진단만 하고 조치가 없었던 인시던트(빈 attempt_log)는 여전히 'none'이 맞다."""
+    assert worker._last_action_taken({"final_report_json": '{"attempt_log":[]}'}) == "none"
+    assert worker._last_action_taken({}) == "none"
 
 
 # ── 복구 결과 적재 ────────────────────────────────────────────────
