@@ -59,7 +59,7 @@
 
 | 요구 | 현재 | 판정 |
 |---|---|---|
-| 조치 실행기 (파드 수·노브 변경) | S2는 `action_executor.tf` + `scale_deployment.py`, S1은 `/ws/admin/channel-limit`로 구현됐다. 옛 S3 `/api/admin/read-path-degraded`는 자산만 유지한다. 새 S3 결제 client pool·timeout/retry 실행기는 없다 | **고쳐야** |
+| 조치 실행기 (파드 수·노브 변경) | S2는 `action_executor.tf` + `scale_deployment.py`, S1은 `/ws/admin/channel-limit`로 구현됐다. S3는 PG-A 장애 주입 제어면만 있고 PG-A→PG-B Failover Action Handler는 없다. 옛 `/api/admin/read-path-degraded`는 자산만 유지한다 | **고쳐야** |
 | Dify → EKS 권한 (인스턴스 역할 + RBAC) | 직접 권한 대신 S2 실행기 Lambda에 EKS Access Entry와 `deployments/scale` get·patch만 부여했다(`04-platform/action_executor_access.tf`) | **구현됨** |
 | `cfg:*` 노브 저장·조회 | chat-gateway의 `cfg:channel_limit:*`, api의 `cfg:read_path_degraded:*`와 S3 목업 PG의 `cfg:pg:*` SET·DEL 및 테스트가 있다 | **구현됨** |
 | 노브 카탈로그 (가역성·예산·precondition·검증 지표) | `seed_runbook.py`의 `KNOBS`, `runbook_lookup.py` 조회와 단위 테스트가 있다. 시간·예산 수치는 미측정이라 `None`. 형식과 live 대조는 `runbook-catalog.md` | **구현됨** |
@@ -100,7 +100,7 @@
 | replicas 동기화 예외 | `argocd.tf`에 api `/spec/replicas` ignore와 `RespectIgnoreDifferences=true`가 있다. 실험 종료 시 2로 명시 원복 | **구현됨** |
 | api 에 HPA·KEDA 없을 것 | ScaledObject 는 `order-worker` 에만 붙어 있다 | **있음** |
 
-### 2.4 S3 — 외부 결제 PG 장애 / 소진 → 실패 보고
+### 2.4 S3 — 외부 결제 PG 장애 / 1차 실패 → 지식화 → 2차 해결
 
 | 요구 | 현재 | 판정 |
 |---|---|---|
@@ -109,9 +109,14 @@
 | **목업 PG 스텁** | `apps/api/app/services/payment.py`가 주문 예약 뒤 `cfg:pg:*` 지연·결정론적 실패를 적용하고 `payment.process`를 발행한다. PG 실패 시 재고·멱등키를 보상한다(D-078). 아직 배포·실측 전 | **구현됨** |
 | **`cfg:pg:*` 노브** | `/api/admin/pg-stub`이 별도 admin key로 `delay_ms`·`fail_rate`를 함께 SET·DEL한다. 단위 테스트가 있고 배포 Secret 값은 별도 주입 필요 | **구현됨** |
 | **주문 부하 스크립트** | `loadtest/order-path.js`가 고정 도착률 주문을 만들며 RATE·DURATION·VU 수를 필수 입력으로 받는다. 시나리오 식별 헤더는 없다 | **구현됨** |
-| `pg_external_failure` 런북 (조치 **둘 이상**) | 결제 client pool 확대와 timeout/retry 조정 두 액션을 `status=draft`로 시딩한다. 옛 PostgreSQL 의미의 네 액션은 삭제하지 않고 retired 처리한다. 실제 Action Handler는 없음 | **설계만** |
+| Dify History 유무 분기 | Worker가 S3 Vectors 검색 결과를 `past_cases`로 넘기고 DSL이 진단 프롬프트에 포함한다. 하지만 History 없음/있음을 명시적으로 나누는 조건 분기와 verified 상태 검사는 없다 | **고쳐야** |
+| 1차 실행: active Runbook 없음 → 실패 보고 | draft Runbook은 Lookup에서 제외되지만, active action 0건을 즉시 `ESCALATED`로 끝내는 전용 분기와 종료 사유는 없다. 현재 DSL은 후보 소진·재진단 루프로 갈 수 있다 | **고쳐야** |
+| 사람 해결 사례 → verified History | History 저장 기반은 있지만 PG-A→PG-B 수동 해결 사례를 검토·verified 처리하고 반복 시연용으로 격리하는 입력 경로는 없다 | **없음** |
+| PG Failover Runbook 생명주기 | 현재 `pg_external_failure` draft는 client pool·timeout/retry 조치라 최신 시나리오와 다르다. PG-B 상태·전환 조건·멱등성·오적용·실패·원복 검증을 담은 draft와 active 승격 증거가 필요하다 | **고쳐야** |
+| PG-B 상태·전환·원복 제어면 | 목업은 `pg_provider=PG-A`만 발행한다. PG-B 상태 확인, 라우팅 전환, 원복, Provider별 성공 이벤트가 없다 | **없음** |
+| PG-A→PG-B Action Handler | Guardrail 이후 호출할 실행기가 없다. 결제 경로 전환은 `L3`로 등록하고 Slack 승인 뒤에만 실행해야 한다 | **없음** |
 | `pg_latency_ratio` 집계 | `o2warm/sketch.py`·`metrics.py` 에 있다. `pg_latency_ms` 가 안 들어와서 지금은 표본이 0 | **있음** |
-| `pg_external_failure` 복구 판정 | `recovery_judge` 폴백에 `p95<=400`·`error<=0.05` 가 이미 있다 | **있음** |
+| `pg_external_failure` 복구 판정 | `recovery_judge`에 p95·error 폴백은 있지만 실측 기준이 아니며 PG-B 성공 이벤트와 채팅 불만 감소를 확인하지 않는다 | **고쳐야** |
 | 병합 키에서 `broadcast_id` 제외 | Correlator 가 source·service 로 묶는다. **S3 만 방송 축을 빼는 분기가 없다**(D-076) | **고쳐야** |
 | ~~읽기 요청당 CPU 감소 노브~~ | `/api/admin/read-path-degraded`(D-062) — **S3 에서 빠졌지만 지우지 않는다**(D-076). 읽기 경로 보호로는 유효 | **있음 · 미사용** |
 | ~~사람/자동화 두 패턴 부하~~ | `read-path.js` 의 `human`·`ambiguous` — **S3 에서 빠졌지만 지우지 않는다**(D-076) | **있음 · 미사용** |
@@ -136,12 +141,15 @@
 1. **Datadog 모니터 이름의 시나리오 번호** — 지금 이름은 옛 번호(시나리오 1·2·4·5·6)이고
    현재 셋은 S1·S2·S3 다. 표시 이름만 정리하고 Terraform 리소스 이름은 건드리지 않는다.
 2. **저장소 Dify DSL 드리프트** — 실환경 DSL 을 저장소로 내보낸다. T-022, production
-   migration blocker 다.
+   migration blocker 다. 그 위에서 S3의 `History 없음 → 실패 보고`와
+   `History 있음 → 현재 증거 재검증 → active Runbook` 조건 분기를 명시적으로 추가한다.
 3. **S1 서버측 검증 지표** — `chat_propagation_p95`는 아직 k6에만 있다. Agent가
    `Verifying`에서 읽을 수 있는 전달 경로와 정상 사용자 차단률 전용 scalar를 정한다.
 4. **자원 요청 현실화는 보류** — api `cpu: 100m`은 실제 사용량보다 작지만, 지금 올리면
    canary 실험 중 Karpenter 노드가 추가돼 조건이 흔들린다. 노드 여유가 한 파드분 이상
    늘거나 api HPA를 도입할 때 재개한다.
+5. **S3 draft Runbook 교체** — client pool·timeout/retry 후보는 최신 S3의 실행 절차가 아니다.
+   자동 조회되지 않게 유지하고, 검증된 PG-A→PG-B Failover 절차로 대체한다.
 
 ## 4. 추가해야 할 것
 
@@ -167,9 +175,15 @@
 4. **Candidate → Agent handoff** — `agent_handoff_status` 를 실제로 연결한다. 실행 게이트
     둘(`chat_source_adapter_execution_enabled` · `chat_source_adapter_event_source_enabled`)은
     한 줄 실수를 막으려고 일부러 분리해둔 것이므로 순서대로 켠다.
-5. **효과 실측** — S1 강도별 차단률·p95, S2 CPU/probe 창과 최종 원복, S3 결제
-   client pool·timeout/retry 조치의 미복구와 원복 결과를 `measurements.md`에 남긴다.
-6. **데모 전용 모니터** — S1·S2 용 `last_1m~2m`. **S3 는 `last_5m` 그대로 둔다** —
+5. **S3 PG-B 제어면과 실행기** — PG-B 상태 확인, PG-A→PG-B 전환, 원복, Provider별
+   성공 이벤트, `L3` Action Handler를 추가한다. 전환 전 남은 PG-B 용량과 결제 가능
+   상태를 결정론적으로 검사한다.
+6. **S3 지식화 경로** — 사람의 수동 해결 결과를 verified History로 남기고, 별도 검증
+   증거를 통과한 Runbook만 active로 승격한다. 반복 시연은 공유 append-only History를
+   지우지 않도록 격리 데이터셋·벡터 인덱스를 사용한다.
+7. **효과 실측** — S1 강도별 차단률·p95, S2 CPU/probe 창과 최종 원복, S3 동일 주입에서
+   PG-A 실패와 PG-B 우회 성공, 주문 실패율·p95·채팅 불만 감소를 `measurements.md`에 남긴다.
+8. **데모 전용 모니터** — S1·S2 용 `last_1m~2m`. **S3 는 `last_5m` 그대로 둔다** —
     그 지연 자체가 S3 의 주제다.
 
 ## 5. 뺄 것
@@ -193,11 +207,12 @@
 |---|---|---|
 | 0 | 배포 전 정적 검증 — 두 저장소 테스트·Terraform·Kustomize render | 실행 경로의 구조 오류를 먼저 제거한다 |
 | 1 | Service 멤버십 라벨과 Argo replica 예외 배포 | S2 canary와 임시 증설의 전제다 |
-| 2 | S3 효과 실측 | 상태 머신 없이도 조치 효과와 원복을 먼저 확인할 수 있다 |
+| 2 | S3 PG-B 제어면·Failover 실행기와 지식화 경로 구현 | 1차 실패와 2차 성공을 가르는 핵심 전제다 |
 | 3 | S2 canary CPU/probe 스윕과 범용 런북 검증 | 주입값·1차 실패·격리·최종 원복을 고정한다 |
 | 4 | S1 파형·강도 스윕과 서버측 검증 지표 연결 | p95와 차단률을 Agent가 읽게 만든다 |
-| 5 | Correlator 운영 설정 + 상태 머신 + Dify handoff | 세 시나리오를 실제 게이트 흐름으로 연결한다 |
-| 6 | 녹화 프로필과 모니터 표시 이름 | 동작 검증이 끝난 뒤 시연 시간만 줄인다 |
+| 5 | Correlator 운영 설정 + 상태 머신 + Dify handoff·History 분기 | 세 시나리오를 실제 게이트 흐름으로 연결한다 |
+| 6 | S3 동일 장애 1차·2차 E2E와 효과 실측 | 같은 주입에서 History·Runbook 유무만 결과를 바꾸는지 확인한다 |
+| 7 | 녹화 프로필과 모니터 표시 이름 | 동작 검증이 끝난 뒤 시연 시간만 줄인다 |
 
 **백업 계획** — 조치 실행기가 제때 안 되면 축소 시연으로 간다. Agent 가 조치 명령을 Slack 에
 내고, 사람이 실행하고, Agent 가 검증한다. 주제가 human-in-the-loop 이라 이 축소가 오히려
@@ -220,6 +235,7 @@ M-016(파드 축 전제)이다. 아래는 전부 **안 쟀다.** 재면 `measure
 | CPU 상한 창 (Ready 는 유지, 요청은 느림) · canary p95 대 정상 파드 p95 중앙값의 비 | S2 주입 · Go/No-Go |
 | 증설 전후 서비스 p50·p95·p99 · 격리 후 복귀 폭 · 반복 재현율 | S2 1차·2차·최종 검증 |
 | 결제 PG 주입 강도(`delay_ms` × 주문 RPS)와 읽기 경로 생존 구간 | S3 주입값 · 오진 방지 |
-| 결제 client pool·timeout/retry 조치 전후와 원복 결과 | S3 후보 소진·실패 보고 Go/No-Go |
+| PG-B 상태 확인·전환·원복 시간과 실패 조건 | S3 Failover Runbook·Guardrail 입력 |
+| 동일 PG-A 주입에서 PG-A 실패율과 PG-B 성공 이벤트·주문 p95·채팅 불만 감소 | S3 1차 실패·2차 성공 Go/No-Go |
 | 게이트별 사람 대기 시간과 Agent 순수 처리 시간 | MTTR 분해 |
 | 서비스별 부하 시 실제 CPU·MEM | 자원 요청 현실화. api 만 M-009 에 있고 M-008 은 무부하값이다 |
