@@ -104,6 +104,26 @@ data "aws_iam_policy_document" "agent_entry_worker" {
   }
 
   statement {
+    sid     = "InvokeMetricReadApis"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:o2-hot-api",
+      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:o2-warm-api",
+    ]
+  }
+
+  statement {
+    sid     = "ReadMetricApiKeys"
+    effect  = "Allow"
+    actions = ["ssm:GetParameter"]
+    resources = [
+      "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/o2/warm/api-key",
+      "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/o2/api/read-path-degraded-admin-key",
+    ]
+  }
+
+  statement {
     sid       = "EmbedAgentIncidentHistory"
     effect    = "Allow"
     actions   = ["bedrock:InvokeModel"]
@@ -128,30 +148,6 @@ data "aws_iam_policy_document" "agent_entry_worker" {
     resources = ["${aws_s3_bucket.history_o2.arn}/incidents/*"]
   }
 
-  statement {
-    sid       = "EmbedAgentIncidentHistory"
-    effect    = "Allow"
-    actions   = ["bedrock:InvokeModel"]
-    resources = ["arn:aws:bedrock:${var.region}::foundation-model/${local.embed_model_id}"]
-  }
-
-  statement {
-    sid    = "SearchAndStoreAgentIncidentHistory"
-    effect = "Allow"
-    actions = [
-      "s3vectors:QueryVectors",
-      "s3vectors:GetVectors",
-      "s3vectors:PutVectors",
-    ]
-    resources = [aws_s3vectors_index.incidents_o2.index_arn]
-  }
-
-  statement {
-    sid       = "WriteAgentIncidentHistory"
-    effect    = "Allow"
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.history_o2.arn}/incidents/*"]
-  }
 }
 
 resource "aws_iam_role_policy" "agent_entry_worker" {
@@ -174,6 +170,12 @@ data "archive_file" "agent_entry_worker" {
   source {
     content  = file("${path.module}/lambda/agent_entry_worker.py")
     filename = "lambda_function.py"
+  }
+
+
+  source {
+    content  = file("${path.module}/lambda/agent_metric_enrichment.py")
+    filename = "agent_metric_enrichment.py"
   }
 }
 
@@ -205,17 +207,22 @@ resource "aws_lambda_function" "agent_entry_worker" {
       AGENT_ENTRY_ALLOWED_INCIDENT_IDS = join(",", sort(tolist(var.agent_entry_allowed_incident_ids)))
       AGENT_ENTRY_OPERATIONAL_MODE     = tostring(var.agent_entry_operational_handoff_approved)
 
-      DIFY_URL             = "http://${aws_instance.dify.private_ip}/v1/workflows/run"
-      AGENT_ENTRY_SECRET   = var.agent_entry_secret_name
-      IDEMPOTENCY_TABLE    = aws_dynamodb_table.agent_entry_idempotency.name
-      INCIDENT_STATE_TABLE = data.aws_dynamodb_table.incident_state.name
-      IDEMPOTENCY_TTL      = tostring(var.agent_entry_idempotency_ttl_seconds)
-      IDEMPOTENCY_LEASE    = "120"
-      DIFY_TIMEOUT_SECONDS = "45"
-      HISTORY_BUCKET       = aws_s3_bucket.history_o2.bucket
-      VECTOR_BUCKET        = aws_s3vectors_vector_bucket.history_o2.vector_bucket_name
-      VECTOR_INDEX         = aws_s3vectors_index.incidents_o2.index_name
-      EMBED_MODEL_ID       = local.embed_model_id
+      DIFY_URL                  = "http://${aws_instance.dify.private_ip}/v1/workflows/run"
+      AGENT_ENTRY_SECRET        = var.agent_entry_secret_name
+      IDEMPOTENCY_TABLE         = aws_dynamodb_table.agent_entry_idempotency.name
+      INCIDENT_STATE_TABLE      = data.aws_dynamodb_table.incident_state.name
+      IDEMPOTENCY_TTL           = tostring(var.agent_entry_idempotency_ttl_seconds)
+      IDEMPOTENCY_LEASE         = "120"
+      DIFY_TIMEOUT_SECONDS      = "45"
+      HISTORY_BUCKET            = aws_s3_bucket.history_o2.bucket
+      VECTOR_BUCKET             = aws_s3vectors_vector_bucket.history_o2.vector_bucket_name
+      VECTOR_INDEX              = aws_s3vectors_index.incidents_o2.index_name
+      EMBED_MODEL_ID            = local.embed_model_id
+      HOT_API_FUNCTION          = "o2-hot-api"
+      WARM_API_FUNCTION         = "o2-warm-api"
+      WARM_API_KEY_PARAM        = "/o2/warm/api-key"
+      READ_PATH_ADMIN_KEY_PARAM = "/o2/api/read-path-degraded-admin-key"
+      READ_PATH_STATUS_URL      = var.agent_read_path_status_url
     }
   }
 

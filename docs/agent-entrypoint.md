@@ -258,8 +258,9 @@ compact JSON string으로 직렬화해 다음처럼 보낸다.
 - `behavior`는 실험용 선택값이므로 공통 계약에 넣지 않는다.
 - Dify의 모르는 입력 키 무시 동작에 기대지 않는다. 호출 전 Schema 검증과 게시 앱
   `/parameters`의 변수 존재 확인을 배포 게이트로 둔다.
-- 워크플로는 `source`로 분기하고, Chat이면 먼저 read-only Datadog Pull로 Candidate 시간창
-  주변 메트릭을 조회한다. 모니터가 아직 울리지 않았다는 사실만으로 정상 판정하지 않는다.
+- Generic Worker는 Dify 호출 전에 `incident_family`별 승인 catalog로 Hot/Warm 및 권위 상태를
+  조회한다(D-084). Dify는 메트릭 API나 비밀값을 소유하지 않고 보강된
+  `assessment_input.measurements`를 판단에 사용한다. 조회 결측은 0으로 바꾸지 않는다.
 - organic traffic과 automation을 서버 측 증거로 구분하지 못하면 `UNDETERMINED`를 유지하고
   운영자에게 외부 사실을 묻는다. 운영자도 모르면 원인을 가르지 않는 안전 조치를 제안한다.
 

@@ -13,6 +13,11 @@ on:
     branches: [main]
     paths: ['apps/**', '.github/workflows/app.yml']
   workflow_dispatch:
+    inputs:
+      services:
+        description: '배포할 서비스 이름(쉼표 구분). 비우면 기존 변경 감지 규칙 사용'
+        required: false
+        type: string
 
 concurrency:
   group: app-${{ github.ref }}
@@ -69,17 +74,30 @@ jobs:
           fi
 
           SERVICES=()
-          for dir in apps/*/; do
-            [ -d "$dir" ] || continue
-            svc=$(basename "$dir")
-            # 기준 커밋을 못 찾거나(최초 푸시), 수동 실행이거나, 워크플로
-            # 자체가 바뀌었으면 전부 대상으로 삼는다.
-            if { [ -z "$CHANGED" ] && [ "${{ github.event_name }}" != "pull_request" ]; } || [ -n "$WORKFLOW_CHANGED" ]; then
+          REQUESTED='${{ inputs.services }}'
+          if [ -n "$REQUESTED" ]; then
+            IFS=',' read -ra REQUESTED_SERVICES <<< "$REQUESTED"
+            for svc in "${REQUESTED_SERVICES[@]}"; do
+              svc="${svc//[[:space:]]/}"
+              if [[ ! "$svc" =~ ^[a-z0-9-]+$ ]] || [ ! -d "apps/$svc" ]; then
+                echo "::error::알 수 없는 서비스입니다: $svc"
+                exit 1
+              fi
               SERVICES+=("$svc")
-            elif echo "$CHANGED" | grep -q "^apps/$svc/"; then
-              SERVICES+=("$svc")
-            fi
-          done
+            done
+          else
+            for dir in apps/*/; do
+              [ -d "$dir" ] || continue
+              svc=$(basename "$dir")
+              # 기준 커밋을 못 찾거나(최초 푸시), 수동 실행이거나, 워크플로
+              # 자체가 바뀌었으면 전부 대상으로 삼는다.
+              if { [ -z "$CHANGED" ] && [ "${{ github.event_name }}" != "pull_request" ]; } || [ -n "$WORKFLOW_CHANGED" ]; then
+                SERVICES+=("$svc")
+              elif echo "$CHANGED" | grep -q "^apps/$svc/"; then
+                SERVICES+=("$svc")
+              fi
+            done
+          fi
 
           if [ ${#SERVICES[@]} -eq 0 ]; then
             echo "any=false" >> "$GITHUB_OUTPUT"

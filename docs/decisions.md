@@ -98,6 +98,7 @@
 | D-081 | Incident 운영 전환은 Shadow 모드와 승인 gate를 분리한다 | cooldown, reopen, measured window, operational approval |
 | D-082 | 운영 READ_PATH Incident handoff는 composite evidence와 세 승인 window를 사용한다 | COMPOSITE_CONDITION, recovery 300초, cooldown 300초, reopen 1800초 |
 | D-083 | 기존 모니터를 유지하고 S1 채팅 과부하 지표를 별도 Monitor로 추가한다 | `o2.chat.propagation`, `o2.warm.channel_limited_rate`, broadcast scope 선행 조건 |
+| D-084 | Dify가 아니라 Agent Worker가 승인된 복구 지표를 수집한다 | incident family catalog, Dify-only enrichment, 결측 보존, Lambda 직접 호출 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4616,3 +4617,17 @@ true여야 한다. Datadog Monitor에는 기존 `@webhook-o2-dify`를 보존하�
 반복 측정 후 조정한다. 현재 S1 assessment 계약은 `broadcast_id`를 필수로 하므로
 새 Monitor는 지표 알림만 운영하고, 방송별 scope가 공급될 때 Incident webhook과
 Correlator mapping을 연결한다.
+
+---
+
+## D-084. Dify가 아니라 Agent Worker가 승인된 복구 지표를 수집한다
+
+Dify 워크플로에 메트릭별 HTTP 노드와 비밀값을 계속 추가하지 않는다. Generic Agent Worker가
+검증된 `agent.incident.v1`의 `normalized_context.incident_family`를 보고 승인된 catalog에서
+Hot/Warm 조회 목록을 선택한다. Worker는 AWS SDK로 `o2-hot-api`와 `o2-warm-api`를 직접
+호출하고, Valkey 권위 상태는 인증된 API GET으로 읽는다.
+
+Invocation Queue의 원본 snapshot과 revision은 바꾸지 않는다. 수집값은 Dify에 직렬화하는
+복사본의 기존 `assessment_input.measurements` 확장점에만 숫자로 추가한다. 조회 실패나
+`NO_DATA`는 0으로 바꾸지 않고 해당 key를 생략하며 sanitized source 이름만 로그에 남긴다.
+따라서 Dify는 판단만 담당하고, 메트릭 추가·인증·수집 정책은 백엔드 코드와 IAM에서 관리한다.

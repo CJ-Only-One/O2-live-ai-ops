@@ -51,6 +51,7 @@
 | T-033 | 로컬 state 파일이 JSON인데 Terraform이 파싱하지 못한다 | Windows PowerShell, UTF-8 BOM, `Set-Content` |
 | T-034 | Correlator가 Shadow 메시지를 받자마자 모두 실패한다 | 환경변수 JSON 매핑 로딩, dict와 set의 차집합 |
 | T-035 | AWS CLI로 보낸 JSON이 Lambda에서 `SQS_BODY` 거부된다 | Windows PowerShell 네이티브 인자 quoting, `file://` |
+| T-036 | validate는 통과하지만 IAM policy plan이 duplicate Sid로 실패한다 | `aws_iam_policy_document`, merge 중복, provider 렌더링 |
 
 
 ---
@@ -1597,3 +1598,20 @@ state를 push해, 두 번째 push 실패 시에도 리소스 소유권을 복구
 **조치** — JSON을 BOM 없는 UTF-8 임시 파일로 직렬화하고 AWS CLI에는 `--message-body file://<path>`로 전달했다. 전송 직후 임시 파일을 삭제하고, 실패 메시지는 이벤트 소스를 닫은 뒤 MessageId로 한정해 회수했다.
 
 **왜 늦게 찾았나** — 전송 명령은 성공 MessageId를 반환하고 SQS도 본문 형식을 검증하지 않는다. 손상은 CLI 프로세스 경계에서 생기므로 송신 측 객체와 Lambda의 JSON 파싱을 따로 보면 모두 정상처럼 보인다.
+
+---
+
+## T-036. validate는 통과하지만 IAM policy plan이 duplicate Sid로 실패한다
+
+**증상** — `terraform validate`는 성공하지만 `terraform plan`에서
+`writing IAM Policy Document: duplicate Sid`로 중단된다.
+
+**원인** — 브랜치 병합 과정에서 `aws_iam_policy_document` 안의 history 권한 statement 세 개가
+내용과 `sid`까지 동일하게 두 번 들어갔다. HCL 구문은 유효하므로 validate는 이를 잡지 않고,
+AWS 정책 JSON을 렌더링하는 plan 단계에서 provider가 중복 Sid를 거부했다.
+
+**조치** — 동일한 statement 한 벌만 제거하고 target plan으로 IAM JSON과 Lambda 코드 변경 범위를
+다시 확인한다. 정책을 병합한 뒤에는 validate뿐 아니라 자격증명이 있는 plan도 실행한다.
+
+**왜 늦게 찾았나** — 충돌 표식 없이 정상 병합됐고 두 블록의 action 순서만 달라 육안 diff에서
+별개 권한처럼 보였다. Terraform core의 validate와 provider의 정책 렌더링 검증 시점도 다르다.

@@ -1308,10 +1308,10 @@ workflow:
         loop_id: main_loop
         sourceType: http-request
         targetType: code
-      id: hot_mem_post-source-hot_propagation_post-o2hot4
+      id: hot_mem_post-source-verification_shape-o2hot4
       source: hot_mem_post
       sourceHandle: source
-      target: hot_propagation_post
+      target: verification_shape
       targetHandle: target
       type: custom
       zIndex: 1001
@@ -1351,19 +1351,6 @@ workflow:
       source: read_path_status_post
       sourceHandle: source
       target: verification_inputs_merge
-      targetHandle: target
-      type: custom
-      zIndex: 1001
-    - data:
-        isInIteration: false
-        isInLoop: true
-        loop_id: main_loop
-        sourceType: code
-        targetType: code
-      id: verification_inputs_merge-source-verification_shape-o2hot8
-      source: verification_inputs_merge
-      sourceHandle: source
-      target: verification_shape
       targetHandle: target
       type: custom
       zIndex: 1001
@@ -3399,8 +3386,8 @@ workflow:
         type: code
         variables:
         - value_selector:
-          - verification_inputs_merge
-          - merged_post_metrics_body
+          - warm_post_metrics
+          - body
           variable: post_metrics_body
         - value_selector:
           - warm_compare
