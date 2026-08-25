@@ -32,6 +32,7 @@ PG_FAIL_RATE_KEY = "cfg:pg:fail_rate"
 # 있는 동안은 process_payment가 PG_DELAY_KEY/PG_FAIL_RATE_KEY 주입을 완전히
 # 무시한다 — "이미 다른 게이트웨이로 갔다"는 전제라 PG-A 장애가 안 보여야 한다.
 PG_ACTIVE_PROVIDER_KEY = "cfg:pg:active_provider"
+PG_B_READY_KEY = "cfg:pg:pg_b_ready"
 PROVIDERS = ("PG-A", "PG-B")
 
 # 직접 Valkey를 수정해도 한 파드에서 최대 1초 뒤에는 반영된다. 평시 주문마다
@@ -50,6 +51,7 @@ class PgStubConfig:
     delay_ms: int = 0
     fail_rate: float = 0.0
     active_provider: str = "PG-A"
+    pg_b_ready: bool = False
 
     @property
     def active(self) -> bool:
@@ -93,16 +95,24 @@ def _parse_provider(value) -> str:
     return provider
 
 
+def _parse_pg_b_ready(value) -> bool:
+    ready = (_text(value) or "false").lower()
+    if ready not in {"true", "false"}:
+        raise ValueError("pg_b_ready must be true or false")
+    return ready == "true"
+
+
 def _load_config() -> PgStubConfig:
     try:
-        delay_raw, fail_rate_raw, provider_raw = valkey.mget(
-            [PG_DELAY_KEY, PG_FAIL_RATE_KEY, PG_ACTIVE_PROVIDER_KEY]
+        delay_raw, fail_rate_raw, provider_raw, pg_b_ready_raw = valkey.mget(
+            [PG_DELAY_KEY, PG_FAIL_RATE_KEY, PG_ACTIVE_PROVIDER_KEY, PG_B_READY_KEY]
         )
         base = _parse_config([delay_raw, fail_rate_raw])
         return PgStubConfig(
             delay_ms=base.delay_ms,
             fail_rate=base.fail_rate,
             active_provider=_parse_provider(provider_raw),
+            pg_b_ready=_parse_pg_b_ready(pg_b_ready_raw),
         )
     except Exception:
         # 이 노브는 장애 실험용이다. Valkey 장애나 잘못된 수동 입력이 실제 주문
@@ -119,6 +129,16 @@ def set_active_provider(provider: str) -> PgStubConfig:
 
 def clear_active_provider() -> PgStubConfig:
     valkey.delete(PG_ACTIVE_PROVIDER_KEY)
+    cache.delete(_CONFIG_CACHE_KEY)
+    return get_config(authoritative=True)
+
+
+def set_pg_b_ready(ready: bool) -> PgStubConfig:
+    """S3 목업 PG-B의 결제 가능 상태를 명시적으로 기록한다."""
+    current = get_config(authoritative=True)
+    if current.active_provider == "PG-B" and not ready:
+        raise ValueError("cannot mark active PG-B not ready")
+    valkey.set(PG_B_READY_KEY, "true" if ready else "false")
     cache.delete(_CONFIG_CACHE_KEY)
     return get_config(authoritative=True)
 
