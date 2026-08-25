@@ -132,6 +132,9 @@ def test_channel_limited_rate_uses_all_chat_attempts_as_denominator():
     series = _series_for(events, service="chat-gateway")
     assert not [s for s in series if s["metric"] == "o2.warm.channel_limited_rate"]
 
+    metrics = derive(build("chat-gateway", window_start(factory.BASE), events))
+    assert metrics["channel_block_rate"] == 0.2
+
 
 def test_canary_emits_end_to_end_freshness_at_aggregate_timestamp():
     event = factory.envelope(
