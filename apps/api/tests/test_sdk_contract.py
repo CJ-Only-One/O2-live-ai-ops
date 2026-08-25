@@ -47,6 +47,23 @@ def test_emit_accepts_the_arguments_we_pass():
     assert {"action", "target_id", "device_type", "ua_key"} <= params
 
 
+def test_payment_event_contract_covers_pg_stub_evidence():
+    params = set(inspect.signature(o2emit.payment_process).parameters)
+    assert {
+        "order_id",
+        "payment_id",
+        "amount",
+        "result",
+        "failure_code",
+        "failure_stage",
+        "pg_latency_ms",
+        "total_latency_ms",
+        "retry_count",
+    } <= params
+    assert "PG_TIMEOUT" in o2schemas.PAYMENT_FAILURE
+    assert "PG_CALL" in o2schemas.PAYMENT_STAGE
+
+
 def test_client_events_are_routed_to_the_client_stream():
     """이 엔드포인트의 존재 이유. `client.` 접두사가 목적지를 정한다."""
     stream = o2sinks._stream_for({"event_name": "client.action"})

@@ -3,9 +3,14 @@
 # 스키마는 이미 확정되어 있다:
 #
 #   PK  rca_type              RCA 유형 하나
-#   SK  DEF                    유형당 정확히 하나. success_criteria(복구 판정 조건) 보관
+#   SK  DEF                    유형당 정확히 하나. runbook_id·status·success_criteria 보관
 #       ACTION#{action_id}     유형당 여러 개. risk_level·expected_effect·blast_radius·
 #                              parameters_schema 보관
+#
+# status 는 active·draft·retired 셋이다(D-077). Lookup Lambda 는 active DEF와
+# active ACTION만 Agent에 반환한다. draft·retired 는 같은 테이블에 남아도 자동
+# 실행 후보가 아니다. status 필드가 없던 기존 아이템은 재시드 전까지만 active
+# 로 간주하는 하위 호환 폴백이 있다.
 #
 # ★ PK 값 하나가 RCA 유형이 아니다 — `rca_type="KNOB"` 는 노브 카탈로그
 #   파티션이고 SK 는 `KNOB#{action_id}` 다(D-067). 게이트 진입을 LLM 서술이

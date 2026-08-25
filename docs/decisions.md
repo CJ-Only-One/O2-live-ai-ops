@@ -91,6 +91,8 @@
 | D-074 | 원복에 쓸 값은 응답이 아니라 조치 기록에 남긴다 | `record_restore`, 먼저 쓴 값이 이긴다, Argo replica 예외, 실행기 권한 경계 |
 | D-075 | 공통 Agent 진입점도 Dify 전에 이력을 조회한다 | `agent.incident.v1`, Bedrock, S3 Vectors, `past_cases`, fail-open, 원문 채팅 제외 |
 | D-076 | S3 를 외부 결제 PG 장애로 바꾼다 — 실패로 끝나는 것이 정답인 시나리오 | 종착 경로 3분할, `pg_external_failure`, 목업 PG 스텁, 병합 키에서 broadcast_id 제외 |
+| D-077 | 런북은 시딩과 활성화를 분리한다 | `active`, `draft`, `retired`, Lookup 필터, 무삭제 전환, 승격 증거 |
+| D-078 | 목업 PG는 api 예약 뒤 동기 호출하고 실패 시 전부 보상한다 | `cfg:pg:*`, `payment.process`, 결정론적 실패, `idemstate`, 별도 admin key |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4557,3 +4559,86 @@ S1 은 방송 단위(채널 총량은 방송마다 별개), S2 는 Deployment �
 `read-path-degraded` 노브(D-062), `read-path.js` 의 `human`/`ambiguous` 패턴,
 감별 지표(`ua_diversity` · `interval_cv` · 집중도)는 그대로 둔다. 시연 시나리오에서
 빠질 뿐 기능으로는 유효하고, 읽기 경로 보호는 다른 인시던트에서 여전히 쓸 수 있다.
+
+## D-077. 런북은 시딩과 활성화를 분리한다
+
+`seed_runbook.py`는 테이블의 복구 원본인데, 실테이블에는 코드에 없는 옛 런북이
+남고 S2의 원인별 런북은 검증 없이 실행 카탈로그에 들어가 있었다. 새 S3가
+`pg_external_failure`를 결제 게이트웨이 의미로 쓰기 시작했지만 기존 실테이블의
+같은 키는 PostgreSQL 장애 액션을 담고 있었다. 키 존재만으로 "런북 있음"을
+판정하면 재시드와 자동 실행 모두 조용히 잘못된다.
+
+### 정한 것
+
+DEF와 ACTION에 `status`를 둔다.
+
+| 상태 | 의미 | Agent Lookup |
+|---|---|---|
+| `active` | 검증과 승인을 통과한 실행 카탈로그 | 반환 |
+| `draft` | 시딩됐지만 검증·승격 전 | `success_criteria=null`, `actions=[]` |
+| `retired` | 원문은 보존하지만 더는 선택하지 않음 | `success_criteria=null`, `actions=[]` |
+
+Lookup은 active DEF 아래의 active ACTION만 반환한다. 상태 필드가 생기기 전에
+시딩된 항목은 마이그레이션 동안만 active로 간주하고, 시드 원본은 모든 항목에
+상태를 명시한다.
+
+시나리오 기준 상태는 다음과 같다.
+
+| 런북 | 상태 | 이유 |
+|---|---|---|
+| S1 `chat_channel_overload` | `active` | 기존 실행 카탈로그 유지 |
+| S2 `RB-API-LATENCY-001` | `draft` | 한 단계 증설·원복·최종 기준선 회복 증거 없음 |
+| S2 `RB-API-POD-RESOURCE-SKEW` | `draft` | 반복 재현·오적용·롤백 검증과 운영자 승인 없음 |
+| S3 `pg_external_failure` | `draft` | 결제 PG stub 배포·실측과 두 조치 실행기·원복 E2E 없음 |
+| 옛 S3 `other` | `retired` | 자산은 보존하되 catch-all 자동 실행은 막음 |
+
+기존 액션은 삭제하지 않는다. 새 시나리오와 의미가 다른 S2 범용 액션과
+PostgreSQL용 `pg_*` 액션은 status만 retired로 바꾼다. 따라서 감사와 복구는
+가능하지만 Agent 후보에는 들어오지 않는다.
+
+### 승격 조건
+
+`draft -> active`는 시드 실행만으로 일어나지 않는다. 진입·제외 조건, 제한된
+조치, 고정 성공·실패·중단 기준, 실제 원복과 기준선 회복, 반복 재현, 소유자와
+검증 증거, 운영자 승인을 채운 변경으로 status를 명시적으로 바꾼 뒤 재시드한다.
+
+## D-078. 목업 PG는 api 예약 뒤 동기 호출하고 실패 시 전부 보상한다
+
+D-076은 `api` 주문 접수 경로에서 목업 PG를 호출하라고 정했지만 구현 순서와
+실패 정합성은 정하지 않았다. 단순히 주문 앞에서 `sleep`하면 재고가 없는 요청도
+PG를 호출하고, 예약 뒤 호출하면서 보상하지 않으면 실패할 때마다 재고가 사라진다.
+PG 지연이 길어진 동안 같은 멱등키가 다시 들어오는 경우도 기존 코드에는 없던
+긴 동시성 창이다.
+
+### 정한 것
+
+1. 상품·판매 상태를 확인한 뒤 Lua로 재고와 멱등키를 먼저 원자 예약한다.
+2. 같은 Lua 구간에서 `idemstate:{key}=PROCESSING`을 기록한다. 처리 중 재요청에는
+   아직 존재하지 않는 성공 응답을 가장하지 않고 `REQUEST_IN_PROGRESS` / 409를 준다.
+3. api 동기 경로가 목업 PG를 호출한다. `order-worker`에는 넣지 않아 SQS backlog가
+   `queue_backlog` 원인으로 섞이지 않게 한다.
+4. PG 실패 시 `idem:*`·`idemstate:*`를 지우고 재고를 복원한 뒤
+   `PAYMENT_FAILED` / 502를 반환한다. SQS와 주문 표식은 만들지 않는다.
+5. `payment.process`에는 PG 구간 지연, `PG_TIMEOUT`, `PG_CALL`을 싣는다. SDK 전송
+   실패는 주문 결과를 바꾸지 않는다.
+
+`fail_rate`는 매 요청에서 새 난수를 뽑지 않는다. `Idempotency-Key` 해시를 [0, 1)
+표본으로 바꿔 같은 결제의 재시도는 항상 같은 결과를 내고, 서로 다른 결제 집합에서만
+설정 비율을 만든다. 원문 UUID 대신 같은 해시에서 만든 `payment_id`를 이벤트에 넣는다.
+
+주입 제어는 `POST /api/admin/pg-stub` 하나가 두 `cfg:pg:*` 키를 함께 SET·DEL한다.
+기존 관리자 키를 재사용하지 않고 `PG_STUB_ADMIN_KEY`를 따로 둬 유출 반경을 분리한다.
+키가 없으면 엔드포인트는 403으로 닫힌다. 코드의 delay 상한은 성능 기준이 아니라
+무제한 sleep 방지용 안전 경계다. 실제 `delay_ms`·`fail_rate`·주문 RPS는 실측 전까지
+기본값을 만들지 않는다.
+
+`payment.process`가 주문 예약 시도당 한 건 늘고 동기 지연은 api 스레드를 점유한다.
+비즈니스 이벤트 스트림은 다른 주문·쿠폰 이벤트와 샤드를 공유하므로, S3는 프로젝트
+원칙대로 축소 부하에서만 측정하고 Kinesis throttling·k6 dropped iteration·읽기 경로
+생존을 함께 본다. 구현됐다는 이유로 미측정 Peak 부하를 실행하지 않는다.
+
+### 이번에 활성화하지 않는 것
+
+런북의 client pool 확대와 timeout/retry 조정은 필요한 수치와 효과·원복을 아직
+측정하지 않았다. 목업 PG 구현만으로 그 액션을 임의값에 연결하거나 S3 런북을
+`active`로 승격하지 않는다. 별도 Action Handler와 반복 E2E 증거가 여전히 필요하다.

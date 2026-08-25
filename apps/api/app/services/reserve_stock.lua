@@ -7,6 +7,7 @@
 --
 -- KEYS[1] = idem:{key}      ARGV[1] = order_id
 -- KEYS[2] = stock:{sku}     ARGV[2] = 수량
+-- KEYS[3] = idemstate:{key}  내부 처리 상태(PROCESSING/ACCEPTED)
 --                           ARGV[3] = 멱등키 TTL(초)
 --
 -- 반환 {코드, 값}
@@ -33,7 +34,8 @@ end
 local remaining = redis.call('DECRBY', KEYS[2], qty)
 
 -- 차감과 같은 원자 구간에서 멱등키를 남긴다. 뒤에서 SQS 발행이 실패하면
--- 애플리케이션이 이 키를 지우고 재고를 되돌린다.
+-- 애플리케이션이 두 멱등 키를 지우고 재고를 되돌린다.
 redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[3]))
+redis.call('SET', KEYS[3], 'PROCESSING', 'EX', tonumber(ARGV[3]))
 
 return { 0, tostring(remaining) }

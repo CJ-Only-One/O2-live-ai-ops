@@ -1,6 +1,6 @@
 # 장애 시나리오 실험 — 복구 기준과 주입 설정
 
-세 시나리오(채팅 총량 · 느린 파드 · 사람/봇 미확정)의 **흐름과, 재현 가능하게
+세 시나리오(채팅 총량 · 느린 파드 · 외부 결제 PG 장애)의 **흐름과, 재현 가능하게
 돌리고 판정하기 위한 규칙**이다. 0절이 시나리오가 무엇인지, 1~3절이 어떻게
 판정하고 무엇을 주입하는지다.
 
@@ -264,7 +264,8 @@ flowchart TB
 delay_ms  = int(valkey.get("cfg:pg:delay_ms")  or 0)
 fail_rate = float(valkey.get("cfg:pg:fail_rate") or 0)
 time.sleep(delay_ms / 1000)
-failed = random.random() < fail_rate
+# 같은 Idempotency-Key는 같은 표본을 써 재시도 결과가 뒤집히지 않는다.
+failed = deterministic_sample(idempotency_key) < fail_rate
 emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
                      failure_code="PG_TIMEOUT" if failed else None,
                      failure_stage="PG_CALL" if failed else None,
@@ -461,16 +462,23 @@ kubectl rollout status deploy/api -n o2-dev --timeout=180s
 ### 4.4 S3 — 외부 결제 PG 지연
 
 ```bash
-# 주입 — 목업 PG 스텁이 읽는 Valkey 키
-valkey-cli -h "$VALKEY_HOST" --tls SET cfg:pg:delay_ms  '<실측 후 확정>'
-valkey-cli -h "$VALKEY_HOST" --tls SET cfg:pg:fail_rate '<실측 후 확정>'
+# 주입 — 인증된 API가 두 Valkey 키를 함께 변경한다.
+curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
+  -H "x-admin-key: $PG_STUB_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"action":"set","delay_ms":<실측 후 확정>,"fail_rate":<실측 후 확정>}'
 
 # 주문 부하
 BASE_URL='https://<현재-ALB>' RATE='<주문 RPS>' DURATION='<알림 창보다 길게>' \
-k6 run -e BASE_URL -e RATE -e DURATION loadtest/order-path.js
+PRE_ALLOCATED_VUS='<실측값>' MAX_VUS='<실측값>' \
+k6 run -e BASE_URL -e RATE -e DURATION -e PRE_ALLOCATED_VUS -e MAX_VUS \
+  loadtest/order-path.js
 
 # 해제 — 반드시 종료 후
-valkey-cli -h "$VALKEY_HOST" --tls DEL cfg:pg:delay_ms cfg:pg:fail_rate
+curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
+  -H "x-admin-key: $PG_STUB_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"action":"clear"}'
 ```
 
 **세기는 "주문은 깨지는데 읽기는 사는 구간" 이다.** 동기 라우트라 uvicorn 스레드풀이

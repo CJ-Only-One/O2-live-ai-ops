@@ -33,7 +33,7 @@
 | 기존 비즈니스 이벤트의 후단 수집·저장·분석 경로 | **아니오** — 백데이터 파트 소관 (D-015) |
 | 채팅 신호 입력·Incident Candidate 생성 경로 | **예** — 이 문서 3.8·5.6·5.7 (D-047) |
 | Datadog·Chat Candidate → Agent 공통 진입 계약 | **예** — 이 문서 5.8 (D-050) |
-| 결제 게이트웨이 연동 | **아니오** — 범위 밖 |
+| 실제 결제 게이트웨이 연동 | **아니오** — 범위 밖. S3는 api 내부 목업 PG만 사용 |
 
 ---
 
@@ -79,6 +79,8 @@ Ingress 규칙은 **구체적인 경로를 먼저** 둔다. `/`를 먼저 두면
 |---|---|---|
 | `SOLD_OUT` | 409 | 재고 부족 |
 | `NOT_STARTED` | 409 | 특가 오픈 전 |
+| `REQUEST_IN_PROGRESS` | 409 | 같은 멱등 주문의 첫 요청이 아직 처리 중 |
+| `PAYMENT_FAILED` | 502 | 목업 외부 결제 PG가 실패·타임아웃 |
 | `RATE_LIMITED` | 429 | 요청 과다 |
 | `INVALID_REQUEST` | 400 | 형식 오류 |
 | `NOT_FOUND` | 404 | 방송·주문을 찾을 수 없음 |
@@ -157,12 +159,16 @@ X-Session-Key: <UUID v4>
 { "order_id": "od_01JB2X…", "state": "ACCEPTED" }
 ```
 
-**202인 이유:** 이 시점에 확정된 것은 재고 차감(Valkey `DECR`)까지다. MySQL 기록은
+**202인 이유:** 이 시점에 확정된 것은 재고 예약과 목업 PG 성공까지다. MySQL 기록은
 SQS를 거쳐 워커가 한다. 200을 주면 클라이언트가 "주문이 저장됐다"로 읽는다.
 
-실패는 1.3의 오류 응답을 쓴다. 재고 부족은 `SOLD_OUT` / 409.
+실패는 1.3의 오류 응답을 쓴다. 재고 부족은 `SOLD_OUT` / 409, 목업 외부 PG
+실패는 `PAYMENT_FAILED` / 502다. PG 실패 시 예약한 재고와 멱등 키를 원복한 뒤
+응답하므로 주문·SQS 메시지는 남지 않는다.
 
-**같은 `Idempotency-Key`로 다시 오면 재고를 다시 깎지 않고 첫 응답을 그대로 준다.**
+**같은 `Idempotency-Key`로 다시 오면 재고를 다시 깎지 않는다.** 첫 요청이 끝났으면
+같은 `order_id`의 202를 반환하고, PG 지연 중이면 성공을 미리 가장하지 않고
+`REQUEST_IN_PROGRESS` / 409를 반환한다.
 방어선은 두 겹이다 — Valkey `idem:{key}`가 1차, MySQL `uk_idem`이 최종이다
 (설계 문서 4.4).
 
@@ -238,6 +244,28 @@ X-Session-Key: <UUID v4>
 `accepted`는 계약 검증을 통과해 발행을 시도한 건수이고 스트림 도착을 보장하지
 않는다. 발행 실패는 요청을 실패시키지 않는다(5.1) — 계측이 구매를 막는 것은
 언제나 손해다.
+
+### 2.6 S3 목업 PG 제어면
+
+실제 PG 관리 API가 아니라 장애 실험 전용이다. `x-admin-key`는 `api-admin`
+Secret의 `PG_STUB_ADMIN_KEY`와 일치해야 하며, 값이 비어 있으면 전부 403이다.
+
+```
+GET  /api/admin/pg-stub
+POST /api/admin/pg-stub
+```
+
+```json
+{ "action": "set", "delay_ms": 0, "fail_rate": 0.0 }
+{ "action": "clear" }
+```
+
+`set`은 두 값을 모두 요구하고 `clear`는 두 `cfg:pg:*` 키를 함께 삭제한다.
+`fail_rate` 범위는 0-1이며, 0보다 크면 `delay_ms`도 0보다 커야 한다. timeout
+실패인데 관측 지연은 0인 불가능한 증거를 만들지 않기 위해서다. `delay_ms`의
+코드 상한은 실측 기준이 아니라 무제한
+sleep을 막는 안전 경계이며, 실제 주입값은 `measurements.md`에서 확정하기 전까지
+문서와 스크립트에 기본값을 두지 않는다.
 
 ---
 
@@ -371,7 +399,10 @@ accepted chat
 | `bcast:{id}:meta` | 로컬 + Valkey | String(JSON) | 1s / 30s | 구현됨. 2.1 메타 응답 |
 | `stock:{sku}` | Valkey 전용 | Integer | **없음** | 구현됨. 캐시가 아니라 원본 |
 | `idem:{key}` | Valkey 전용 | String | 600s | 구현됨. 주문 멱등 1차 방어선 |
+| `idemstate:{key}` | Valkey 전용 | String | 600s | 구현됨. `PROCESSING` / `ACCEPTED`, 지연 중 거짓 202 방지 |
 | `order:{id}` | Valkey 전용 | String(JSON) | 600s | 구현됨. MySQL 기록 전 `ACCEPTED` 표식 |
+| `cfg:pg:delay_ms` | 로컬 + Valkey | Integer | 없음 | 구현됨. S3 목업 PG 동기 지연, 로컬 캐시 1s |
+| `cfg:pg:fail_rate` | 로컬 + Valkey | Number | 없음 | 구현됨. S3 목업 PG 결정론적 실패율, 로컬 캐시 1s |
 | `chat:{bcast}` | Pub/Sub 채널 | - | - | 구현됨. 3.7 |
 | `chat:rate:{bcast}:{user}` | Valkey 전용 | Integer | 60s | 구현됨. 사용자별 채팅 제한 |
 | `sku:{id}:detail` | 로컬 + Valkey | String(JSON) | 1s / 60s | 예정 |
@@ -423,11 +454,14 @@ SDK의 이벤트 이름은 쿠폰 도메인 기준이고 우리는 특가 판매
 | `DECR` 실패 (재고 부족) | `coupon.issue` | `result=FAILED`, `failure_code=SOLD_OUT` |
 | 특가 오픈 전 주문 시도 | `coupon.issue` | `result=FAILED`, `failure_code=NOT_ELIGIBLE` — SDK 열거에 `NOT_STARTED`가 없어 가장 가까운 값을 쓴다 |
 | 주문 접수 | `order.create` | `channel=LIVE` |
+| 목업 PG 호출 | `payment.process` | 성공·실패 모두. `pg_latency_ms`, 실패 시 `PG_TIMEOUT`·`PG_CALL` |
 | 워커 단계 실패 | `order.cancel` | `reason_code=INVENTORY_SHORTAGE` 등 |
 | 방송 진입·이탈 | `client.action` | `LIVE_ENTER` / `LIVE_LEAVE` |
 | 구매 버튼 누름 | `client.action` **2건** | `COUPON_BUTTON_CLICK` + `CHECKOUT_CLICK` |
 
-`payment.process`는 결제 연동이 범위 밖이라 발행하지 않는다.
+`payment.process`는 실제 결제 연동이 아니라 S3 목업 PG 호출 결과다. 같은
+`Idempotency-Key`는 같은 `payment_id`와 성공·실패 결과를 가져 재시도가 관측
+결과를 뒤집지 않는다. 이벤트 발행 실패는 주문 결과를 바꾸지 않는다.
 
 **구매 버튼 한 번이 클릭 둘을 낸다.** 우리는 특가와 주문이 한 요청이라 그 누름
 하나가 서버에서 `coupon.issue`와 `order.create` 둘을 만든다. 클릭을 하나만 내면
