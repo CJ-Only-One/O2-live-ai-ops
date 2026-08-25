@@ -1325,6 +1325,38 @@ DynamoDB 상세에만 있었다.
 `limits.cpu` 부여)과 **같은 곳에 같이 요청해야 하는 항목**이다 — 둘 다
 "파드가 여럿이고 서로 비교 가능해야 한다" 는 같은 전제를 만든다.
 
+### S1·S2·S3 alert 지표 인입 확인 (2026-08-25 09:0x UTC)
+
+`scenario_alerts.tf`(D-085)를 apply 하기 전에, 새 Monitor 가 읽을 지표에 실제로
+series 가 있는지 US5 API 로 직접 조회했다. 7일 구간. **이름이 존재하는지가 아니라
+series 수와 마지막 non-null point 를 봤다.**
+
+| query | series · 마지막 point | 판정 |
+|---|---|---|
+| `sum:o2.app.fanout.items{service:chat-gateway,env:dev,result:delivered}.as_rate()` | 1 · `2026-08-25T09:00:00Z` · **2.166/s** | `COLLECTED_AND_USED` — S1 진입 |
+| `sum:o2.app.fanout.items{env:dev} by {result}.as_rate()` | `result:delivered` 하나뿐 | `dropped` 는 아직 발생한 적 없음 |
+| `p99:trace.fastapi.request{service:api,env:dev}` | 1 · `2026-08-25T09:00:00Z` · **0.008s** | `COLLECTED_AND_USED` — S2 진입 |
+| `p95:o2.app.operation.duration{service:api,env:dev,operation:payment.process}` | **0** | 아래 |
+| `sum:o2.app.business_event{service:api,env:dev,event:payment.process}.as_count()` | **0** | 아래 |
+| `sum:o2.app.business_event{service:chat-gateway,env:dev,event:chat.send}.as_count()` | 1 · 최대 8,000 | 참고 |
+| `GET /api/v2/metrics/o2.app.operation.duration/tags` | **404** | 기존 tag configuration 없음 — apply 시 409 충돌 없음 |
+
+**무부하 서버측 p99 는 8ms 다.** M-016 앞부분의 p95 6ms 와 같은 축의 값이고,
+S2 조기 감지 임계(`s2_tail_latency_p99_*`)가 놓일 바닥이 여기다. 다만 이것은
+**무부하 표본 하나**이지 부하 구간의 p99 분포가 아니다 — 임계 근거로는 여전히 부족하다.
+
+**`payment.process` 는 한 번도 발행된 적이 없다.** percentile 설정 문제가 아니다 —
+counter(`business_event`)조차 series 0 이다. 같은 조회에서 `env:dev` 의
+`business_event` 축은 `inventory.check` · `chat.send` · `chat.kinesis` · `chat.signal` ·
+`websocket.connect` · `websocket.disconnect` 뿐이고, `operation.duration` 축은
+`inventory.read` · `order.batch` · `chat.fanout` · `chat.kinesis.publish` ·
+`chat.message` · `chat.signal.publish` 뿐이었다. **주문·결제 경로가 dev 에서 돈 적이 없다.**
+
+따라서 S3 Monitor 둘은 구조는 맞지만 `loadtest/order-path.js` 로 결제 경로에 트래픽을
+흘리기 전까지 No Data 다. `notify_no_data = false` 라 조용할 뿐 오류는 나지 않는다 —
+**`chat_block_rate` 가 조용했던 것과 겉모습이 같으므로**(D-085) 트래픽을 흘린 뒤
+이 표에 행을 추가해 실제 인입을 확인하기 전에는 "동작한다" 고 적지 않는다.
+
 ### 다시 재야 할 때
 
 - `ddtrace` 버전을 올렸을 때 — 통합 서비스 태깅이 파드 축을 붙이기 시작하면

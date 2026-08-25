@@ -99,6 +99,7 @@
 | D-082 | 운영 READ_PATH Incident handoff는 composite evidence와 세 승인 window를 사용한다 | COMPOSITE_CONDITION, recovery 300초, cooldown 300초, reopen 1800초 |
 | D-083 | 기존 모니터를 유지하고 S1 채팅 과부하 지표를 별도 Monitor로 추가한다 | `o2.chat.propagation`, `o2.warm.channel_limited_rate`, broadcast scope 선행 조건 |
 | D-084 | Dify가 아니라 Agent Worker가 승인된 복구 지표를 수집한다 | incident family catalog, Dify-only enrichment, 결측 보존, Lambda 직접 호출 |
+| D-085 | S1·S2·S3 진입 알림은 시나리오당 하나이고, 원인 축에서 먼저 운다 | fanout 총량, p99 꼬리, PG 왕복, webhook 하나, 조용히 안 울던 Monitor |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4631,3 +4632,82 @@ Invocation Queue의 원본 snapshot과 revision은 바꾸지 않는다. 수집�
 복사본의 기존 `assessment_input.measurements` 확장점에만 숫자로 추가한다. 조회 실패나
 `NO_DATA`는 0으로 바꾸지 않고 해당 key를 생략하며 sanitized source 이름만 로그에 남긴다.
 따라서 Dify는 판단만 담당하고, 메트릭 추가·인증·수집 정책은 백엔드 코드와 IAM에서 관리한다.
+
+---
+
+## D-085. S1·S2·S3 진입 알림은 시나리오당 하나이고, 원인 축에서 먼저 운다
+
+`monitor.tf` 는 옛 트랜스크립트 5개 시나리오(번호 1·2·4·5·6)의 구현이다. 확정된
+S1·S2·S3 세트로 보면 셋 다 **초기 감지가 안 된다.** 세 가지 서로 다른 이유다.
+
+| 시나리오 | 기존 | 왜 못 잡나 |
+|---|---|---|
+| S1 | `chat_ingest_surge` | **인입(발화 수)만 본다.** 장애는 `발화 수 × 접속자 수` 이고, 주입 설계는 연결 축으로 올린다(scenario-experiment.md 2.2, M-010 해석 2). 발화율을 안 올리는 주입에서는 안 운다 |
+| S2 | `order_latency_p95` | 임계 1,000ms · 5분 full window. 서버측 평시 p95 가 6ms(M-016)라 꼬리가 다 무너진 뒤에야 운다 |
+| S3 | 없음 | 결제·PG 축 Monitor 가 하나도 없다. `failure_rate_*` 는 대시보드 색깔 전용이다 |
+
+### 무엇을 정했나
+
+**1. 원인 축에서 먼저 잡는다.** S1 은 `o2.app.fanout.items` — 이것이 `발화 수 ×
+접속자 수` 그 자체이고 M-010 의 `아이템/s` 열과 같은 값이다. S2 는 p95 가 아니라
+**p99** 다. 파드 하나가 느릴 때 그 몫이 전체의 5% 미만이면 p95 는 안 움직이고
+p99 만 움직인다(`o2warm/metrics.py:426` 의 같은 지적). S3 는
+`o2.app.operation.duration{operation:payment.process}` — PG 왕복을 직접 잰 값이다.
+
+**2. `@webhook-o2-dify` 는 시나리오당 하나에만 붙인다.** 지금 경로에는 상관관계
+계층이 없다 — `o2-dify-ingress` → Lambda 비동기 큐 → `o2-dify-worker` → Dify 이고
+Monitor 하나가 곧 워크플로 실행 하나다. 여러 개를 붙이면 한 장애에 에이전트가 여러 번
+깨어나고(T-017), `alert_relay_max_concurrency = 5` 가 두 파이프라인 합산 상한이다(M-003).
+나머지는 evidence 축으로 두고 에이전트는 Warm Path 스냅샷으로 당겨 쓴다.
+
+Correlator 가 운영 모드로 열리면(명세 §8 "운영 Monitor/Webhook 연결과 Operational
+mode 승인" 대기) evidence 축에도 붙여 복합 증거로 병합한다. **그 전에 붙이면 중복
+호출이다.**
+
+**3. `latency_p95_pod_outlier` 의 webhook 을 뗐다.** 이것이 에이전트를 직접 깨우면
+1차 진단 컨텍스트에 이미 "파드 하나가 이상치" 라는 답이 실려 들어간다. S2 가 검증하려는
+능력 — 실패한 절차를 반복하지 않고 **새 증거로 결론을 뒤집는 것** — 이 관측 자체에서
+사라진다. Monitor 는 남긴다. 2차 재진단의 재료이지 진입 알림이 아니다.
+
+### 고친 것 둘 — 조용히 안 울던 Monitor
+
+D-083 이 추가한 S1 Monitor 둘에 실행되지 않는 부분이 있었다. 되돌리는 것이 아니라
+같은 의도를 실제로 동작하게 고쳤다.
+
+**`chat_block_rate` 는 영원히 조용했다.** `avg:o2.warm.channel_limited_rate` 를 보는데
+그 지표는 Datadog 에 오지 않는다 — `o2warm/metrics.py:339` 가 계산은 하지만
+`DATADOG_SCALARS`(:414) 목록에 없어 DynamoDB 상세에만 남는다. 쿼리는 유효하고
+`notify_no_data = false` 라 **오류 없이 아무 일도 안 일어난다.** native 계측
+(`o2.app.failure{event:chat.send,failure_code:CHANNEL_LIMITED}` ÷ 전체 `chat.send` 시도)
+으로 바꿨다. warm 에 되살리지 않은 것은 같은 값을 두 시스템에서 계산하는 것을
+`DATADOG_SCALARS` 주석이 이미 금지하기 때문이다.
+
+**`chat_propagation_p95` 의 임계가 실측 붕괴점 위에 있었다.** critical 1,500ms 인데
+M-010 의 가장 나쁜 실측이 1,286ms 다 — **실측된 최악의 붕괴조차 critical 을 못 넘겼다.**
+warning 800ms 도 붕괴 시작점 479ms 위였다. M-010 기준으로 400/800 으로 내렸다
+(평시 250~282ms · 붕괴 시작 479ms · 최악 1,286ms).
+
+### 임계값의 출처를 섞지 않는다
+
+S1 은 M-010 실측이 있다(안전선 20,000 아이템/s · 붕괴 40,000). **critical 30,000 은
+그 사이 보간이고 안 잰 값이다.** S2·S3 는 **전부 안 쟀다** — 평시(M-016 서버측 p95
+6ms)와 계약 상한(p95 800ms · p99 2,000ms, architecture.md 12.1) 사이에서 골랐다.
+계약을 깨기 전에 우는 것이 조기 감지의 정의다. M-009 의 숫자는 ALB 경유 클라이언트
+관점이라 서버측 span metric 에 그대로 못 쓴다.
+
+각 변수 설명에 출처를 적어 뒀다 — `M-0NN` 이면 실측, "안 쟀다" 면 정책값이다.
+첫 실험에서 실제 분포를 재고 `measurements.md` 에 행을 추가한 뒤 갱신한다.
+
+### 같이 켜야 하는 것
+
+`o2.app.operation.duration` 의 percentile 집계를 Terraform 으로 켠다. Datadog
+distribution 은 percentile 이 **기본으로 꺼져 있고**, 없으면 `p95:` 쿼리가 오류가
+아니라 series 0 이다(T-031). S3 Monitor 가 이것 없이는 조용히 죽는다 —
+`chat_block_rate` 와 정확히 같은 실패 방식이다.
+
+### 남은 것
+
+확정안의 S3 는 **PG 외부 장애로 인한 결제 실패**인데 `scenario-experiment.md` 0.3,
+`dashboard_scenarios.tf`, `seed_runbook.py` 의 S3 는 아직 **읽기 급증 · 정보 게이트**다.
+런북도 `pod_resource_exhaustion`(S2 1차 증설)과 `pg_external_failure`(S3) 둘이 비어 있다.
+이 결정은 알림 층만 다룬다.
