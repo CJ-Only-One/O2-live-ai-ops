@@ -6,8 +6,8 @@
      응답은 200 이라 호출자가 눈치채기 어렵다
   2. 노브가 없는 조치에서 죽지 않는가. 런북에만 있고 카탈로그에 아직
      없는 조치가 진단 전체를 멈추면 안 된다
-  3. rca_type="KNOB" 조회가 카탈로그 전체를 주는가. S3 처럼 런북이 없는
-     시나리오는 이 경로로만 노브를 찾는다
+  3. draft·retired 런북이 자동 실행 후보에서 빠지는가
+  4. rca_type="KNOB" 조회가 카탈로그 전체를 주는가
 
 ★ archive_file 이 runbook_lookup.py 만 zip 에 넣으므로 이 파일은 Lambda 에
   올라가지 않는다.
@@ -106,6 +106,12 @@ def test_missing_knob_does_not_break_lookup():
     fake = _FakeTable(
         {
             "query": [
+                {
+                    "rca_type": "pod_load_skew",
+                    "sk": "DEF",
+                    "status": "active",
+                    "success_criteria": {"logic": "AND"},
+                },
                 {"rca_type": "pod_load_skew", "sk": "ACTION#not_in_catalog", "action_id": "not_in_catalog"},
             ],
             "knobs": {},
@@ -114,6 +120,64 @@ def test_missing_knob_does_not_break_lookup():
     body = _call(_load(fake), "pod_load_skew")
     # 200 이되 knob 키가 없다 — 호출자가 "판정 근거 없음" 을 구분할 수 있어야 한다.
     assert "knob" not in body["actions"][0]
+
+
+def test_draft_runbook_is_seeded_but_not_returned_for_execution():
+    fake = _FakeTable(
+        {
+            "query": [
+                {
+                    "rca_type": "pod_resource_exhaustion",
+                    "sk": "DEF",
+                    "runbook_id": "RB-API-LATENCY-001",
+                    "status": "draft",
+                    "success_criteria": {"logic": "AND"},
+                },
+                {
+                    "rca_type": "pod_resource_exhaustion",
+                    "sk": "ACTION#scale_api_one_step",
+                    "action_id": "scale_api_one_step",
+                    "status": "draft",
+                },
+            ],
+            "knobs": {},
+        }
+    )
+    body = _call(_load(fake), "pod_resource_exhaustion")
+    assert body["runbook_id"] == "RB-API-LATENCY-001"
+    assert body["runbook_status"] == "draft"
+    assert body["success_criteria"] is None
+    assert body["actions"] == []
+
+
+def test_retired_action_is_filtered_from_active_runbook():
+    fake = _FakeTable(
+        {
+            "query": [
+                {
+                    "rca_type": "chat_channel_overload",
+                    "sk": "DEF",
+                    "status": "active",
+                    "success_criteria": {"logic": "AND"},
+                },
+                {
+                    "rca_type": "chat_channel_overload",
+                    "sk": "ACTION#current",
+                    "action_id": "current",
+                    "status": "active",
+                },
+                {
+                    "rca_type": "chat_channel_overload",
+                    "sk": "ACTION#old",
+                    "action_id": "old",
+                    "status": "retired",
+                },
+            ],
+            "knobs": {},
+        }
+    )
+    body = _call(_load(fake), "chat_channel_overload")
+    assert [action["action_id"] for action in body["actions"]] == ["current"]
 
 
 def test_knob_partition_lists_catalog():

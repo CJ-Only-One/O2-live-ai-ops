@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   assertSuccess,
+  historyLocation,
   loadConfig,
   unmarshallItem,
 } from './chat-to-dify-e2e.mjs';
@@ -61,6 +62,20 @@ test('DynamoDB values are unmarshalled for Candidate and ledger assertions', () 
       nested: { revision: 1 },
     },
   );
+});
+
+test('history object and vector keys are derived only from the Incident snapshot', () => {
+  assert.deepEqual(
+    historyLocation({
+      incident_id: 'inc_test123',
+      opened_at: '2026-08-25T12:34:56Z',
+    }),
+    {
+      key: 'incidents/dt=2026-08-25/inc_test123.json',
+      vectorKey: 'inc_test123',
+    },
+  );
+  assert.throws(() => historyLocation({ incident_id: 'inc_test123' }), /cannot resolve/);
 });
 
 test('success requires privacy, incident contract, and exactly-once Dify completion', () => {

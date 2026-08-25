@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # 요청을 전부 거부한다.
     READ_PATH_DEGRADED_ADMIN_KEY: str = ""
 
+    # S3 외부 결제 PG 장애 주입 제어면. READ_PATH_DEGRADED_ADMIN_KEY와 분리해
+    # 한 키가 유출되어도 다른 관리자 노브까지 열리지 않게 한다. 비어 있으면
+    # /api/admin/pg-stub 요청을 전부 거부한다.
+    PG_STUB_ADMIN_KEY: str = ""
+
     # cue-warmer(D-041 사전 확장)가 POST /api/internal/warm/{broadcast_id} 를
     # 부를 때 쓰는 인증 키. READ_PATH_DEGRADED_ADMIN_KEY 와 같은 이유로 별도
     # 값을 쓴다 — 이 키가 새면 캐시 워밍만 되고, 그 키가 새면 S3 조치 노브가
@@ -73,7 +78,11 @@ class Settings(BaseSettings):
 
     @property
     def allowed_origins_list(self) -> list[str]:
-        return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
+        return [
+            origin.strip()
+            for origin in self.ALLOWED_ORIGINS.split(",")
+            if origin.strip()
+        ]
 
     def _mysql_url(self, host: str) -> str:
         return (

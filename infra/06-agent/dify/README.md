@@ -29,10 +29,11 @@ Dify 콘솔에 들어가지 않고도 워크플로가 무엇을 하는지 읽을
 > export한다. 기존 앱 DSL drift는 Datadog production migration 전에 정리한다(T-022, M-012).
 
 `agent-entry-contract-test-v1.yml`은 기존 팀 앱과 API key를 재사용하지 않는다. Start 입력은
-required paragraph `custom_alert_json` 하나이고, Code 노드는 `source`별 exact field set과
+required paragraph `custom_alert_json`과 optional paragraph `past_cases`이고, Code 노드는 `source`별 exact field set과
 `READ_ONLY`, uncertainty 보존, raw chat 제외뿐 아니라 Incident id/revision 멱등 키와
-`CORRELATED`의 Chat·Datadog source 동시 포함을 검사한다. 성공 응답에는 evidence나 입력
-원문을 복사하지 않는다. 이 앱에는 Bedrock·Datadog Pull·자동 조치 노드가 없다.
+`CORRELATED`의 Chat·Datadog source 동시 포함을 검사한다. `past_cases`는 최대 6,000자로
+제한하고 성공 응답에는 본문 대신 `history_context_present`만 돌려준다. evidence나 입력
+원문은 복사하지 않는다. 이 앱에는 Bedrock·Datadog Pull·자동 조치 노드가 없다.
 
 2026-08-24에 이 DSL을 기존 전용 테스트 앱 ID에 가져오고 게시했다. 게시 전 초안과 게시 후
 Service API에서 정상 `CORRELATED` Incident는 `ACCEPTED`, `raw_chat_included=true`는

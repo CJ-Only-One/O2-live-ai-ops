@@ -29,9 +29,15 @@ network_state_key    = "network/terraform.tfstate"
 # CI 에 platforms 지정이 없다. 재빌드와 서드파티 검증 비용이 절약액보다 크다.
 node_instance_types = ["c6i.large"]
 node_capacity_type  = "ON_DEMAND"
-node_desired_size   = 2
-node_min_size       = 2
-node_max_size       = 3
+# AZ 하나가 죽어도 남은 AZ 에 전부 들어가야 한다. 2 대일 때 한쪽을 잃으면
+# 옮겨갈 요청량(1030m·2128Mi)이 남은 노드 여유(230m·416Mi)를 넘어 파드가
+# Pending 으로 남았다 (2026-08-25 실측). AZ 당 2 대로 둔다.
+#
+# desired_size 는 lifecycle 의 ignore_changes 에 있어 terraform 이 안 바꾼다.
+# 실제로 대수를 올리는 것은 min_size 다.
+node_desired_size = 4
+node_min_size     = 4
+node_max_size     = 6
 
 # CI/CD 자격증명은 infra/00-cicd 스택이 소유한다.
 # 배포는 Argo CD(GitOps)라 CI가 클러스터에 접근할 필요가 없다. (docs/decisions.md D-009)

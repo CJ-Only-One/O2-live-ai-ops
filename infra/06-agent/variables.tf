@@ -162,17 +162,19 @@ variable "alert_relay_max_concurrency" {
 
 variable "agent_entry_secret_name" {
   description = <<-EOT
-    전용 Agent Entry contract-test Dify 앱의 API key를 보관한 Secrets Manager 이름.
+    Agent Entry Worker(Generic Worker)가 호출할 Dify 앱의 API key를 보관한 Secrets Manager 이름.
 
     SecretString은 Terraform으로 만들거나 읽지 않는다. 값은 다음 key 하나를 가진다:
 
-      dify-api-key  전용 테스트 앱의 Service API key
+      dify-api-key  대상 Dify 앱의 Service API key
 
-    Phase 1B Worker는 이 이름만 참조하고 AGENT_ENTRY_EXECUTION_ENABLED=false라
-    자동으로 값을 사용하지 않는다.
+    2026-08-25에 팀 워크플로(o2-aiops-workflow, alert_secret_name_o2와 동일 시크릿)로
+    전환했다 — chat/CORRELATED 진입점이 격리된 contract-test 앱이 아니라 실제
+    진단+조치 워크플로를 그대로 탄다. Worker는 이 이름만 참조하고
+    AGENT_ENTRY_EXECUTION_ENABLED=false라 자동으로는 값을 사용하지 않는다.
   EOT
   type        = string
-  default     = "o2/dev/dify-agent-entry-contract-test"
+  default     = "o2/dev/dify-alert-o2"
 }
 
 variable "agent_entry_worker_max_concurrency" {

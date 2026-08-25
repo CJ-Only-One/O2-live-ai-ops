@@ -127,6 +127,31 @@ data "aws_iam_policy_document" "agent_entry_worker" {
     actions   = ["s3:PutObject"]
     resources = ["${aws_s3_bucket.history_o2.arn}/incidents/*"]
   }
+
+  statement {
+    sid       = "EmbedAgentIncidentHistory"
+    effect    = "Allow"
+    actions   = ["bedrock:InvokeModel"]
+    resources = ["arn:aws:bedrock:${var.region}::foundation-model/${local.embed_model_id}"]
+  }
+
+  statement {
+    sid    = "SearchAndStoreAgentIncidentHistory"
+    effect = "Allow"
+    actions = [
+      "s3vectors:QueryVectors",
+      "s3vectors:GetVectors",
+      "s3vectors:PutVectors",
+    ]
+    resources = [aws_s3vectors_index.incidents_o2.index_arn]
+  }
+
+  statement {
+    sid       = "WriteAgentIncidentHistory"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.history_o2.arn}/incidents/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "agent_entry_worker" {
@@ -159,6 +184,7 @@ resource "aws_lambda_function" "agent_entry_worker" {
   runtime       = "python3.12"
   architectures = ["x86_64"]
 
+  # Dify blocking 45초 앞에 Bedrock embedding과 S3 Vectors 조회가 추가된다.
   timeout     = 90
   memory_size = 128
 

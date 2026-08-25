@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -40,6 +41,7 @@ class AgentEntryWorkerTest(unittest.TestCase):
                 "IDEMPOTENCY_TABLE": "execution-ledger",
                 "INCIDENT_STATE_TABLE": "incident-state",
                 "IDEMPOTENCY_TTL": "2592000",
+                "DIFY_URL": "http://127.0.0.1/v1/workflows/run",
             },
             clear=False,
         )
@@ -71,6 +73,124 @@ class AgentEntryWorkerTest(unittest.TestCase):
             "dynamodb:TransactWriteItems",
         }:
             self.assertIn(f'"{action}"', statement.group("body"))
+
+    def test_terraform_declares_least_privilege_history_access(self):
+        terraform = (
+            REPO_ROOT / "infra" / "06-agent" / "agent_entry_transport.tf"
+        ).read_text()
+        for action in {
+            "bedrock:InvokeModel",
+            "s3vectors:QueryVectors",
+            "s3vectors:GetVectors",
+            "s3vectors:PutVectors",
+            "s3:PutObject",
+        }:
+            self.assertIn(f'"{action}"', terraform)
+        self.assertIn("aws_s3vectors_index.incidents_o2.index_arn", terraform)
+        self.assertIn('${aws_s3_bucket.history_o2.arn}/incidents/*', terraform)
+
+    def test_contract_workflow_declares_and_consumes_past_cases(self):
+        dsl = (
+            REPO_ROOT / "infra" / "06-agent" / "dify"
+            / "agent-entry-contract-test-v1.yml"
+        ).read_text()
+        self.assertGreaterEqual(dsl.count("variable: past_cases"), 2)
+        self.assertIn("def main(custom_alert_json: str, past_cases: str", dsl)
+        self.assertIn('"history_context_present": bool(past_cases)', dsl)
+
+    def test_history_query_excludes_chat_identifiers_and_unverified_cause(self):
+        rendered = worker._history_text(self.chat_first)
+        chat = self.chat_first["signals"][0]["evidence"]
+        self.assertIn("USER_PERCEIVED_LATENCY", rendered)
+        self.assertIn(chat["matched_rule_ids"][0], rendered)
+        self.assertNotIn(chat["candidate_id"], rendered)
+        self.assertNotIn(chat["broadcast_id"], rendered)
+        self.assertNotIn("UNDETERMINED", rendered)
+
+    def test_history_lookup_filters_distance_and_returns_embedding_once(self):
+        bedrock = mock.Mock()
+        bedrock.invoke_model.return_value = {
+            "body": io.BytesIO(json.dumps({"embedding": [0.1] * 1024}).encode())
+        }
+        vectors = mock.Mock()
+        vectors.query_vectors.return_value = {"vectors": [
+            {"distance": 0.10, "metadata": {"summary": "가까운 장애"}},
+            {"distance": 0.90, "metadata": {"summary": "먼 장애"}},
+        ]}
+        worker._clients.update({"bedrock-runtime": bedrock, "s3vectors": vectors})
+        history_env = {
+            "HISTORY_BUCKET": "incident-history",
+            "VECTOR_BUCKET": "incident-vectors",
+            "VECTOR_INDEX": "incidents",
+            "EMBED_MODEL_ID": "amazon.titan-embed-text-v2:0",
+        }
+        with mock.patch.dict(os.environ, history_env):
+            embedding, past_cases = worker._history_lookup(self.chat_first)
+
+        self.assertEqual(len(embedding), 1024)
+        self.assertIn("가까운 장애", past_cases)
+        self.assertNotIn("먼 장애", past_cases)
+        bedrock.invoke_model.assert_called_once()
+
+    def test_history_lookup_failure_is_fail_open(self):
+        bedrock = mock.Mock()
+        bedrock.invoke_model.side_effect = RuntimeError("unavailable")
+        worker._clients["bedrock-runtime"] = bedrock
+        history_env = {
+            "HISTORY_BUCKET": "incident-history",
+            "VECTOR_BUCKET": "incident-vectors",
+            "VECTOR_INDEX": "incidents",
+            "EMBED_MODEL_ID": "amazon.titan-embed-text-v2:0",
+        }
+        with mock.patch.dict(os.environ, history_env):
+            self.assertEqual(worker._history_lookup(self.chat_first), (None, ""))
+
+    def test_dify_request_declares_and_confirms_history_input(self):
+        output = {
+            "accepted": True,
+            "status": "ACCEPTED",
+            "event_type": "agent.incident.v1",
+            "incident_id": self.chat_first["incident_id"],
+            "revision": self.chat_first["revision"],
+            "idempotency_key": self.chat_first["idempotency_key"],
+            "history_context_present": True,
+        }
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({
+            "data": {
+                "status": "succeeded", "id": "run-1",
+                "outputs": {"result": json.dumps(output)},
+            }
+        }).encode()
+        rendered = worker._serialize_payload(self.chat_first)
+        with mock.patch.object(worker, "_api_key", return_value="app-test"):
+            with mock.patch.object(worker.urllib.request, "urlopen", return_value=response) as call:
+                self.assertEqual(worker._call_dify(self.chat_first, rendered, "- case"), "run-1")
+        request_body = json.loads(call.call_args.args[0].data)
+        self.assertEqual(request_body["inputs"]["past_cases"], "- case")
+
+    def test_history_store_uses_incident_id_and_never_stores_hypothesis(self):
+        s3 = mock.Mock()
+        vectors = mock.Mock()
+        worker._clients.update({"s3": s3, "s3vectors": vectors})
+        embedding = [0.1] * 1024
+
+        history_env = {
+            "HISTORY_BUCKET": "incident-history",
+            "VECTOR_BUCKET": "incident-vectors",
+            "VECTOR_INDEX": "incidents",
+        }
+        with mock.patch.dict(os.environ, history_env):
+            worker._history_store(self.chat_first, embedding, "run-1", "- case")
+
+        stored = json.loads(s3.put_object.call_args.kwargs["Body"])
+        self.assertEqual(stored["incident_id"], self.chat_first["incident_id"])
+        self.assertIsNone(stored["agent"]["hypothesis"])
+        self.assertNotIn("root_cause_label", vectors.put_vectors.call_args.kwargs["vectors"][0]["metadata"])
+        self.assertEqual(
+            vectors.put_vectors.call_args.kwargs["vectors"][0]["key"],
+            self.chat_first["incident_id"],
+        )
 
     def test_rejects_revision_idempotency_mismatch(self):
         self.chat_first["revision"] = 2
@@ -177,13 +297,33 @@ class AgentEntryWorkerTest(unittest.TestCase):
         with mock.patch.object(worker, "_latest_revision", return_value=1):
             with mock.patch.object(worker, "_api_key", return_value="app-test"):
                 with mock.patch.object(worker, "_acquire", return_value=True):
-                    with mock.patch.object(worker, "_call_dify", return_value="run-1") as dify:
-                        with mock.patch.object(worker, "_finalize") as finalize:
-                            result = worker._process_record(record)
+                    with mock.patch.object(worker, "_history_lookup", return_value=([0.1], "- case")):
+                        with mock.patch.object(worker, "_call_dify", return_value="run-1") as dify:
+                            with mock.patch.object(worker, "_finalize") as finalize:
+                                with mock.patch.object(worker, "_history_store") as store:
+                                    result = worker._process_record(record)
         self.assertEqual(result["status"], "SUCCEEDED")
         dify.assert_called_once()
+        self.assertEqual(dify.call_args.args[2], "- case")
+        store.assert_called_once_with(self.chat_first, [0.1], "run-1", "- case")
         self.assertEqual(finalize.call_args.args[1], "SUCCEEDED")
         self.assertEqual(finalize.call_args.kwargs["workflow_run_id"], "run-1")
+
+    def test_history_store_failure_does_not_fail_succeeded_execution(self):
+        record = {"body": json.dumps(self.chat_first)}
+        with mock.patch.object(worker, "_latest_revision", return_value=1):
+            with mock.patch.object(worker, "_api_key", return_value="app-test"):
+                with mock.patch.object(worker, "_acquire", return_value=True):
+                    with mock.patch.object(worker, "_history_lookup", return_value=([0.1], "")):
+                        with mock.patch.object(worker, "_call_dify", return_value="run-1"):
+                            with mock.patch.object(worker, "_finalize") as finalize:
+                                with mock.patch.object(
+                                    worker, "_history_store", side_effect=RuntimeError("s3 down")
+                                ):
+                                    result = worker._process_record(record)
+        self.assertEqual(result["status"], "SUCCEEDED")
+        self.assertEqual(finalize.call_count, 1)
+        self.assertEqual(finalize.call_args.args[1], "SUCCEEDED")
 
     def test_duplicate_succeeded_does_not_call_dify(self):
         record = {"body": json.dumps(self.chat_first)}

@@ -46,14 +46,14 @@ DIFY_URL = os.environ["DIFY_URL"]
 
 # ★ 이 넷만 대괄호가 아니라 .get() 이다. 실수가 아니다.
 #   lambda_o2.tf 의 두 번째 파이프라인(o2-dify-ingress/o2-dify-worker)이
-#   **이 파일의 zip 을 그대로 공유한다.** 그쪽에는 이 변수들이 없으므로
-#   os.environ["..."] 로 읽으면 import 시점에 KeyError 가 나고 그 파이프라인이
-#   통째로 죽는다 — 알림 경로 하나가 조용히 사라지는 사고다.
+#   **이 파일의 zip 을 그대로 공유한다.** 이 넷을 os.environ["..."] 로 읽으면
+#   이 변수가 없는 쪽에서 import 시점에 KeyError 가 나고 그 파이프라인이
+#   통째로 죽는다 — 알림 경로 하나가 조용히 사라지는 사고다. 이 zip 을
+#   공유하는 파이프라인이 앞으로 더 생겨도 같은 이유로 계속 .get() 이어야 한다.
 #
-#   그래서 이력 기록은 **환경변수가 있는 파이프라인에서만 켜진다.** O2 쪽을
-#   켜려면 lambda_o2.tf 에 같은 변수와 IAM 을 넣으면 되는데, 지금은 일부러
-#   안 한다. 두 파이프라인이 같은 모니터를 받으면 cycle_key 가 겹쳐 서로의
-#   인시던트를 덮어쓴다. 켤 때 키에 파이프라인 구분을 먼저 넣어야 한다.
+#   O2 파이프라인은 2026-08-22 부터 이력 기록이 켜져 있다(history_o2.tf,
+#   커밋 6d3a5ab7) — cycle_key 충돌을 피하려고 버킷/벡터인덱스를 원본과
+#   완전히 분리한 전용 리소스로 켰다.
 HISTORY_BUCKET = os.environ.get("HISTORY_BUCKET")
 VECTOR_BUCKET = os.environ.get("VECTOR_BUCKET")
 VECTOR_INDEX = os.environ.get("VECTOR_INDEX")
@@ -300,11 +300,31 @@ def _put_incident(incident):
 # ── Triggered ────────────────────────────────────────────────────
 
 
+def _last_action_taken(outputs):
+    """final_report_json 의 attempt_log 마지막 항목에서 실행된 action_id 를 뽑는다.
+
+    o2-aiops-workflow 가 조치(remediation)까지 하게 된 뒤에도 이 값은 계속
+    "none" 으로 고정돼 있었다 — 이 함수를 만들기 전엔 diagnosis-only 시절
+    가정이 그대로 남아 있었다. attempt_log 가 비어 있으면(예: 진단만 하고
+    끝난 케이스) 여전히 "none" 이 맞는 값이다.
+    """
+    try:
+        report = json.loads(outputs.get("final_report_json") or "{}")
+    except (TypeError, ValueError):
+        return "none"
+    attempts = report.get("attempt_log") or []
+    if not attempts:
+        return "none"
+    action_id = ((attempts[-1].get("action_result") or {}).get("action_id"))
+    return action_id or "none"
+
+
 def _build_incident(event, dify_data, past_cases):
     """스키마는 docs/architecture.md 7.3 을 따르되 outcome 만 다르다 — D-045."""
     now = datetime.datetime.now(datetime.timezone.utc)
     key = _incident_key(event)
-    result = (dify_data.get("outputs") or {}).get("result", "")
+    outputs = dify_data.get("outputs") or {}
+    result = outputs.get("result", "")
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -332,7 +352,7 @@ def _build_incident(event, dify_data, past_cases):
         "agent": {
             # 검색 코퍼스에는 안 들어간다. 사람이 검증할 때 읽는 자리다.
             "hypothesis": result,
-            "action_taken": "none",
+            "action_taken": _last_action_taken(outputs),
             "duration_ms": int(float(dify_data.get("elapsed_time") or 0) * 1000),
             "past_cases_used": bool(past_cases),
             "runbook": None,

@@ -397,7 +397,8 @@ Dify 안에서 만든 워크플로는 Terraform 이 만들지 않는다. DSL 로
 ## 이력 저장소
 
 에이전트가 내린 판단을 쌓아, 다음 알림이 왔을 때 **"이미 해결한 인시던트와
-비슷한가"** 를 판정한다. 정의는 [`history.tf`](history.tf) 에 있다.
+비슷한가"** 를 판정한다. 기존 경로는 [`history.tf`](history.tf), O2 공통 경로는
+[`history_o2.tf`](history_o2.tf)에 분리되어 있다.
 
 | 무엇 | 어디 | 쓰임 |
 |---|---|---|
@@ -421,7 +422,8 @@ S3 Vectors 는 2025년 12월 GA 이고 서울 리전에서 쓸 수 있다.
 
 ### 흐름
 
-검색과 저장이 **전부 `lambda/worker.py` 안에서** 끝난다.
+기존 Datadog 경로는 `lambda/worker.py`, 공통 `agent.incident.v1` 경로는
+`lambda/agent_entry_worker.py` 안에서 검색과 저장을 끝낸다.
 
 ```
 알림 → 임베딩 1회(Bedrock Titan) → S3 Vectors 검색 → past_cases 로 Dify 실행 → 저장
@@ -434,14 +436,15 @@ S3 Vectors 는 2025년 12월 GA 이고 서울 리전에서 쓸 수 있다.
 검색용 벡터와 저장용 벡터가 같다. 그래서 Bedrock 호출이 알림당 한 번이다.
 이유는 `lambda/worker.py` 의 `_alert_text` 주석에 있다.
 
-### 켜져 있는 파이프라인은 하나뿐이다
+### O2 전용 이력 저장소를 공통 진입점이 재사용한다
 
-`lambda_o2.tf` 의 두 번째 파이프라인은 **같은 zip 을 공유하지만 이력은 꺼져 있다.**
-환경변수(`HISTORY_BUCKET` 등)가 없으면 그 기능만 꺼지고 중계는 정상으로 돈다.
+`lambda_o2.tf`의 Datadog Worker와 Generic Agent Entry Worker는
+`history_o2.tf`의 O2 전용 버킷·인덱스를 공유한다. 전자는 `cycle_key`, 후자는
+`incident_id`를 벡터 key로 사용해 같은 인덱스에서도 덮어쓰지 않는다.
 
-**환경변수만 복사해 붙이지 마라.** 두 파이프라인이 같은 Datadog 모니터를
-받으면 `cycle_key` 가 같아서 서로의 인시던트를 덮어쓴다. 켜려면 키에
-파이프라인 구분을 먼저 넣는다.
+공통 Worker는 Chat 원문이나 candidate/broadcast 식별자를 읽을 수 없다. 검색 텍스트는
+정규화된 환경·증상군·대상 서비스와 source별 구조화 증거만 사용하며, 검증 전 원인과
+Dify 판단문은 벡터에서 제외한다(D-075).
 
 ### 무엇이 저장되나
 
@@ -562,7 +565,9 @@ mttr_sec = recovered_at － occurred_at
   사례가 쌓이면 `_search` 에 메타데이터 필터를 걸고, 그 전까지는
   프롬프트의 "참고이지 정답이 아니다" 문장이 유일한 방어선이다
   (근거: `docs/architecture.md` 7.4)
-- **런북.** 라벨은 정했는데 `runbooks/<label>.md` 가 아직 하나도 없다.
+- **사람용 라벨 런북.** 라벨은 정했는데 `runbooks/<label>.md` 가 아직 하나도 없다.
+  이것은 DynamoDB의 기계 판독용 실행 카탈로그와 다른 자산이다. 실행 카탈로그
+  형식과 위험도 현황은 [`../../docs/runbook-catalog.md`](../../docs/runbook-catalog.md)를 본다.
   `label-report.py` 가 후보를 알려주면 사람이 쓴다. 그다음 Worker 가 라벨로
   **정확 키 조회**해서 프롬프트에 넣는다 — 런북은 유사도 검색으로 찾으면 안 된다
 - **Athena.** 원본이 `dt=` 로 파티션되어 있어 Glue 테이블만 얹으면 되지만,

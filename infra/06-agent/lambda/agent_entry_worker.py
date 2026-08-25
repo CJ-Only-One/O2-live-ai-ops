@@ -15,7 +15,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 LOGGER = logging.getLogger()
@@ -76,6 +76,11 @@ EVIDENCE_ASSESSMENT_FIELDS = {
     "verification_state", "strong_exception_applied",
 }
 DIFY_INPUT_MAX_CHARS = 30000
+HISTORY_INPUT_MAX_CHARS = 8000
+PAST_CASES_MAX_CHARS = 6000
+HISTORY_TOP_K = 3
+HISTORY_MAX_DISTANCE = 0.35
+HISTORY_SCHEMA_VERSION = "1.1"
 
 _clients: dict[str, Any] = {}
 _cached_api_key: str | None = None
@@ -373,6 +378,181 @@ def _serialize_payload(payload: dict[str, Any]) -> str:
     return rendered
 
 
+def _history_enabled() -> bool:
+    return all(os.environ.get(name) for name in (
+        "HISTORY_BUCKET", "VECTOR_BUCKET", "VECTOR_INDEX", "EMBED_MODEL_ID",
+    ))
+
+
+def _history_text(payload: dict[str, Any]) -> str:
+    """Build a privacy-safe similarity query from structured Incident evidence.
+
+    Chat candidate/broadcast identifiers and raw chat never enter the embedding.
+    Unverified root-cause fields are also excluded so an Agent guess cannot become
+    the next Incident's retrieval key.
+    """
+    context = payload["normalized_context"]
+    parts = [
+        f"environment: {context['environment']}",
+        f"symptom_family: {context['symptom_family']}",
+        f"suspected_surfaces: {','.join(context['suspected_surfaces'])}",
+        f"services: {','.join(context['services'])}",
+        f"correlation_state: {payload['correlation']['state']}",
+    ]
+    for signal in payload["signals"]:
+        evidence = signal["evidence"]
+        parts.append(f"source: {signal['source']}")
+        if signal["source"] == "DATADOG_MONITOR":
+            parts.extend(filter(None, (
+                f"transition: {evidence['transition']}",
+                f"alert_title: {evidence['alert_title']}" if evidence["alert_title"] else "",
+                f"alert_query: {evidence['alert_query']}" if evidence["alert_query"] else "",
+            )))
+        else:
+            parts.extend((
+                f"candidate_type: {evidence['candidate_type']}",
+                f"suspected_surface: {evidence['suspected_surface']}",
+                f"matched_rule_ids: {','.join(evidence['matched_rule_ids'])}",
+                f"matched_messages: {evidence['matched_messages']}",
+                f"unique_users: {evidence['unique_users']}",
+            ))
+    return "\n".join(parts)[:HISTORY_INPUT_MAX_CHARS]
+
+
+def _history_lookup(payload: dict[str, Any]) -> tuple[list[float] | None, str]:
+    """Return one embedding and similar summaries; history is fail-open."""
+    if not _history_enabled():
+        LOGGER.info('{"event":"agent_entry_history","status":"DISABLED"}')
+        return None, ""
+    try:
+        response = _client("bedrock-runtime").invoke_model(
+            modelId=os.environ["EMBED_MODEL_ID"],
+            body=json.dumps({
+                "inputText": _history_text(payload),
+                "dimensions": 1024,
+                "normalize": True,
+            }),
+        )
+        vector = json.loads(response["body"].read())["embedding"]
+        search = _client("s3vectors").query_vectors(
+            vectorBucketName=os.environ["VECTOR_BUCKET"],
+            indexName=os.environ["VECTOR_INDEX"],
+            queryVector={"float32": vector},
+            topK=HISTORY_TOP_K,
+            returnMetadata=True,
+            returnDistance=True,
+        )
+        lines = []
+        for hit in search.get("vectors", []):
+            if hit.get("distance", 99) > HISTORY_MAX_DISTANCE:
+                continue
+            summary = str((hit.get("metadata") or {}).get("summary", "")).strip()
+            if summary:
+                lines.append(f"- {summary}")
+        past_cases = "\n".join(lines)[:PAST_CASES_MAX_CHARS]
+        LOGGER.info(json.dumps({
+            "event": "agent_entry_history", "status": "MATCHED",
+            "match_count": len(lines),
+        }, separators=(",", ":")))
+        return vector, past_cases
+    except Exception:
+        LOGGER.exception('{"event":"agent_entry_history","status":"SEARCH_FAILED"}')
+        return None, ""
+
+
+def _history_summary(payload: dict[str, Any]) -> str:
+    context = payload["normalized_context"]
+    scope = ",".join(context["services"] or context["suspected_surfaces"]) or "unknown"
+    ending = "복구 관측" if payload["lifecycle"] == "RESOLVED" else "복구 미확인"
+    label = "[미검증]" if payload["lifecycle"] == "RESOLVED" else "[진행중]"
+    return f"{label} · {context['symptom_family']} · {scope} · {ending}"
+
+
+def _history_record(
+    payload: dict[str, Any], run_id: str, past_cases: str, now: datetime,
+) -> dict[str, Any]:
+    context = payload["normalized_context"]
+    occurred = min(signal["occurred_at"] for signal in payload["signals"])
+    recovered = payload["updated_at"] if payload["lifecycle"] == "RESOLVED" else None
+    mttr = None
+    if recovered:
+        start = datetime.fromisoformat(payload["opened_at"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(recovered.replace("Z", "+00:00"))
+        mttr = max(0, int((end - start).total_seconds()))
+    key = f"incidents/dt={payload['opened_at'][:10]}/{payload['incident_id']}.json"
+    return {
+        "schema_version": HISTORY_SCHEMA_VERSION,
+        "incident_id": payload["incident_id"],
+        "revision": payload["revision"],
+        "trace_id": next((s["trace_id"] for s in payload["signals"] if s["trace_id"]), ""),
+        "s3_key": key,
+        "started_at": payload["opened_at"],
+        "occurred_at": occurred,
+        "updated_at": now.isoformat(),
+        "recovered_at": recovered,
+        "trigger": {
+            "source": "agent_incident",
+            "sources": sorted({s["source"] for s in payload["signals"]}),
+            "monitor_id": "", "severity": "", "link": "",
+        },
+        "context": {
+            "service": ",".join(context["services"]),
+            "env": context["environment"],
+            "host": "", "tags": "", "alert_query": "", "alert_body": "",
+            "signal_summary": _history_summary(payload),
+            "symptom_family": context["symptom_family"],
+            "suspected_surfaces": context["suspected_surfaces"],
+        },
+        "agent": {
+            "hypothesis": None,
+            "action_taken": "none",
+            "workflow_run_id": run_id,
+            "past_cases_used": bool(past_cases),
+            "runbook": None,
+        },
+        "outcome": {
+            "state": "auto_recovered" if recovered else "unresolved",
+            "mttr_sec": mttr,
+            "root_cause_label": None,
+            "verified": False,
+            "human_correction": None,
+        },
+        "incident_snapshot": payload,
+    }
+
+
+def _history_store(
+    payload: dict[str, Any], vector: list[float], run_id: str, past_cases: str,
+) -> None:
+    incident = _history_record(payload, run_id, past_cases, datetime.now(timezone.utc))
+    metadata = {
+        "service": incident["context"]["service"],
+        "env": incident["context"]["env"],
+        "occurred_at": incident["started_at"][:10],
+        "s3_key": incident["s3_key"],
+        "outcome_state": incident["outcome"]["state"],
+        "verified": False,
+        "summary": incident["context"]["signal_summary"],
+        "source": "agent_entry",
+        "revision": payload["revision"],
+    }
+    _client("s3").put_object(
+        Bucket=os.environ["HISTORY_BUCKET"],
+        Key=incident["s3_key"],
+        Body=json.dumps(incident, ensure_ascii=False).encode(),
+        ContentType="application/json",
+    )
+    _client("s3vectors").put_vectors(
+        vectorBucketName=os.environ["VECTOR_BUCKET"],
+        indexName=os.environ["VECTOR_INDEX"],
+        vectors=[{
+            "key": payload["incident_id"],
+            "data": {"float32": vector},
+            "metadata": metadata,
+        }],
+    )
+
+
 def _api_key() -> str:
     global _cached_api_key
     if _cached_api_key is None:
@@ -540,9 +720,12 @@ def _finalize(payload: dict[str, Any], status: str, now: int, **extra: str) -> N
         raise WorkerError("IDEMPOTENCY_FINALIZE") from exc
 
 
-def _call_dify(payload: dict[str, Any], rendered: str) -> str:
+def _call_dify(payload: dict[str, Any], rendered: str, past_cases: str) -> str:
     body = json.dumps({
-        "inputs": {"custom_alert_json": rendered}, "response_mode": "blocking",
+        "inputs": {
+            "custom_alert_json": rendered,
+            "past_cases": past_cases,
+        }, "response_mode": "blocking",
         "user": "agent-entry:incident",
     }, ensure_ascii=True, separators=(",", ":")).encode()
     request = urllib.request.Request(
@@ -568,6 +751,7 @@ def _call_dify(payload: dict[str, Any], rendered: str) -> str:
         or output.get("incident_id") != payload["incident_id"]
         or output.get("revision") != payload["revision"]
         or output.get("idempotency_key") != payload["idempotency_key"]
+        or output.get("history_context_present") is not bool(past_cases)
     ):
         raise WorkerError("DIFY_OUTPUT_MISMATCH")
     run_id = data.get("id", "")
@@ -592,8 +776,9 @@ def _process_record(record: dict[str, Any]) -> dict[str, str | int]:
     _api_key()  # Preflight before acquiring the Incident lock.
     if not _acquire(payload, now):
         return {"status": "DUPLICATE", "incident": fingerprint, "revision": payload["revision"]}
+    vector, past_cases = _history_lookup(payload)
     try:
-        run_id = _call_dify(payload, rendered)
+        run_id = _call_dify(payload, rendered, past_cases)
         _finalize(payload, "SUCCEEDED", int(time.time()), **({"workflow_run_id": run_id} if run_id else {}))
     except WorkerError as exc:
         try:
@@ -604,6 +789,16 @@ def _process_record(record: dict[str, Any]) -> dict[str, str | int]:
                 "revision": payload["revision"],
             }, separators=(",", ":")))
         raise
+    if vector is not None:
+        try:
+            _history_store(payload, vector, run_id, past_cases)
+        except Exception:
+            # Dify and the execution ledger already succeeded. Never re-run the
+            # workflow solely because auxiliary history persistence failed.
+            LOGGER.exception(json.dumps({
+                "event": "agent_entry_history", "status": "STORE_FAILED",
+                "incident": fingerprint, "revision": payload["revision"],
+            }, separators=(",", ":")))
     return {"status": "SUCCEEDED", "incident": fingerprint, "revision": payload["revision"]}
 
 

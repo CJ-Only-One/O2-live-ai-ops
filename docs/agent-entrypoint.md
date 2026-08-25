@@ -3,7 +3,7 @@
 > **Audience:** coding agents and reviewers
 > **Status:** Operational READ_PATH Incident handoff enabled; waiting for the first real correlated Incident
 > **Updated:** 2026-08-25
-> **Decision:** `decisions.md` D-050, D-055, D-066, D-070, D-072, and D-073
+> **Decision:** `decisions.md` D-050, D-055, D-066, D-070, D-072, D-073, D-075, and D-083
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
 
 ```yaml
@@ -47,6 +47,10 @@ implementation_state:
   phase4f_initial_correlation_window: IMPLEMENTED_NOT_APPLIED_420_SECONDS
   phase4f_window_evidence_validation: PASS
   phase4f_targeted_plan: PASS_0_ADD_1_CHANGE_0_DESTROY_WINDOW_ONLY
+  common_history_lookup_store: APPLIED_EXECUTION_DISABLED
+  common_history_dify_contract: PUBLISHED_PAST_CASES_OPTIONAL
+  chat_to_dify_history_live_e2e: PASS_M021
+  synthetic_history_cleanup: PASS_S3_VERSION_AND_VECTOR_DELETED
   datadog_migration: PHASE4C_SHADOW_E2E_ONLY
   production_agent_handoff: ENABLED_WAITING_FOR_REAL_VERIFIED_INCIDENT
 activation_blockers:
@@ -111,7 +115,9 @@ source-specific JSON
   -> agent.incident.v1
   -> Agent Invocation Queue
   -> Generic Agent Worker
-  -> Dify custom_alert_json
+  -> Bedrock embedding + S3 Vectors history lookup
+  -> Dify custom_alert_json + past_cases
+  -> S3 Incident History + S3 Vectors store
 ```
 
 이 경계가 없으면 Dify가 `alert_title` 유무로 source를 추측해야 하고, 새 source가 생길
@@ -218,6 +224,9 @@ Chat Source Adapter는 Candidate DynamoDB Stream의 **새 Candidate INSERT만** 
 | `INV-AGENT-ENTRY-015` | 같은 Incident의 Agent 실행과 조치 락은 하나이며 revision별 실행은 직렬화한다. |
 | `INV-AGENT-ENTRY-016` | Worker는 Incident State의 최신 revision보다 오래된 Invocation을 `SUPERSEDED` 처리하고 Dify를 호출하지 않는다. |
 | `INV-AGENT-ENTRY-017` | 만료된 Incident lock은 자동 탈취하지 않는다. Dify 도달 여부를 확인한 운영자만 ledger와 DLQ를 복구한다. |
+| `INV-AGENT-ENTRY-018` | Chat 원문·candidate/broadcast 식별자·검증 전 root cause는 이력 검색용 임베딩에 넣지 않는다. |
+| `INV-AGENT-ENTRY-019` | 이력 조회 실패는 빈 `past_cases`로 축소하며 Dify 호출을 막지 않는다. |
+| `INV-AGENT-ENTRY-020` | Dify 성공 뒤 이력 저장 실패는 성공 ledger를 되돌리거나 Dify 재호출을 만들지 않는다. |
 
 Chat 예시는 `contracts.md` 5.8에 있다. `evidence`는 Candidate 계약의 허용 필드만 복사하며
 `raw_chat_included`는 evidence가 아니라 공통 `guardrails`에서 항상 `false`로 강제한다.
@@ -231,7 +240,8 @@ compact JSON string으로 직렬화해 다음처럼 보낸다.
 ```json
 {
   "inputs": {
-    "custom_alert_json": "<serialized agent.incident.v1>"
+    "custom_alert_json": "<serialized agent.incident.v1>",
+    "past_cases": "<optional similar incident summaries>"
   },
   "response_mode": "blocking",
   "user": "agent-entry:incident"
@@ -241,6 +251,10 @@ compact JSON string으로 직렬화해 다음처럼 보낸다.
 - Chat evidence를 `alert_title`, `alert_body` 같은 Datadog 필드로 위장하지 않는다.
 - 테스트 앱의 `custom_alert_json`은 required paragraph로 만들고 최대 길이는 게시 API에서
   다시 읽어 Worker 검증값과 일치시킨다.
+- `past_cases`는 optional paragraph, 최대 6,000자다. 테스트 Code 노드는 값의 존재 여부를
+  `history_context_present`로 돌려주고 Worker가 요청값과 일치하는지 검사한다.
+- 유사검색은 Dify 노드가 아니라 Worker가 Bedrock Titan과 O2 전용 S3 Vectors로 수행한다.
+  검색용 벡터는 저장에도 한 번만 재사용한다(D-075).
 - `behavior`는 실험용 선택값이므로 공통 계약에 넣지 않는다.
 - Dify의 모르는 입력 키 무시 동작에 기대지 않는다. 호출 전 Schema 검증과 게시 앱
   `/parameters`의 변수 존재 확인을 배포 게이트로 둔다.
@@ -261,7 +275,9 @@ compact JSON string으로 직렬화해 다음처럼 보낸다.
 | Dify HTTP/네트워크 실패 | 호출 도달 여부가 불명확하므로 ledger를 `FAILED`로 닫고 자동 재호출 금지; DLQ에서 운영 확인 |
 | Dify HTTP 200 + workflow failed | 실패로 간주하고 ledger를 `FAILED`로 닫아 자동 재호출 금지; DLQ에서 운영 확인 |
 | Dify 장시간 지연 | Queue backlog로 흡수; Chat Worker를 점유하지 않음 |
+| Bedrock/S3 Vectors 이력 조회 실패 | `past_cases`를 비우고 Dify 실행 계속; sanitized 로그만 기록 |
 | Agent 결과 저장 실패 | 성공한 LLM을 무조건 재실행하지 않도록 invocation 상태를 분리 |
+| Dify 성공 뒤 이력 저장 실패 | 성공 ledger 유지; Dify 재실행 금지; 로그로 후속 복구 |
 | 같은 Incident revision 동시 도착 | DynamoDB Incident lock으로 하나만 실행; 나머지는 SQS 재전달 |
 | 대기 중 더 최신 revision 도착 | Incident State 최신 revision보다 오래된 메시지는 `SUPERSEDED`; Dify 호출 0 |
 | lock lease 만료 | Dify 도달 여부가 불명확하므로 자동 탈취하지 않고 fail-closed, DLQ에서 운영자 확인 |
