@@ -139,6 +139,9 @@ variable "incident_datadog_monitor_map" {
     severity_level           = string
     strong_exception_allowed = bool
   }))
+  # 실제 값은 terraform.tfvars가 소유한다(환경별 monitor ID라 기본값에 안 둔다,
+  # incident_chat_surface_map과 다른 축). 여기 기본값은 빈 맵으로 둔다 — 두 곳에
+  # 값을 겹쳐 적으면 tfvars만 갱신되고 여기는 낡는다.
   default = {}
 
   validation {

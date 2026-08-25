@@ -30,7 +30,7 @@ resource "datadog_monitor" "chat_propagation_p95" {
     `CHAT_PROPAGATION_P95` evidence로 S1 Chat Degradation 판단에 사용합니다.
 
     조치 대상은 **이 방송 하나**입니다. 다른 방송이 함께 나쁘면 각자 알림이 옵니다.
-    ${var.enable_s1_dify_webhook ? "@webhook-o2-dify" : ""}
+    @webhook-o2-incident-entry
   EOT
 
   monitor_thresholds {
@@ -59,8 +59,7 @@ resource "datadog_monitor" "chat_block_rate" {
     Chat 정상 사용자 차단률이 ${var.chat_block_rate_critical}를 초과했습니다.
     `CHAT_NORMAL_USER_BLOCK_RATE` evidence로 S1 Chat Degradation 판단에 사용합니다.
     방송 `{{broadcast_id.name}}`의 차단률입니다.
-    ${var.enable_s1_dify_webhook ? "@webhook-o2-dify" : ""}
-
+    @webhook-o2-incident-entry
   EOT
 
   monitor_thresholds {
