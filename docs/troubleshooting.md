@@ -53,6 +53,7 @@
 | T-035 | AWS CLI로 보낸 JSON이 Lambda에서 `SQS_BODY` 거부된다 | Windows PowerShell 네이티브 인자 quoting, `file://` |
 | T-036 | validate는 통과하지만 IAM policy plan이 duplicate Sid로 실패한다 | `aws_iam_policy_document`, merge 중복, provider 렌더링 |
 | T-037 | topologySpreadConstraints 를 걸었는데 파드가 안 갈린다 | merge key 중복, `matchLabelKeys`, 롤링 중 구 ReplicaSet 계산 |
+| T-038 | 조치 실행기가 증설했는데 10초 뒤 원래 replicas로 돌아간다 | cue-warmer, 조치 소유권 충돌, 실험 잠금, RoleBinding 원복 |
 
 
 ---
@@ -1661,3 +1662,34 @@ AWS 정책 JSON을 렌더링하는 plan 단계에서 provider가 중복 Sid를 �
 갈리는 경우가 많아 그때만 확인하면 통과한다 — 실제로는 다음 배포에서 깨졌다.
 서버 dry-run 결과가 맞게 나오는 것도 함정이다. 그 입력이 이미 애노테이션이
 빠진 상태였는데 제약 두 개는 맞게 렌더링되어 통과로 보였다.
+
+---
+
+## T-038. 조치 실행기가 증설했는데 10초 뒤 원래 replicas로 돌아간다
+
+**증상** — `o2-dev-dify-scale-executor`가 API를 2 → 3으로 바꿨고 새 파드도
+Ready가 됐지만 약 10초 뒤 다시 2로 줄었다. Lambda 응답은 성공이고 Argo CD도
+`Synced/Healthy`라 실패 주체가 보이지 않는다.
+
+**원인** — Argo CD가 아니라 cue-warmer가 방송 큐시트의 기준값 2를 10초마다
+재적용했다. API Deployment의 `/spec/replicas`는 Argo ignoreDifferences와
+`RespectIgnoreDifferences=true`가 이미 적용돼 있었다. 반면 cue-warmer에는
+Agent 실험 중 조치 소유권을 넘겨받는 잠금이 없어서, 정상적인 사전 확장 원복과
+Agent의 임시 증설이 서로를 덮었다.
+
+**조치**
+
+- 실험 전 cue-warmer 로그와 `SCALE_ENABLED`를 확인한다. 두 번 이상의 reconcile
+  주기 동안 목표 replicas가 유지돼야 증설 성공으로 판정한다.
+- 2026-08-25 리허설에서는 별도 runtime gate가 없어 RoleBinding의 subject를
+  임시로 비워 scale GET/PATCH를 403으로 막았다. 종료 직후 원래
+  `ServiceAccount/o2-dev/cue-warmer`를 복원하고 로그가 다시 200으로 바뀌는 것까지
+  확인했다. 이것은 긴급한 실험 격리 수단이지 최종 Runbook은 아니다.
+- 반복 시연 전에는 `action_state`의 incident/action lock을 cue-warmer도 읽게 하거나,
+  별도 experiment lock을 두어 한 시점의 replicas 소유자를 하나로 만든다. TTL과
+  종료 시 기준값 복원도 같은 잠금 계약에 포함한다.
+
+**왜 늦게 찾았나** — 실행 Lambda와 rollout은 모두 성공했고, replicas를 되돌리는
+대표 주체인 Argo CD부터 확인하게 된다. 실제 원복 주체는 10초 주기의 다른
+컨트롤러였고, Kubernetes 이벤트에는 "누가 scale을 바꿨는지"가 직접 남지 않아
+cue-warmer 애플리케이션 로그를 보기 전까지 구분되지 않았다.

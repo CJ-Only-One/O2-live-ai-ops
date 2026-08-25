@@ -546,8 +546,10 @@ curl -fsS -X POST "$CHAT_GATEWAY_ADMIN_URL" \
 
 ### 4.3 S2 — CPU 제한 canary
 
-canary는 운영 `api-deployment.yaml`을 Kustomize base로 읽으므로 이미지·환경변수·
-ServiceAccount가 main과 같다. CPU와 probe 값은 실측 입력이 없으면 렌더링조차 막는다.
+canary는 **클러스터에 배포된 현재 main Deployment**를 원본으로 읽으므로 이미지·
+환경변수·ServiceAccount가 main과 같다. 로컬 `O2-live-deploy` 파일은 Argo가 먼저
+새 버전을 배포하면 뒤처질 수 있어 실행 원본으로 쓰지 않는다. CPU와 probe 값은
+실측 입력이 없으면 렌더링조차 막는다.
 
 ```bash
 CANARY_CPU_LIMIT='<측정값>' \
