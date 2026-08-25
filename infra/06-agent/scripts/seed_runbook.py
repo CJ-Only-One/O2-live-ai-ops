@@ -218,10 +218,15 @@ RUNBOOKS = [
         # RESOLVED까지 검증된 임시 기준(p95_ms/error_rate, OR)을 그대로
         # 둔다 — chat_propagation_p95_ms가 실측으로 안정적으로 채워지는 걸
         # 확인한 뒤 이 조건을 그 필드 기반으로 교체할 것.
+        # 2026-08-25: hot_items_post(22-H2, Dify DSL) 흡수 — Hot Path fanout
+        # items/s를 실측으로 붙였다. p95_ms/error_rate만으로는 fanout 자체가
+        # 막힌 채로도 RESOLVED 오판정이 날 수 있어(예: 요청이 아예 안 들어와
+        # error_rate가 낮아지는 경우) items_per_sec을 OR 조건에 추가한다.
         "success_criteria": {
             "conditions": [
                 {"metric": "p95_ms", "comparison": "<=", "threshold": 500},
                 {"metric": "error_rate", "comparison": "<=", "threshold": Decimal("0.05")},
+                {"metric": "items_per_sec", "comparison": "<=", "threshold": 20000},
             ],
             "logic": "OR",
         },
