@@ -30,6 +30,10 @@ class ConditionalFailure(Exception):
 class AgentEntryWorkerTest(unittest.TestCase):
     def setUp(self):
         worker._clients.clear()
+        # Metric enrichment is fail-open, but the worker must never construct
+        # real boto clients in unit tests (GitHub runners do not provide a
+        # default AWS region or credentials).
+        worker._clients.update({"lambda": mock.Mock(), "ssm": mock.Mock()})
         worker._cached_api_key = None
         self.chat_first = load_example("agent-incident-chat-first-v1.example.json")
         self.correlated = load_example("agent-incident-correlated-v1.example.json")
