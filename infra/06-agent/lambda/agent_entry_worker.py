@@ -18,6 +18,8 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+from agent_metric_enrichment import enrich as enrich_metrics
+
 LOGGER = logging.getLogger()
 LOGGER.setLevel(logging.INFO)
 
@@ -766,7 +768,7 @@ def _process_record(record: dict[str, Any]) -> dict[str, str | int]:
     payload = validate_envelope(payload)
     if not _incident_allowed(payload["incident_id"]):
         raise WorkerError("SYNTHETIC_INCIDENT_NOT_ALLOWED")
-    rendered = _serialize_payload(payload)
+    _serialize_payload(payload)  # Reject oversized input before state or secret reads.
     now = int(time.time())
     fingerprint = _fingerprint(payload["incident_id"])
     latest = _latest_revision(payload)
@@ -778,6 +780,16 @@ def _process_record(record: dict[str, Any]) -> dict[str, str | int]:
         return {"status": "DUPLICATE", "incident": fingerprint, "revision": payload["revision"]}
     vector, past_cases = _history_lookup(payload)
     try:
+        dify_payload, enrichment_errors = enrich_metrics(
+            payload, _client("lambda"), _client("ssm")
+        )
+        if enrichment_errors:
+            LOGGER.warning(json.dumps({
+                "event": "agent_metric_enrichment", "incident": fingerprint,
+                "revision": payload["revision"], "status": "PARTIAL",
+                "failed_sources": enrichment_errors,
+            }, separators=(",", ":")))
+        rendered = _serialize_payload(dify_payload)
         run_id = _call_dify(payload, rendered, past_cases)
         _finalize(payload, "SUCCEEDED", int(time.time()), **({"workflow_run_id": run_id} if run_id else {}))
     except WorkerError as exc:

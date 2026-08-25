@@ -188,6 +188,17 @@ variable "agent_entry_worker_max_concurrency" {
   }
 }
 
+variable "agent_read_path_status_url" {
+  description = "Agent Worker가 Valkey 권위 상태를 읽는 api admin GET 전체 경로. 비어 있으면 해당 관측만 생략한다."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.agent_read_path_status_url == "" || startswith(var.agent_read_path_status_url, "http")
+    error_message = "agent_read_path_status_url은 빈 값 또는 http(s) URL이어야 합니다."
+  }
+}
+
 variable "agent_entry_idempotency_ttl_seconds" {
   description = "성공·실패 멱등성 상태 보존 기간. DLQ 14일보다 길어 replay 중 중복 호출을 막는다."
   type        = number

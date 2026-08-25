@@ -38,3 +38,6 @@ agent_entry_execution_enabled            = true
 agent_entry_event_source_enabled         = true
 agent_entry_operational_handoff_approved = true
 agent_entry_allowed_incident_ids         = []
+
+# Agent Worker가 Valkey 원본 상태를 읽는 인증 GET. 키 값은 SSM SecureString에 둔다.
+agent_read_path_status_url = "http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/api/admin/read-path-degraded"
