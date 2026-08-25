@@ -27,6 +27,14 @@ if [ ! -d /opt/dify ]; then
 fi
 
 cd /opt/dify/docker
+
+# Dify API 호출은 Bearer 토큰을 사용한다. 기본 Nginx proxy.conf.template는
+# Authorization 헤더를 upstream API에 넘기지 않아 Service API Key 인증이
+# 항상 401이 된다. 재부팅/재생성 시에도 동일하게 보장한다.
+if ! grep -q '^proxy_set_header Authorization \$http_authorization;' nginx/proxy.conf.template; then
+  sed -i '/proxy_set_header Host/a proxy_set_header Authorization $http_authorization;' nginx/proxy.conf.template
+fi
+
 if [ ! -f .env ]; then
   cp .env.example .env
 
