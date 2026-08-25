@@ -163,6 +163,18 @@ variable "cache_node_type" {
   default     = "cache.t4g.micro"
 }
 
+variable "cache_snapshot_retention_days" {
+  description = <<-EOT
+    Valkey 자동 스냅샷 보관 일수. 0 이면 백업을 남기지 않는다.
+
+    재고(stock:{sku})의 원본이 Valkey 이고 MySQL 에 사본이 없어(D-07),
+    잃으면 되돌릴 곳이 seed 의 초기값뿐이다. cache.t4g.micro 기준 스토리지
+    비용이 무시할 수준이라 하루치는 남긴다.
+  EOT
+  type        = number
+  default     = 1
+}
+
 variable "cache_num_nodes" {
   description = <<-EOT
     프라이머리 포함 노드 수. 1 이면 단일 노드라 자동 페일오버가 없다.
