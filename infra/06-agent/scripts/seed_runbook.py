@@ -700,6 +700,68 @@ KNOBS = [
             {"check": "read_path_not_already_degraded", "source": "cfg:read_path_degraded:{broadcast_id}"},
         ],
     },
+    {
+        # traffic_spike_overload의 실제 조치. scale-executor 재사용(같은
+        # Lambda, namespace/deployment/replicas만 다름) — 신규 실행기 없음.
+        "action_id": "autoscale_bump",
+        "target": "o2-dev/api Deployment -> 4",
+        "knob_reversible": True,
+        "user_effect_reversible": True,
+        "max_blast_radius": "api deployment only · pod count",
+        "max_duration_seconds": None,
+        "preapproved_budget": None,
+        "cooldown_seconds": None,
+        "max_attempts": 1,
+        "measured": False,
+        "risk_level": "L2",
+        "diagnostic_contamination": True,
+        "rollback_method": "previous_value",
+        "rollback_call": {"endpoint": "$SCALE_EXECUTOR_URL", "note": "replicas 를 이전 값으로"},
+        "verification_metrics": ["latency_p95", "overall_failure_rate"],
+        "preconditions": [
+            {"check": "target_deployment_is_api"},
+        ],
+    },
+    {
+        # TEMP: Action Handler 없어 mock endpoint(/actions/queue-shed)를
+        # 그대로 가리킨다 — 현재 시나리오(S1/S2/S3) 밖의 기존 항목이라
+        # 실행기 신규 제작은 하지 않는다.
+        "action_id": "queue_shed_low_priority",
+        "target": "background job queue · low_priority",
+        "knob_reversible": True,
+        "user_effect_reversible": False,
+        "max_blast_radius": "background job queue",
+        "max_duration_seconds": None,
+        "preapproved_budget": None,
+        "cooldown_seconds": None,
+        "max_attempts": None,
+        "measured": False,
+        "risk_level": "L2",
+        "diagnostic_contamination": True,
+        "rollback_method": "immediate_delete",
+        "rollback_call": {"endpoint": "/actions/queue-shed", "action": "clear"},
+        "verification_metrics": ["latency_p95", "overall_failure_rate"],
+        "preconditions": [],
+    },
+    {
+        # TEMP: 위와 같은 이유로 mock endpoint(/actions/rate-limit).
+        "action_id": "rate_limit_noncritical",
+        "target": "non-critical API traffic",
+        "knob_reversible": True,
+        "user_effect_reversible": False,
+        "max_blast_radius": "non-critical API traffic",
+        "max_duration_seconds": None,
+        "preapproved_budget": None,
+        "cooldown_seconds": None,
+        "max_attempts": None,
+        "measured": False,
+        "risk_level": "L1",
+        "diagnostic_contamination": True,
+        "rollback_method": "immediate_delete",
+        "rollback_call": {"endpoint": "/actions/rate-limit", "action": "clear"},
+        "verification_metrics": ["latency_p95", "overall_failure_rate"],
+        "preconditions": [],
+    },
 ]
 
 
