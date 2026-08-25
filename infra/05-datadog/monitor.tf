@@ -140,7 +140,7 @@ resource "datadog_monitor" "order_latency_p95" {
       기준값 기록·재확인·원복 로직은 이 Monitor가 아니라 에이전트
       오케스트레이션(D-028, `06-agent`) 쪽에 있습니다.
 
-    @webhook-o2-dify
+    @webhook-o2-incident-entry
   EOT
 
   # trace.fastapi.request 의 Datadog API 단위는 second다. 사용자 계약과 변수는

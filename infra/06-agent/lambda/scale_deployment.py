@@ -24,6 +24,7 @@ import hmac
 import json
 import os
 import ssl
+import time
 import urllib.error
 import urllib.request
 
@@ -41,6 +42,11 @@ API_KEY_HEADER = "x-api-key"
 # 이 실행기가 건드릴 수 있는 유일한 네임스페이스. RBAC 도 같은 범위지만
 # 여기서도 한 번 더 막는다 — 잘못된 인자가 K8s 까지 안 가고 여기서 죽는다.
 ALLOWED_NAMESPACE = "o2-dev"
+ALLOWED_SCALE_TARGETS = {
+    "api": {2, 3},
+    "api-canary": {0, 1},
+}
+STABILIZATION_SECONDS = int(os.environ.get("SCALE_STABILIZATION_SECONDS", "60"))
 
 _secrets = None
 _ca_file = "/tmp/eks-ca.crt"
@@ -140,6 +146,13 @@ def lambda_handler(event, context):
             "statusCode": 400,
             "body": json.dumps({"error": "replicas must be a non-negative integer"}),
         }
+    if replicas not in ALLOWED_SCALE_TARGETS.get(deployment, set()):
+        return {
+            "statusCode": 400,
+            "body": json.dumps(
+                {"error": "deployment/replicas pair is outside the S2 allowlist"}
+            ),
+        }
 
     scale_path = f"/apis/apps/v1/namespaces/{namespace}/deployments/{deployment}/scale"
 
@@ -175,6 +188,11 @@ def lambda_handler(event, context):
             "body": json.dumps({"error": f"patch failed: {e.read().decode()[:500]}"}),
         }
 
+    # Warm 집계창과 Endpoint 갱신이 닫히기 전에 Dify가 POST 검증을 읽으면
+    # 정상 복구도 실패로 판정한다. 안정화 책임은 Dify Code sleep이 아니라
+    # Action Handler가 가진다. Lambda/Dify/Worker 타임아웃은 이 값보다 크게 둔다.
+    time.sleep(STABILIZATION_SECONDS)
+
     return {
         "statusCode": 200,
         "body": json.dumps(
@@ -183,6 +201,7 @@ def lambda_handler(event, context):
                 "previous_replicas": previous_replicas,
                 "replicas": replicas,
                 "already_at_target": False,
+                "stabilization_seconds": STABILIZATION_SECONDS,
             }
         ),
     }

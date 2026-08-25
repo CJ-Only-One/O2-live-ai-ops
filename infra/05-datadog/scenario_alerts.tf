@@ -193,7 +193,7 @@ resource "datadog_monitor" "s2_api_tail_latency" {
     **증설로 p50 만 좋아지고 p99 가 그대로면 그것이 새 증거입니다.** 같은 조치를
     반복하지 말고 파드별로 쪼개 다시 보세요(`o2.apm.request.duration by pod_name`).
 
-    @webhook-o2-dify
+    @webhook-o2-incident-entry
   EOT
 
   monitor_thresholds {

@@ -24,6 +24,12 @@ os.environ.setdefault("RUNBOOK_TABLE", "dummy")
 os.environ.setdefault("RUNBOOK_SECRET_NAME", "dummy")
 
 
+def _experiment(enabled=False, experiment_id="", expires_at=0):
+    os.environ["S2_EXPERIMENT_RUNBOOK_ENABLED"] = str(enabled).lower()
+    os.environ["S2_EXPERIMENT_ID"] = experiment_id
+    os.environ["S2_EXPERIMENT_EXPIRES_AT_EPOCH"] = str(expires_at)
+
+
 class _FakeTable:
     """PK 로 묶인 아이템 목록만 돌려주는 최소 대역."""
 
@@ -123,6 +129,7 @@ def test_missing_knob_does_not_break_lookup():
 
 
 def test_draft_runbook_is_seeded_but_not_returned_for_execution():
+    _experiment()
     fake = _FakeTable(
         {
             "query": [
@@ -147,6 +154,94 @@ def test_draft_runbook_is_seeded_but_not_returned_for_execution():
     assert body["runbook_id"] == "RB-API-LATENCY-001"
     assert body["runbook_status"] == "draft"
     assert body["success_criteria"] is None
+    assert body["actions"] == []
+
+
+def test_exact_s2_draft_runbook_is_temporarily_returned_before_expiry():
+    _experiment(True, "s2-20260825T220000", 4_000_000_000)
+    fake = _FakeTable(
+        {
+            "query": [
+                {
+                    "rca_type": "pod_resource_exhaustion",
+                    "sk": "DEF",
+                    "runbook_id": "RB-API-LATENCY-001",
+                    "status": "draft",
+                    "success_criteria": {"logic": "AND"},
+                },
+                {
+                    "rca_type": "pod_resource_exhaustion",
+                    "sk": "ACTION#scale_api_one_step",
+                    "action_id": "scale_api_one_step",
+                    "status": "draft",
+                },
+                {
+                    "rca_type": "pod_resource_exhaustion",
+                    "sk": "ACTION#unexpected",
+                    "action_id": "unexpected",
+                    "status": "draft",
+                },
+            ],
+            "knobs": {},
+        }
+    )
+    body = _call(_load(fake), "pod_resource_exhaustion")
+    assert body["runbook_status"] == "experiment"
+    assert body["experiment_id"] == "s2-20260825T220000"
+    assert [action["action_id"] for action in body["actions"]] == ["scale_api_one_step"]
+
+
+def test_s2_experiment_expiry_fails_closed():
+    _experiment(True, "s2-20260825T220000", 1)
+    fake = _FakeTable(
+        {
+            "query": [
+                {
+                    "rca_type": "pod_load_skew",
+                    "sk": "DEF",
+                    "runbook_id": "RB-API-POD-RESOURCE-SKEW",
+                    "status": "draft",
+                    "success_criteria": {"logic": "AND"},
+                },
+                {
+                    "rca_type": "pod_load_skew",
+                    "sk": "ACTION#isolate_slow_pod",
+                    "action_id": "isolate_slow_pod",
+                    "status": "draft",
+                },
+            ],
+            "knobs": {},
+        }
+    )
+    body = _call(_load(fake), "pod_load_skew")
+    assert body["runbook_status"] == "draft"
+    assert body["actions"] == []
+
+
+def test_experiment_does_not_enable_other_draft_runbooks():
+    _experiment(True, "s2-20260825T220000", 4_000_000_000)
+    fake = _FakeTable(
+        {
+            "query": [
+                {
+                    "rca_type": "pg_external_failure",
+                    "sk": "DEF",
+                    "runbook_id": "RB-PG-FAILURE",
+                    "status": "draft",
+                    "success_criteria": {"logic": "AND"},
+                },
+                {
+                    "rca_type": "pg_external_failure",
+                    "sk": "ACTION#open_circuit",
+                    "action_id": "open_circuit",
+                    "status": "draft",
+                },
+            ],
+            "knobs": {},
+        }
+    )
+    body = _call(_load(fake), "pg_external_failure")
+    assert body["runbook_status"] == "draft"
     assert body["actions"] == []
 
 

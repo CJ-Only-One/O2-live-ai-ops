@@ -186,8 +186,9 @@ resource "aws_lambda_function" "agent_entry_worker" {
   runtime       = "python3.12"
   architectures = ["x86_64"]
 
-  # Dify blocking 45초 앞에 Bedrock embedding과 S3 Vectors 조회가 추가된다.
-  timeout     = 90
+  # S2는 60초 안정화 조치를 최대 두 번 수행할 수 있다. Dify blocking 호출과
+  # history/enrichment를 포함해도 SQS visibility(360초) 안에서 끝나도록 제한한다.
+  timeout     = 300
   memory_size = 128
 
   filename         = data.archive_file.agent_entry_worker.output_path
@@ -212,8 +213,8 @@ resource "aws_lambda_function" "agent_entry_worker" {
       IDEMPOTENCY_TABLE         = aws_dynamodb_table.agent_entry_idempotency.name
       INCIDENT_STATE_TABLE      = data.aws_dynamodb_table.incident_state.name
       IDEMPOTENCY_TTL           = tostring(var.agent_entry_idempotency_ttl_seconds)
-      IDEMPOTENCY_LEASE         = "120"
-      DIFY_TIMEOUT_SECONDS      = "45"
+      IDEMPOTENCY_LEASE         = "330"
+      DIFY_TIMEOUT_SECONDS      = "270"
       HISTORY_BUCKET            = aws_s3_bucket.history_o2.bucket
       VECTOR_BUCKET             = aws_s3vectors_vector_bucket.history_o2.vector_bucket_name
       VECTOR_INDEX              = aws_s3vectors_index.incidents_o2.index_name
