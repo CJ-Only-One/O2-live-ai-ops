@@ -213,6 +213,7 @@ class PgProviderSwitchOut(BaseModel):
     previous_provider: str
     provider: str
     pg_b_ready: bool
+    already_in_target_state: bool
 
 
 class PgProviderSwitchStatusOut(BaseModel):
@@ -240,30 +241,46 @@ def set_pg_provider_switch(
     require_admin_key(settings.READ_PATH_DEGRADED_ADMIN_KEY, x_admin_key)
 
     previous = payment.get_config(authoritative=True)
+    already_in_target_state = False
     if body.action == "set_pg_b_ready":
         try:
             current = payment.set_pg_b_ready(body.pg_b_ready)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        already_in_target_state = previous.pg_b_ready == current.pg_b_ready
     elif body.action == "set":
         if not previous.pg_b_ready:
             raise HTTPException(status_code=409, detail="PG-B is not ready")
-        if previous.active_provider != "PG-A":
+        if previous.active_provider == "PG-B":
+            current = previous
+            already_in_target_state = True
+        elif previous.active_provider != "PG-A":
             raise HTTPException(status_code=409, detail="active provider is not PG-A")
-        current = payment.set_active_provider("PG-B")
+        else:
+            current = payment.set_active_provider("PG-B")
     else:
-        if previous.active_provider != "PG-B":
+        if previous.active_provider == "PG-A":
+            if previous.active:
+                raise HTTPException(
+                    status_code=409,
+                    detail="cannot confirm rollback while PG-A injection is active",
+                )
+            current = previous
+            already_in_target_state = True
+        elif previous.active_provider != "PG-B":
             raise HTTPException(status_code=409, detail="active provider is not PG-B")
-        if previous.active:
+        elif previous.active:
             raise HTTPException(
                 status_code=409,
                 detail="cannot roll back while PG-A injection is active",
             )
-        current = payment.clear_active_provider()
+        else:
+            current = payment.clear_active_provider()
 
     return PgProviderSwitchOut(
         action=body.action,
         previous_provider=previous.active_provider,
         provider=current.active_provider,
         pg_b_ready=current.pg_b_ready,
+        already_in_target_state=already_in_target_state,
     )

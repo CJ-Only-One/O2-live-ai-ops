@@ -113,7 +113,7 @@
 | 1차 실행: active Runbook 없음 → 실패 보고 | draft Runbook은 Lookup에서 제외되지만, active action 0건을 즉시 `ESCALATED`로 끝내는 전용 분기와 종료 사유는 없다. 현재 DSL은 후보 소진·재진단 루프로 갈 수 있다 | **고쳐야** |
 | 사람 해결 사례 → verified History | History 저장 기반은 있지만 PG-A→PG-B 수동 해결 사례를 검토·verified 처리하고 반복 시연용으로 격리하는 입력 경로는 없다 | **없음** |
 | PG Failover Runbook 생명주기 | 현재 `pg_external_failure` draft는 client pool·timeout/retry 조치라 최신 시나리오와 다르다. PG-B 상태·전환 조건·멱등성·오적용·실패·원복 검증을 담은 draft와 active 승격 증거가 필요하다 | **고쳐야** |
-| PG-B 상태·전환·원복 제어면 | `/api/admin/pg-provider-switch`가 PG-B ready 확인 후 PG-A→PG-B 전환하고, PG-A 주입 해제 뒤에만 원복한다. PG-B는 PG-A 주입을 무시하고 `payment.process`에 `pg_provider=PG-B`, `result=SUCCESS`을 발행한다. 단위 테스트는 있으나 배포·실측 전 | **구현됨** |
+| PG-B 상태·전환·원복 제어면 | `/api/admin/pg-provider-switch`가 PG-B ready 확인 후 PG-A→PG-B 전환하고, PG-A 주입 해제 뒤에만 원복한다. 전환·안전한 원복 재시도는 멱등 처리한다. PG-B는 PG-A 주입을 무시하고 `payment.process`에 `pg_provider=PG-B`, `result=SUCCESS`을 발행한다. 단위 테스트는 있으나 배포·실측 전 | **구현됨** |
 | PG-A→PG-B Action Handler | Guardrail 이후 호출할 실행기가 없다. 결제 경로 전환은 `L3`로 등록하고 Slack 승인 뒤에만 실행해야 한다 | **없음** |
 | `pg_latency_ratio` 집계 | `o2warm/sketch.py`·`metrics.py` 에 있다. `pg_latency_ms` 가 안 들어와서 지금은 표본이 0 | **있음** |
 | `pg_external_failure` 복구 판정 | `recovery_judge`에 p95·error 폴백은 있지만 실측 기준이 아니며 PG-B 성공 이벤트와 채팅 불만 감소를 확인하지 않는다 | **고쳐야** |

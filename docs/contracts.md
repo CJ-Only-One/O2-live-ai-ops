@@ -276,7 +276,9 @@ sleep을 막는 안전 경계이며, 실제 주입값은 `measurements.md`에서
 `pg-provider-switch`의 `set`은 목업 `PG-B`가 ready일 때만 `PG-A → PG-B`를
 허용한다. 전환 뒤에도 PG-A의 `delay_ms`·`fail_rate` 주입값은 유지된다. 따라서
 PG-B 성공은 PG-A 자연 복구가 아니라 우회 효과라는 검증 근거가 된다. `clear`는
-PG-A 주입이 모두 해제된 경우에만 허용한다. 이 API는 승인·Runbook 권한을 판단하지
+PG-A 주입이 모두 해제된 경우에만 허용한다. 이미 목표 provider에 도달한 동일 요청은
+200으로 성공하며 `already_in_target_state=true`를 돌려준다. 단, PG-A 주입이 남아
+있으면 이미 PG-A인 `clear`도 409으로 거부한다. 이 API는 승인·Runbook 권한을 판단하지
 않으며, Action Handler는 별도 승인 경계에서만 호출해야 한다.
 
 ---
