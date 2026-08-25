@@ -86,7 +86,7 @@ setInterval(() => {
     const batch = conn.pending.splice(0, config.maxPerTick);
     const dropped = conn.pending.length;
     conn.pending.length = 0;
-    if (dropped > 0) fanoutItems('dropped', dropped);
+    if (dropped > 0) fanoutItems('dropped', dropped, conn.broadcastId);
 
     const byType = new Map<string, unknown[]>();
     for (const { t, item } of batch) {
@@ -104,13 +104,13 @@ setInterval(() => {
     for (const { item } of batch) {
       const ts = (item as { ts?: unknown } | null)?.ts;
       if (typeof ts === 'number' && Number.isFinite(ts)) {
-        chatPropagation(Math.max(0, sendStartedAt - ts));
+        chatPropagation(Math.max(0, sendStartedAt - ts), conn.broadcastId);
       }
     }
 
     for (const [t, items] of byType) {
       conn.socket.send(JSON.stringify({ t, items }));
-      fanoutItems('delivered', items.length);
+      fanoutItems('delivered', items.length, conn.broadcastId);
     }
   }
 }, config.tickMs);

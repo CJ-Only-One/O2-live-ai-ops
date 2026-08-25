@@ -225,6 +225,28 @@ class IncidentCorrelatorTest(unittest.TestCase):
         with self.assertRaisesRegex(correlator.ContractError, "ASSESSMENT_S2_POD_SCOPE"):
             correlator.validate_trigger(signal)
 
+    def test_datadog_scope_broadcast_id_is_adopted_into_context(self):
+        """D-086: Datadog evidence 의 방송 축을 버리지 않는다.
+
+        버리면 Chat 이 먼저 왔는지 Datadog 이 먼저 왔는지에 따라 같은 Incident 의
+        방송 축이 달라지고, Dify normalize 가 `LIVE-001` fallback 으로 없는 방송에
+        조치를 건다.
+        """
+        repository, sender = FakeRepository(), Sender()
+        signal = copy.deepcopy(self.datadog)
+        signal["evidence"]["assessment_input"]["scope"]["broadcast_id"] = "bc_1042"
+        result = self.process(signal, repository, sender)
+        context = result["snapshot"]["normalized_context"]
+        self.assertEqual(context["broadcast_ids"], ["bc_1042"])
+
+    def test_datadog_without_broadcast_scope_keeps_empty_list(self):
+        """방송 축이 없는 Monitor(S2 파드 등)는 빈 목록을 그대로 유지한다."""
+        repository, sender = FakeRepository(), Sender()
+        signal = copy.deepcopy(self.datadog)
+        self.assertIsNone(signal["evidence"]["assessment_input"]["scope"]["broadcast_id"])
+        result = self.process(signal, repository, sender)
+        self.assertEqual(result["snapshot"]["normalized_context"]["broadcast_ids"], [])
+
     def test_material_revision_inside_cooldown_is_stored_without_invocation(self):
         repository, sender = FakeRepository(), Sender()
         self.settings["cooldown_seconds"] = 300

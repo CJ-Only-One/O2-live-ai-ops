@@ -100,6 +100,7 @@
 | D-083 | 기존 모니터를 유지하고 S1 채팅 과부하 지표를 별도 Monitor로 추가한다 | `o2.chat.propagation`, `o2.warm.channel_limited_rate`, broadcast scope 선행 조건 |
 | D-084 | Dify가 아니라 Agent Worker가 승인된 복구 지표를 수집한다 | incident family catalog, Dify-only enrichment, 결측 보존, Lambda 직접 호출 |
 | D-085 | AZ 이중화는 하고 리전 DR 은 하지 않는다 | 방송 길이가 RTO 상한, mediamtx·Dify 단일점 유지 근거 |
+| D-086 | 방송 축은 Chat 전용이 아니다 — Datadog evidence 의 broadcast_id 도 채택한다 | TAG_KEYS, tag configuration 허용목록, multi-alert, LIVE-001 fallback, 팬아웃은 합계 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4687,3 +4688,76 @@ Dify 를 오케스트레이터 자리에서 내려야 하는데, 그것은 이�
 Durable 이 먼저다.
 
 관련 실측은 M-022, 롤링 중 배치가 무력해지는 함정은 T-037 이다.
+
+---
+
+## D-086. 방송 축은 Chat 전용이 아니다 — Datadog evidence 의 `broadcast_id` 도 채택한다
+
+S1 의 인시던트 단위는 `service + broadcast_id` 인데 **Datadog 진입 경로에서 방송 축이
+다섯 군데에서 끊겼다.** 부하테스트 팀이 셋을 짚었고 확인하면서 둘이 더 나왔다.
+
+| # | 어디 | 무엇 |
+|---|---|---|
+| 1 | `apps/chat-gateway/src/telemetry.ts` | `TAG_KEYS` 에 `broadcast_id` 가 없고 `chatPropagation()`·`fanoutItems()` 가 태그 없이 emit |
+| 2 | `infra/05-datadog/chat_propagation_metric.tf` | `datadog_metric_tag_configuration.tags` 가 조회 축을 **제한**한다. 앱이 보내도 여기 없으면 Datadog 이 버린다 |
+| 3 | `infra/05-datadog/chat_incident_monitors.tf` | Monitor 가 합계라 알림이 어느 방송인지 말하지 못한다 |
+| 4 | `infra/09-incident/lambda/datadog_source_adapter.py` | S1 evidence 는 `scope.broadcast_id` 가 필수다(`ASSESSMENT_S1_SCOPE`) |
+| 5 | `infra/09-incident/lambda/incident_correlator.py` | 실어 보내도 `DATADOG_MONITOR` source 면 `broadcast_ids = []` 로 버렸다 |
+
+### 왜 그냥 두면 안 되나
+
+Dify normalize 노드가 `_tag_value(tags,'broadcast_id') or 'LIVE-001'` 이다. 축이 없으면
+**존재하지 않는 방송에 채널 제한이 걸리고 200 OK 로 성공 기록된다.** S1 조치
+(`limit_channel_volume`)는 비가역이고 사람 승인을 받으므로, 대상이 틀리면 조치를
+안 하느니만 못하다. 운영자는 "이 방송의 채팅을 제한합니다" 를 보고 승인한다.
+
+`o2warm` 의 `rundown()`·정책·토폴로지 조회가 전부 `broadcast_id` 를 키로 쓰므로,
+틀린 값이면 그 조회가 빈 결과이거나 남의 방송 것이다.
+
+### 명세를 바꾸는 부분
+
+명세 §4 는 `broadcast_ids` 를 *"Chat Candidate가 제공하는 방송 식별자 집합"* 으로
+적었다. **이 결정이 그 범위를 넓힌다** — Datadog evidence 의
+`assessment_input.scope.broadcast_id` 도 같은 집합에 들어간다.
+
+버리면 Chat 과 Datadog 이 같은 장애를 잡았을 때 병합된 Incident 의 방송 축이
+**어느 source 가 먼저 왔느냐에 따라 달라진다.** 두 source 를 같은 Incident 로 본다는
+D-055 의 전제와 어긋난다.
+
+### 축마다 그룹화를 다르게 한다
+
+| 지표 | 태그 | Monitor 그룹화 | 근거 |
+|---|---|---|---|
+| `o2.chat.propagation` | 추가 | **`by {broadcast_id}` multi-alert** | 사용자 영향은 방송별로 갈리고 조치 대상을 지목해야 한다 |
+| `o2.app.business_event{event:chat.send}` · `o2.app.failure` | 추가 | 차단률 계산의 분자·분모 | `CHAT_NORMAL_USER_BLOCK_RATE` 도 `scope.broadcast_id` 가 필수다 |
+| `o2.app.fanout.items` | 추가 | **합계 유지** | 아래 |
+
+**팬아웃 총량은 쪼개면 안 된다.** M-010 의 붕괴점(2파드 20,000 아이템/s)은
+chat-gateway **파드 용량**이고 파드는 방송들이 공유한다. 방송 A 15,000 + 방송 B 15,000
+이면 각각은 안전선 아래인데 파드는 이미 무너진다. 방송별 임계로 바꾸면 그 상황을
+놓친다. 태그는 진단·evidence scope 용으로 붙이되 **판정은 합계로** 한다.
+
+### 카디널리티
+
+목업 방송 수준이라 지금은 부담이 없다. 늘면 먼저 뺄 후보는 `o2.chat.propagation` 의
+`pod_name` 이다 — 전파 지연을 파드별로 보는 소비처가 아직 없다.
+
+**표본율도 같이 본다.** `PROPAGATION_SAMPLE_RATE = 0.001` 이라 `by {broadcast_id}` 로
+쪼개면 표본이 방송 수만큼 나뉜다. 방송당 p95 가 흔들리면 창을 늘리기 전에 표본율을
+올린다 — 창을 늘리면 붕괴 순간을 놓친다.
+
+### 이 결정이 안 바꾸는 것
+
+**correlation key 에 방송을 넣지 않는다.** 지금도 `environment + incident_family +
+symptom_family + service + suspected_surface` 다. 즉 두 방송이 동시에 나빠지면
+`broadcast_ids` 가 둘인 Incident 하나가 된다. S1 조치가 방송 단위이므로 그때 대상이
+모호해지지만, 병합 key 변경은 D-055·명세 §4 의 합의 대상이라 여기서 바꾸지 않는다.
+**반복 표본으로 실제로 겹치는지 먼저 본다.**
+
+### Terraform 이 못 고치는 것
+
+Datadog webhook payload 템플릿은 이 저장소에 없다(콘솔 설정). Adapter 는
+`assessment_input` 을 **만들지 않고 검증만 한다** — payload 에
+`assessment_input.scope.broadcast_id` 를 실어 보내도록 콘솔에서 고쳐야 한다.
+multi-alert 의 그룹 태그는 `$ALERT_SCOPE` 로 꺼낸다. 이걸 빼먹으면 Adapter 가
+`ASSESSMENT_S1_SCOPE` 로 거부하고, 증상은 "S1 만 Incident 가 안 생긴다" 하나다.
