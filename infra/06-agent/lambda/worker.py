@@ -65,19 +65,6 @@ SCHEMA_VERSION = "1.1"
 
 TOP_K = 3
 
-# Dify LLM 입력은 진단에 필요한 본문 앞부분만 보낸다. Datadog 본문은 링크·상태
-# 덤프로 비정상적으로 커질 수 있으므로, 한 알림이 모델 context를 독점하지 못하게 한다.
-DIFY_INPUT_MAX_CHARS = {
-    "alert_title": 1_000,
-    "alert_body": 6_000,
-    "alert_query": 2_000,
-    "priority": 64,
-    "host": 512,
-    "tags": 2_048,
-    "link": 2_048,
-    "past_cases": 1_200,
-}
-
 # 코사인 거리. 0 이 같은 글, 2 가 정반대다.
 #
 # ★ 이 값은 근거 있는 상수가 아니라 **눈금**이다. 실제 알림으로 재보고 맞춘다.
@@ -135,16 +122,6 @@ def _alert_text(event):
     ]
     # titan-embed-text-v2 입력 상한은 8192 토큰이다. 문자 수로 넉넉히 자른다.
     return "\n".join(p for p in parts if p)[:8000]
-
-
-def _dify_inputs(event, past_cases):
-    """Bound untrusted alert fields before they become LLM context."""
-    values = {**event, "past_cases": past_cases}
-    return {
-        name: value[:DIFY_INPUT_MAX_CHARS[name]] if isinstance(value := values.get(name), str) else ""
-        for name in DIFY_INPUT_MAX_CHARS
-    }
-
 
 def _embed(text):
     """알림 텍스트 → 1024차원 벡터."""
@@ -512,7 +489,18 @@ def lambda_handler(event, context):
     #   아래 이름이 Dify 시작 노드 변수와 어긋나면 그 값이 그냥 사라지고
     #   워크플로는 succeeded 로 끝난다 — T-012. 이름은 양쪽을 같이 고친다.
     payload = {
-        "inputs": _dify_inputs(event, past_cases),
+        "inputs": {
+            "alert_title": event.get("alert_title", ""),
+            "alert_body": event.get("alert_body", ""),
+            "alert_query": event.get("alert_query", ""),
+            "priority": event.get("priority", ""),
+            "host": event.get("host", ""),
+            "tags": event.get("tags", ""),
+            "link": event.get("link", ""),
+            # 첫 알림에서는 항상 빈 문자열이다. Dify 쪽에서 **선택** 변수여야
+            # 한다 — 필수인데 비면 API 가 400 을 낸다.
+            "past_cases": past_cases,
+        },
         "response_mode": "blocking",
         "user": "datadog",
     }
