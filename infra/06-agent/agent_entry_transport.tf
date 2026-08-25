@@ -235,7 +235,7 @@ resource "aws_lambda_function" "agent_entry_worker" {
         (var.agent_entry_execution_enabled &&
           var.agent_entry_event_source_enabled &&
           ((var.agent_entry_operational_handoff_approved && length(var.agent_entry_allowed_incident_ids) == 0) ||
-          (!var.agent_entry_operational_handoff_approved && length(var.agent_entry_allowed_incident_ids) == 1)))
+        (!var.agent_entry_operational_handoff_approved && length(var.agent_entry_allowed_incident_ids) == 1)))
       )
       error_message = "Agent Entry는 disabled+empty, Shadow enabled+합성 Incident 1개, 또는 운영 승인 enabled+empty 조합만 허용한다."
     }

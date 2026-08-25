@@ -26,7 +26,7 @@ resource "datadog_monitor" "chat_propagation_p95" {
   notify_no_data      = false
   require_full_window = true
   renotify_interval   = 0
-  tags = concat(local.monitor_tags, ["env:${local.monitor_env}", "scenario:s1", "service:chat-gateway", "role:impact"])
+  tags                = concat(local.monitor_tags, ["env:${local.monitor_env}", "scenario:s1", "service:chat-gateway", "role:impact"])
 }
 
 resource "datadog_monitor" "chat_block_rate" {
@@ -50,5 +50,5 @@ resource "datadog_monitor" "chat_block_rate" {
   notify_no_data      = false
   require_full_window = true
   renotify_interval   = 0
-  tags = concat(local.monitor_tags, ["env:${local.monitor_env}", "scenario:s1", "service:chat-gateway", "role:impact"])
+  tags                = concat(local.monitor_tags, ["env:${local.monitor_env}", "scenario:s1", "service:chat-gateway", "role:impact"])
 }

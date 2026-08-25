@@ -34,7 +34,7 @@ session_idle_timeout_minutes = 60
 session_max_duration_minutes = 360
 
 # 2026-08-25 운영 Incident handoff 승인. 운영 모드에서는 합성 Incident allowlist를 비운다.
-agent_entry_execution_enabled             = true
-agent_entry_event_source_enabled          = true
-agent_entry_operational_handoff_approved  = true
-agent_entry_allowed_incident_ids          = []
+agent_entry_execution_enabled            = true
+agent_entry_event_source_enabled         = true
+agent_entry_operational_handoff_approved = true
+agent_entry_allowed_incident_ids         = []

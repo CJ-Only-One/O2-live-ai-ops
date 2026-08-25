@@ -105,7 +105,7 @@ resource "aws_lambda_function" "chat_source_adapter" {
       CHAT_SOURCE_ADAPTER_ENABLED               = tostring(var.chat_source_adapter_execution_enabled)
       CHAT_SOURCE_ADAPTER_ALLOWED_BROADCAST_IDS = join(",", sort(tolist(var.chat_source_adapter_allowed_broadcast_ids)))
       CHAT_SOURCE_ADAPTER_NOT_BEFORE_EPOCH      = tostring(var.chat_source_adapter_not_before_epoch)
-      CHAT_SOURCE_ADAPTER_OPERATIONAL_MODE       = tostring(var.chat_source_adapter_operational_handoff_approved)
+      CHAT_SOURCE_ADAPTER_OPERATIONAL_MODE      = tostring(var.chat_source_adapter_operational_handoff_approved)
       AGENT_TRIGGER_QUEUE_URL                   = data.aws_sqs_queue.agent_trigger.url
     }
   }
