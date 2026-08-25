@@ -62,12 +62,14 @@
 | 조치 실행기 (파드 수·노브 변경) | S2는 `action_executor.tf` + `scale_deployment.py`, S1은 `/ws/admin/channel-limit`로 구현됐다. 옛 S3 `/api/admin/read-path-degraded`는 자산만 유지한다. 새 S3 결제 client pool·timeout/retry 실행기는 없다 | **고쳐야** |
 | Dify → EKS 권한 (인스턴스 역할 + RBAC) | 직접 권한 대신 S2 실행기 Lambda에 EKS Access Entry와 `deployments/scale` get·patch만 부여했다(`04-platform/action_executor_access.tf`) | **구현됨** |
 | `cfg:*` 노브 저장·조회 | chat-gateway의 `cfg:channel_limit:*`, api의 `cfg:read_path_degraded:*`와 S3 목업 PG의 `cfg:pg:*` SET·DEL 및 테스트가 있다 | **구현됨** |
-| 노브 카탈로그 (가역성·예산·precondition·검증 지표) | `seed_runbook.py`의 `KNOBS`, `runbook_lookup.py` 조회와 단위 테스트가 있다. 시간·예산 수치는 미측정이라 `None` | **구현됨** |
-| 게이트 진입 결정론적 판정 | 판정 입력인 노브 카탈로그 조회는 구현됐지만, 상태 머신/Dify가 이 값으로 분기하는 경로는 없다 | **설계만** |
+| 노브 카탈로그 (가역성·예산·precondition·검증 지표) | `seed_runbook.py`의 `KNOBS`, `runbook_lookup.py` 조회와 단위 테스트가 있다. 시간·예산 수치는 미측정이라 `None`. 형식과 live 대조는 `runbook-catalog.md` | **구현됨** |
+| 게이트 진입 결정론적 판정 | 판정 입력인 노브 카탈로그 조회는 구현됐지만, 상태 머신/Dify가 이 값으로 분기하는 경로는 없다. 현재 Guardrail은 ACTION `risk_level`만 읽는다 | **설계만** |
+| Runbook 위험도 척도 | ACTION의 L1/L2는 AUTO, L3는 APPROVAL로 라우팅되지만 등급 부여 기준은 없다. ACTION-KNOB 중복값도 일치 검사가 없다(D-079) | **없음** |
 | 상태 머신 · 검증 대기 타이머 · 재분석 1회 분기 | 없음. 정의는 `scenario-experiment.md` 0.4 에 있다 | **없음** |
 | `Deduped` 병합 (Incident Correlator) | Signal Queue 직접 합성 E2E에서 양방향 모두 같은 Incident revision 2로 병합. 실제 Adapter 지연도 source별 2회 측정했지만 운영 window·Datadog monitor mapping은 미설정이고 실행 gate는 다시 껐다 | **비활성** |
 | Slack 승인 왕복 | `infra/06-agent/slack_approval.tf` — Lambda 둘 + DynamoDB | **있음** |
 | 런북 카탈로그 + 조회 | `runbook.tf` + `runbook_lookup.tf` (Lambda + Function URL, `x-api-key`) | **있음** |
+| Runbook source-live 일치 | 2026-08-25 scan에서 source에 없는 구형 DEF 4개가 status 없이 남아 Lookup fallback상 active였다. live active ACTION에는 KNOB가 없다 | **고쳐야** |
 | 인시던트 히스토리 (S3 + S3 Vectors) | `history.tf`, `history_o2.tf`. O2 전용 분리까지 완료 | **있음** |
 | Agent 공통 진입점 | `agent_entry_transport.tf` SQS + Worker. 실행 게이트 둘 다 기본 `false` | **비활성** |
 | 저장소 Dify DSL | `infra/06-agent/dify/alert-triage.yml` 은 시작→LLM→출력 3노드. 실환경과 드리프트(T-022) | **고쳐야** |
@@ -159,8 +161,9 @@
    최대 변경량, 검증·중단·원복 기준, 소유자와 검증 증거를 만든다. S2 해결 뒤에는
    `pod_load_skew`를 실행 카탈로그에 바로 넣지 않고 별도 후보 영역에 `draft`로 저장한다.
    같은 원인 재현, 조치 효과, 오적용 부작용, 실패·롤백 검증과 운영자 승인을 통과한
-   뒤에만 `active` 전용 런북으로 승격한다. 현재 `seed_runbook.py`의 `pod_load_skew`는
-   이 상태와 게이트 없이 활성 카탈로그 모양으로 들어가 있으므로 승격 전 분리해야 한다.
+   뒤에만 `active` 전용 런북으로 승격한다. 현재 `seed_runbook.py`와 실테이블의
+   `pod_load_skew`는 `draft`로 분리돼 있다. 남은 문제는 `runbook-catalog.md`에 정리한
+   status 없는 구형 active 항목과 위험도·KNOB 게이트 drift다.
 4. **Candidate → Agent handoff** — `agent_handoff_status` 를 실제로 연결한다. 실행 게이트
     둘(`chat_source_adapter_execution_enabled` · `chat_source_adapter_event_source_enabled`)은
     한 줄 실수를 막으려고 일부러 분리해둔 것이므로 순서대로 켠다.
