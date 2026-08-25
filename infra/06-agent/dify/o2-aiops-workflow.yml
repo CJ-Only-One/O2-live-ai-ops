@@ -333,6 +333,14 @@ workflow:
     value: ''
     value_type: string
     description: S3(pg_external_failure) 조치 — apps/api의 /api/admin/pg-retry-backoff 전체 주소. auth는 READ_PATH_DEGRADED_ADMIN_KEY 재사용. 셋 다 결제 게이트웨이를 실제로 못 고치는 방어적 조치라 켜져도 근본 원인은 안 풀린다(D-076).
+  - id: d4e5f6a7-4444-4d4d-9d4d-00000000000b
+    name: PG_PROVIDER_SWITCH_URL
+    selector:
+    - env
+    - PG_PROVIDER_SWITCH_URL
+    value: ''
+    value_type: string
+    description: S3(pg_external_failure) 조치 — apps/api의 /api/admin/pg-provider-switch 전체 주소. auth는 READ_PATH_DEGRADED_ADMIN_KEY 재사용. PG-A→PG-B로 실제 전환해 재발을 막는 유일한 해결형 조치(2026-08-25, 나머지 셋과 달리 D-076 예외).
   features:
     file_upload:
       allowed_file_extensions:
@@ -2779,7 +2787,7 @@ workflow:
       width: 260
       zIndex: 1001
     - data:
-        code: "import json\n\n# 시나리오 전용 실행기 - execution_target.endpoint가 $VAR면 그 전용 서비스로 완전한 URL과 인증정보를 여기서 찾는다.\n# 여기 없는 나머지 조치는 공용 ACTION_HANDLER_URL(아직 미구현, 빈 값)에 상대경로로 붙는다 -\n# 채워지기 전까지는 is_real=false로 떨어져 아래 기존 mock 경로를 그대로 탄다.\n#\n# URL/키는 코드에 안 적는다 - 전부 워크플로 환경 변수에서 받는다(2026-08-24,\n# 이전엔 여기 평문으로 박혀 있어서 저장소에 올리면 안 되는 파일이었다).\nACTION_HANDLER_URL = ''\nACTION_HANDLER_API_KEY = ''\n\n\ndef main(sanitized_action_json: str, chat_gateway_admin_url: str, channel_limit_admin_key: str, scale_executor_url: str, scale_executor_api_key: str, api_admin_url: str, read_path_degraded_admin_key: str, pg_circuit_open_url: str, pg_timeout_tighten_url: str, pg_retry_backoff_url: str) -> dict:\n    special_targets = {\n        '$CHAT_GATEWAY_ADMIN_URL': {'url': chat_gateway_admin_url, 'auth_header': 'x-admin-key', 'auth_value': channel_limit_admin_key},\n        '$SCALE_EXECUTOR_URL': {'url': scale_executor_url, 'auth_header': 'x-api-key', 'auth_value': scale_executor_api_key},\n        '$API_ADMIN_URL': {'url': api_admin_url, 'auth_header': 'x-admin-key', 'auth_value': read_path_degraded_admin_key},\n        # S3(pg_external_failure) 조치 셋 - 같은 api admin 라우트 묶음이라 키를 재사용한다.\n        '$PG_CIRCUIT_OPEN_URL': {'url': pg_circuit_open_url, 'auth_header': 'x-admin-key', 'auth_value': read_path_degraded_admin_key},\n        '$PG_TIMEOUT_TIGHTEN_URL': {'url': pg_timeout_tighten_url, 'auth_header': 'x-admin-key', 'auth_value': read_path_degraded_admin_key},\n        '$PG_RETRY_BACKOFF_URL': {'url': pg_retry_backoff_url, 'auth_header': 'x-admin-key', 'auth_value': read_path_degraded_admin_key},\n    }\n    try:\n        a = json.loads(sanitized_action_json or '{}')\n    except Exception:\n        a = {}\n    endpoint = (a.get('execution_target') or {}).get('endpoint', '')\n\n    if endpoint in special_targets and special_targets[endpoint]['url']:\n        t = special_targets[endpoint]\n        return {'resolved_url': t['url'], 'auth_header_name': t['auth_header'], 'auth_header_value': t['auth_value'], 'is_real': 'true'}\n    if endpoint and ACTION_HANDLER_URL:\n        return {'resolved_url': ACTION_HANDLER_URL + endpoint, 'auth_header_name': 'x-api-key', 'auth_header_value': ACTION_HANDLER_API_KEY, 'is_real': 'true'}\n    return {'resolved_url': '', 'auth_header_name': '', 'auth_header_value': '', 'is_real': 'false'}\n"
+        code: "import json\n\n# 시나리오 전용 실행기 - execution_target.endpoint가 $VAR면 그 전용 서비스로 완전한 URL과 인증정보를 여기서 찾는다.\n# 여기 없는 나머지 조치는 공용 ACTION_HANDLER_URL(아직 미구현, 빈 값)에 상대경로로 붙는다 -\n# 채워지기 전까지는 is_real=false로 떨어져 아래 기존 mock 경로를 그대로 탄다.\n#\n# URL/키는 코드에 안 적는다 - 전부 워크플로 환경 변수에서 받는다(2026-08-24,\n# 이전엔 여기 평문으로 박혀 있어서 저장소에 올리면 안 되는 파일이었다).\nACTION_HANDLER_URL = ''\nACTION_HANDLER_API_KEY = ''\n\n\ndef main(sanitized_action_json: str, chat_gateway_admin_url: str, channel_limit_admin_key: str, scale_executor_url: str, scale_executor_api_key: str, api_admin_url: str, read_path_degraded_admin_key: str, pg_circuit_open_url: str, pg_timeout_tighten_url: str, pg_retry_backoff_url: str, pg_provider_switch_url: str) -> dict:\n    special_targets = {\n        '$CHAT_GATEWAY_ADMIN_URL': {'url': chat_gateway_admin_url, 'auth_header': 'x-admin-key', 'auth_value': channel_limit_admin_key},\n        '$SCALE_EXECUTOR_URL': {'url': scale_executor_url, 'auth_header': 'x-api-key', 'auth_value': scale_executor_api_key},\n        '$API_ADMIN_URL': {'url': api_admin_url, 'auth_header': 'x-admin-key', 'auth_value': read_path_degraded_admin_key},\n        # S3(pg_external_failure) 조치 셋 - 같은 api admin 라우트 묶음이라 키를 재사용한다.\n        '$PG_CIRCUIT_OPEN_URL': {'url': pg_circuit_open_url, 'auth_header': 'x-admin-key', 'auth_value': read_path_degraded_admin_key},\n        '$PG_TIMEOUT_TIGHTEN_URL': {'url': pg_timeout_tighten_url, 'auth_header': 'x-admin-key', 'auth_value': read_path_degraded_admin_key},\n        '$PG_RETRY_BACKOFF_URL': {'url': pg_retry_backoff_url, 'auth_header': 'x-admin-key', 'auth_value': read_path_degraded_admin_key},\n        '$PG_PROVIDER_SWITCH_URL': {'url': pg_provider_switch_url, 'auth_header': 'x-admin-key', 'auth_value': read_path_degraded_admin_key},\n    }\n    try:\n        a = json.loads(sanitized_action_json or '{}')\n    except Exception:\n        a = {}\n    endpoint = (a.get('execution_target') or {}).get('endpoint', '')\n\n    if endpoint in special_targets and special_targets[endpoint]['url']:\n        t = special_targets[endpoint]\n        return {'resolved_url': t['url'], 'auth_header_name': t['auth_header'], 'auth_header_value': t['auth_value'], 'is_real': 'true'}\n    if endpoint and ACTION_HANDLER_URL:\n        return {'resolved_url': ACTION_HANDLER_URL + endpoint, 'auth_header_name': 'x-api-key', 'auth_header_value': ACTION_HANDLER_API_KEY, 'is_real': 'true'}\n    return {'resolved_url': '', 'auth_header_name': '', 'auth_header_value': '', 'is_real': 'false'}\n"
         code_language: python3
         desc: 'S1/S2/S3처럼 execution_target.endpoint가 $VAR로 등록된 조치는 실제 호출로, 아직 Action Handler 없는 나머지 조치는 mock으로 - 실행 대상 URL 존재 여부 하나로만 가른다. 액션별 분기 아님.'
         isInIteration: false
@@ -2842,6 +2850,10 @@ workflow:
           - env
           - PG_RETRY_BACKOFF_URL
           variable: pg_retry_backoff_url
+        - value_selector:
+          - env
+          - PG_PROVIDER_SWITCH_URL
+          variable: pg_provider_switch_url
       height: 66
       id: resolve_target
       parentId: main_loop
