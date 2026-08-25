@@ -105,6 +105,7 @@ resource "aws_lambda_function" "chat_source_adapter" {
       CHAT_SOURCE_ADAPTER_ENABLED               = tostring(var.chat_source_adapter_execution_enabled)
       CHAT_SOURCE_ADAPTER_ALLOWED_BROADCAST_IDS = join(",", sort(tolist(var.chat_source_adapter_allowed_broadcast_ids)))
       CHAT_SOURCE_ADAPTER_NOT_BEFORE_EPOCH      = tostring(var.chat_source_adapter_not_before_epoch)
+      CHAT_SOURCE_ADAPTER_OPERATIONAL_MODE       = tostring(var.chat_source_adapter_operational_handoff_approved)
       AGENT_TRIGGER_QUEUE_URL                   = data.aws_sqs_queue.agent_trigger.url
     }
   }
@@ -123,10 +124,11 @@ resource "aws_lambda_function" "chat_source_adapter" {
         var.chat_source_adapter_not_before_epoch == 4102444800) ||
         (var.chat_source_adapter_execution_enabled &&
           var.chat_source_adapter_event_source_enabled &&
-          length(var.chat_source_adapter_allowed_broadcast_ids) == 1 &&
+          ((var.chat_source_adapter_operational_handoff_approved && length(var.chat_source_adapter_allowed_broadcast_ids) == 0) ||
+          (!var.chat_source_adapter_operational_handoff_approved && length(var.chat_source_adapter_allowed_broadcast_ids) == 1)) &&
         var.chat_source_adapter_not_before_epoch < 4102444800)
       )
-      error_message = "Chat Adapter는 disabled+empty allowlist+2100 cutoff 또는 enabled+합성 broadcast 1개+명시 cutover 조합만 허용한다."
+      error_message = "Chat Adapter는 disabled+empty+2100 cutoff, Shadow enabled+합성 broadcast 1개, 또는 운영 승인 enabled+empty+명시 cutover 조합만 허용한다."
     }
   }
 }

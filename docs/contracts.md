@@ -694,6 +694,13 @@ Agent Worker가 Signal Queue를 직접 소비하거나 Chat 데이터를 Datadog
 `agent.incident.v1` snapshot을 Agent Invocation Queue로 보낸다. 기계 판독 원본은
 [`agent-incident-v1.schema.json`](contracts/agent-incident-v1.schema.json)이다(D-055).
 
+snapshot은 `data_quality`, `severity_assessment`, `recovery_assessment`, `notification_policy`를
+필수로 가진다(D-080·D-081). 유효 표본과 freshness를 만족한 evidence만 역할을 채운다.
+severity 등급 상승은 material revision이며, `RESOLVED`는 두 필수 역할의 recovery와 지속 window를
+모두 요구한다. cooldown revision은 State에 남지만 Invocation을 억제하고, reopen window 안의 같은
+grouping key는 기존 Incident ID를 재사용한다. strong exception은 명시 허용된 무결성·보안
+invariant 위반에만 적용한다.
+
 경계별 계약은 다음과 같다.
 
 | 경계 | 허용 계약 | 의미 |
@@ -701,7 +708,7 @@ Agent Worker가 Signal Queue를 직접 소비하거나 Chat 데이터를 Datadog
 | Source Adapter 전 | source별 JSON | Datadog alert와 Chat Candidate는 달라도 됨 |
 | Signal Queue | `agent.trigger.v1` | 상관관계 전의 단일 관측 |
 | Incident State | revisioned Incident | 여러 trigger를 같은 사건에 귀속 |
-| Agent Invocation Queue | `agent.incident.v1` | Agent가 분석할 최신 사건 snapshot |
+| Agent Invocation Queue | 검증된 `agent.incident.v1` | `CORRELATED`인 material revision만 Agent가 분석할 snapshot으로 전달 |
 
 핵심 필드:
 
@@ -712,23 +719,32 @@ Agent Worker가 Signal Queue를 직접 소비하거나 Chat 데이터를 Datadog
 | `idempotency_key` | `incident:<incident_id>:revision:<revision>` |
 | `correlation.state` | `PROVISIONAL`, `CORRELATED`, `AMBIGUOUS` |
 | `correlation.strategy` | 현재는 규칙 기반 `DETERMINISTIC_V1`만 |
-| `normalized_context` | 환경·증상군·대상 surface/service/broadcast를 source와 독립적으로 표현 |
+| `normalized_context` | 환경·Incident family·증상군·대상 surface/service/broadcast를 source와 독립적으로 표현 |
+| `normalized_context.incident_family` | taxonomy의 통제 어휘. source mapping으로만 정하며 alert 본문에서 추론하지 않음 |
 | `normalized_context.environment` | 배포 `var.environment`의 canonical 값; Datadog `env` 불일치는 `SOURCE_ENVIRONMENT_MISMATCH`로 격리 |
+| `evidence_assessment` | Correlator가 trigger ID를 `primary`·`corroborating`·`context`로 분류하고 필수 역할 결측과 검증 상태를 기록 |
 | `signals` | 원문 없이 검증된 `agent.trigger.v1` 1-20개 |
-| `analysis_reason` | 최초 탐지, 첫 cross-source 증거, 심각도 변화, 모호성, 복구 증거 중 하나 |
+| `analysis_reason` | 최초 탐지, cross-source 증거, 새 evidence 역할, 심각도 변화, 모호성, 복구 증거 중 하나 |
 
-`CORRELATED`는 Chat과 Datadog trigger를 각각 하나 이상 포함해야 한다. 같은 환경, 같은
-증상군, 호환되는 대상 범위, correlation window 내 event time을 만족하는 OPEN Incident가
-정확히 하나일 때만 자동 병합한다. 후보가 없으면 새 `PROVISIONAL` Incident를 만들고,
+`CORRELATED`는 source 제품명이 아니라 family별 evidence 역할의 결합을 뜻한다. 현재
+`READ_PATH_DEGRADATION`은 Chat READ_PATH Candidate를 `primary`, 지정 Datadog Monitor를
+`corroborating`으로 mapping한다. 같은 source라도 아직 비어 있는 역할을 채우는 별도 trigger는
+material evidence로 인정하고, 같은 역할의 반복·renotify는 억제한다. `primary`와
+`corroborating`이 모두 있고 correlation 조건을 만족할 때 `verification_state=VERIFIED`다.
+같은 환경, 같은 family·증상군, 호환되는 대상 범위, correlation window 내 event time을
+만족하는 OPEN Incident가 정확히 하나일 때만 자동 병합한다. 후보가 없으면 새 `PROVISIONAL` Incident를 만들고,
 후보가 둘 이상이거나 비교 차원이 부족하면 `AMBIGUOUS`로 기록해 운영자 확인 전까지 강제
 병합하지 않는다. Datadog의 `env`가 Correlator 배포 environment와 다를 때도
 `AMBIGUOUS/SOURCE_ENVIRONMENT_MISMATCH`로 기록하며 namespace 별칭을 추측하지 않는다(D-070).
 
-Chat-first는 revision 1로 즉시 read-only 분석할 수 있다. Datadog이 늦게 도착하면 같은
-`incident_id`의 revision 2가 되고 `analysis_reason=CROSS_SOURCE_EVIDENCE_ADDED`가 된다.
-반대 순서도 같은 규칙이다. 같은 Incident의 Agent 실행은 직렬화하며 새 revision이 실행 중에
-도착하면 완료 후 최신 revision 한 건만 후속 실행한다. 이 규칙으로 사건은 하나로 유지하면서
-오래된 분석의 중복 실행과 이중 조치를 막는다.
+필수 evidence 역할이 덜 찬 revision 1은 `PROVISIONAL` Incident State로만 저장하고 Agent
+Invocation Queue에는 보내지 않는다. 필수 역할을 채우는 trigger가 늦게 도착하면 같은
+`incident_id`의 revision 2가 되고 `correlation.state=CORRELATED`가 된다.
+그중 `evidence_assessment.verification_state=VERIFIED`인 material revision만 처음 전달한다.
+`AMBIGUOUS` revision도 운영자 확인 전에는 전달하지 않는다(D-075, D-077).
+같은 Incident의 Agent 실행은 직렬화하며 새 material revision이 실행 중에 도착하면 완료 후
+최신 revision 한 건만 후속 실행한다. 이 규칙으로 단일 metric·단일 source가 Dify를 깨우지
+않으면서 사건 상태와 불확실성은 잃지 않는다.
 
 Generic Worker는 Incident State의 최신 revision을 확인한 뒤 Invocation snapshot 전체를
 Dify의 `custom_alert_json` 하나로 전달한다. 최신보다 오래된 Queue 메시지는 `SUPERSEDED`로
@@ -756,3 +772,11 @@ correlation window의 운영 숫자는 아직 계약하지 않는다. Phase 3C�
 
 위 넷은 **합의 없이 바꾸지 않는다.** 나머지(필드 추가, 새 엔드포인트)는
 기존 계약을 깨지 않는 한 자유롭게 늘린다.
+Datadog evidence의 `assessment_input`은 Correlator가 문자열을 재해석하지 않도록 수치 evidence의
+기계 판독 경계를 제공한다(D-079). `evidence_type`, `observed_at`, `sample_count`,
+`data_state`, `signal_strength`, `scope`, `measurements`를 정확히 포함한다. S1 propagation/block
+evidence에는 `broadcast_id`, S2 pod evidence에는 `pod`, `POD_VERSION`에는 `version`이 필수다.
+`NO_DATA`와 `STALE`은 0 또는 정상으로 변환하지 않는다.
+수치 하나로 환원할 수 없는 명시 Datadog composite monitor는 `COMPOSITE_CONDITION`을 사용한다.
+이 타입은 `sample_count>=1`, `PRESENT`, 빈 `measurements`를 허용하며, monitor ID mapping에 고정된
+조건 성립 자체만 evidence로 취급한다. 제목·본문을 LLM이나 Correlator가 다시 해석하지 않는다.

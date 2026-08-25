@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EVIDENCE = ROOT / "infra" / "06-agent" / "correlation-window-evidence.json"
+EVIDENCE = ROOT / "infra" / "09-incident" / "correlation-window-evidence.json"
 
 
 def require_config_int(path: Path, pattern: str, name: str) -> int:
@@ -94,7 +94,7 @@ def main() -> None:
         "Datadog scenario_entry_window_minutes",
     )
     configured_incident_window = require_config_int(
-        ROOT / "infra" / "06-agent" / "terraform.tfvars",
+        ROOT / "infra" / "09-incident" / "terraform.tfvars",
         r"^incident_correlation_window_seconds\s*=\s*(\d+)\s*$",
         "incident_correlation_window_seconds",
     )

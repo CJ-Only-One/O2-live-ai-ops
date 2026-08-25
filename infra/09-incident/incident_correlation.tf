@@ -191,6 +191,9 @@ resource "aws_lambda_function" "incident_correlator" {
       INCIDENT_CORRELATOR_EXECUTION_ENABLED        = tostring(var.incident_correlator_execution_enabled)
       INCIDENT_CORRELATOR_ALLOWED_IDEMPOTENCY_KEYS = join(",", sort(tolist(var.incident_correlator_allowed_idempotency_keys)))
       INCIDENT_CORRELATION_WINDOW_SECONDS          = tostring(var.incident_correlation_window_seconds)
+      INCIDENT_RECOVERY_WINDOW_SECONDS             = tostring(var.incident_recovery_window_seconds)
+      INCIDENT_COOLDOWN_SECONDS                    = tostring(var.incident_cooldown_seconds)
+      INCIDENT_REOPEN_WINDOW_SECONDS               = tostring(var.incident_reopen_window_seconds)
       INCIDENT_CHAT_SURFACE_MAP_JSON               = jsonencode(var.incident_chat_surface_map)
       INCIDENT_DATADOG_MONITOR_MAP_JSON            = jsonencode(var.incident_datadog_monitor_map)
       INCIDENT_STATE_TABLE                         = aws_dynamodb_table.incident_state.name
@@ -198,6 +201,7 @@ resource "aws_lambda_function" "incident_correlator" {
       INCIDENT_SIGNAL_CLAIM_TTL                    = tostring(var.agent_entry_idempotency_ttl_seconds)
       AGENT_INVOCATION_QUEUE_URL                   = aws_sqs_queue.agent_invocation.url
       DEPLOYMENT_ENVIRONMENT                       = var.environment
+      INCIDENT_SHADOW_MODE                         = tostring(var.incident_shadow_mode)
     }
   }
 
@@ -216,10 +220,10 @@ resource "aws_lambda_function" "incident_correlator" {
         (var.incident_correlator_execution_enabled &&
           var.incident_correlator_event_source_enabled &&
           var.incident_correlation_window_seconds > 0 &&
-          length(var.incident_correlator_allowed_idempotency_keys) >= 1 &&
-        length(var.incident_correlator_allowed_idempotency_keys) <= 3)
+          ((var.incident_shadow_mode && length(var.incident_correlator_allowed_idempotency_keys) >= 1 && length(var.incident_correlator_allowed_idempotency_keys) <= 8) ||
+        (!var.incident_shadow_mode && var.incident_operational_handoff_approved && length(var.incident_correlator_allowed_idempotency_keys) == 0 && var.incident_recovery_window_seconds > 0 && var.incident_cooldown_seconds > 0 && var.incident_reopen_window_seconds > 0)))
       )
-      error_message = "Incident Correlator는 disabled+empty allowlist 또는 enabled+측정 window+합성 key 1~3개 조합만 허용한다."
+      error_message = "Incident Correlator는 disabled+empty allowlist 또는 enabled+측정 window+합성 key 1~8개 조합만 허용한다."
     }
   }
 }
@@ -251,8 +255,8 @@ resource "aws_cloudwatch_metric_alarm" "agent_invocation_queue_age" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
 
-  alarm_actions = [aws_sns_topic.alert_relay_alarm.arn]
-  ok_actions    = [aws_sns_topic.alert_relay_alarm.arn]
+  alarm_actions = [aws_sns_topic.incident_alarm.arn]
+  ok_actions    = [aws_sns_topic.incident_alarm.arn]
 }
 
 resource "aws_cloudwatch_metric_alarm" "agent_invocation_dlq_not_empty" {
@@ -268,8 +272,8 @@ resource "aws_cloudwatch_metric_alarm" "agent_invocation_dlq_not_empty" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
 
-  alarm_actions = [aws_sns_topic.alert_relay_alarm.arn]
-  ok_actions    = [aws_sns_topic.alert_relay_alarm.arn]
+  alarm_actions = [aws_sns_topic.incident_alarm.arn]
+  ok_actions    = [aws_sns_topic.incident_alarm.arn]
 }
 
 resource "aws_cloudwatch_metric_alarm" "incident_correlator_errors" {
@@ -285,6 +289,6 @@ resource "aws_cloudwatch_metric_alarm" "incident_correlator_errors" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
 
-  alarm_actions = [aws_sns_topic.alert_relay_alarm.arn]
-  ok_actions    = [aws_sns_topic.alert_relay_alarm.arn]
+  alarm_actions = [aws_sns_topic.incident_alarm.arn]
+  ok_actions    = [aws_sns_topic.incident_alarm.arn]
 }

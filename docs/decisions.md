@@ -89,6 +89,14 @@
 | D-072 | READ_PATH 상관관계에는 시나리오 4 page composite monitor 하나만 매핑한다 | role:page, role:sub, cache absorption, order path, duplicate signal |
 | D-073 | READ_PATH 초기 correlation window는 운영 5분 창과 Datadog tail 상한을 합친 420초다 | event time, full window, 420초, Shadow, false merge |
 | D-074 | 원복에 쓸 값은 응답이 아니라 조치 기록에 남긴다 | `record_restore`, 먼저 쓴 값이 이긴다, Argo replica 예외, 실행기 권한 경계 |
+| D-075 | 검증된 Incident revision만 Agent를 호출한다 | provisional 저장, correlated gate, 단일 metric 억제, Dify 호출 0 |
+| D-076 | Incident family는 명시 mapping의 통제 어휘다 | taxonomy, correlation key, UNKNOWN fail-safe, 텍스트 추론 금지 |
+| D-077 | Correlator는 evidence 역할과 결측을 snapshot에 남긴다 | primary, corroborating, context, VERIFIED, source 비종속 |
+| D-078 | Incident 생성 runtime은 `09-incident`가 소유한다 | 모니터링 팀 경계, 06-agent 소비자, state migration, apply 순서 |
+| D-079 | 수치 evidence는 구조화된 assessment input으로 전달한다 | sample count, freshness, NO_DATA, pod scope, 문자열 파싱 금지 |
+| D-080 | severity·recovery·strong exception은 결정론적 상태 계약이다 | material change, sustained recovery, integrity allowlist |
+| D-081 | Incident 운영 전환은 Shadow 모드와 승인 gate를 분리한다 | cooldown, reopen, measured window, operational approval |
+| D-082 | 운영 READ_PATH Incident handoff는 composite evidence와 세 승인 window를 사용한다 | COMPOSITE_CONDITION, recovery 300초, cooldown 300초, reopen 1800초 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4455,3 +4463,143 @@ Git 에는 정상 기준값(2)이 남는다. 그래서 "되돌릴 값이 아예 
 `restore` 를 실제로 적용하는 것은 여기 없다. 이 op 는 **값을 잃지 않게만**
 한다. 되돌리는 실행은 기존 실행기를 replicas 값만 바꿔 다시 부르는 것이고,
 그것을 부르는 것은 워크플로의 몫이다.
+
+---
+
+## D-075. 검증된 Incident revision만 Agent를 호출한다
+
+D-055에서는 Chat-first `PROVISIONAL` revision도 read-only 분석을 시작할 수 있게 했다.
+하지만 단일 metric 또는 단일 source 신호가 곧바로 Dify를 호출하면, 여러 독립 증거와 실제
+사용자 영향을 먼저 확인한다는 Incident 경계가 무너진다. 예정된 트래픽 파동과 Monitor
+renotify도 Agent Queue를 점유할 수 있다.
+
+따라서 Correlator는 `PROVISIONAL`과 `AMBIGUOUS` revision을 Incident State에 기록하되
+Agent Invocation Queue에는 보내지 않는다. 서로 다른 source의 증거가 같은 environment,
+symptom family, affected scope, correlation window에서 결합된 `CORRELATED` material revision만
+전달한다. signal claim은 전달 대상이면 `PENDING`에서 `EMITTED`로, 아니면 처음부터
+`NOT_REQUIRED`로 기록한다.
+
+이 결정은 상태를 버리는 suppression이 아니다. 먼저 온 신호는 같은 `incident_id`의 revision
+1로 남고, 반대 source가 도착하면 revision 2로 승격되어 처음 호출된다. 환경 불일치나 복수
+후보인 `AMBIGUOUS`는 운영자 확인 전 자동 병합·Agent 호출·자동 조치를 모두 막는다.
+
+대가는 단일 source만 관측 가능한 장애의 Agent 분석이 보류된다는 점이다. 데이터 무결성·보안
+같은 단일 강신호 예외는 현재 trigger 계약에 별도 증거 품질 필드가 없으므로 추측해 열지 않고,
+taxonomy와 계약에 명시적인 strong exception을 추가한 뒤 별도 결정으로 다룬다.
+
+---
+
+## D-076. Incident family는 명시 mapping의 통제 어휘다
+
+기존 `normalized_context`는 `symptom_family=LATENCY`와 surface/service만 가졌다. 이 조합만으로는
+read-path degradation, 한 파드의 capacity 문제, deployment regression처럼 증상은 같아도
+evidence와 조치가 다른 Incident를 구분할 수 없다.
+
+따라서 `agent.incident.v1.normalized_context.incident_family`를 필수 통제 어휘로 추가하고
+correlation key에도 포함한다. Source Adapter의 원문이나 alert 제목을 Correlator가 해석하지
+않으며, Terraform의 Chat surface·Datadog monitor mapping이 family를 명시해야 한다. mapping에
+없는 값은 plan 또는 Lambda 설정 로드에서 거부한다.
+
+`UNKNOWN`은 mapping 값으로 허용하지 않는다. 환경 불일치나 필수 차원 누락처럼 정상적으로
+분류할 수 없는 신호를 `AMBIGUOUS`로 격리할 때만 Correlator가 만든다. 이로써 새 Monitor를
+추가해 놓고 taxonomy 등록을 빠뜨린 경우 조용히 기존 Incident에 잘못 병합되지 않는다.
+
+이번 단계는 family 이름과 전달 경계만 고정한다. severity 숫자, 지속 window, 즉시 승격 예외는
+실측과 별도 evidence 계약 없이 만들지 않는다.
+
+---
+
+## D-077. Correlator는 evidence 역할과 결측을 snapshot에 남긴다
+
+Dify가 원시 signal을 다시 읽어 Incident 성립 여부를 판단하게 두지 않는다. Correlator가
+명시 mapping으로 각 trigger를 `primary`, `corroborating`, `context` 중 하나에 귀속하고,
+`missing_required_roles`와 `verification_state`를 `agent.incident.v1.evidence_assessment`에 남긴다.
+
+현재 검증 상태는 `INSUFFICIENT_EVIDENCE`, `VERIFIED`, `AMBIGUOUS`다. `VERIFIED`는 primary와
+corroborating이 모두 있고 correlation ambiguity가 없을 때만 가능하다. 배열은 원본 trigger ID를
+참조하며 한 trigger가 두 역할에 속하거나 snapshot에 없는 ID를 참조하면 Worker도 거부한다.
+
+독립 evidence를 Chat과 Datadog이라는 제품명 조합으로 정의하지 않는다. 같은 Datadog source라도
+서로 다른 Monitor가 아직 비어 있는 역할을 채우면 material revision이 될 수 있다. 반대로 같은
+Monitor의 반복, renotify, 이미 채워진 역할의 same-source update는 revision을 만들지 않는다.
+
+---
+
+## D-078. Incident 생성 runtime은 `09-incident`가 소유한다
+
+Incident taxonomy, evidence policy, correlation, suppression은 모니터링 시스템의 책임이다.
+기존 구현은 Dify와 Agent Worker가 있는 `06-agent`에 함께 있었지만 팀 소유권과 변경 주기가
+다르다. 신규 `infra/09-incident` 스택이 Signal Queue, Datadog Adapter, Correlator, Incident
+State, Invocation Queue producer를 소유한다.
+
+`06-agent`는 Invocation Queue consumer, authoritative revision read, 실행 ledger·lock, Dify
+진단·복구만 소유한다. 따라서 Agent 팀은 Incident 생성 정책을 배포하지 않고, 모니터링 팀은
+Dify 실행 권한을 갖지 않는다.
+
+기존 dev 물리 리소스는 `dify/terraform.tfstate`에 있으므로 코드 이동만으로 apply하지 않는다.
+`incident/terraform.tfstate`로 state를 이동한 뒤 양쪽 plan에서 create/destroy 0을 확인해야 한다.
+구체 절차와 이전 대상은 `infra/09-incident/README.md`가 원본이다.
+
+---
+
+## D-079. 수치 evidence는 구조화된 assessment input으로 전달한다
+
+S1의 propagation p95·정상 사용자 차단률과 S2의 service/pod 지연·CPU·version을 alert 제목,
+본문, query, tags에서 다시 파싱하지 않는다. Datadog Adapter가 `agent.trigger.v1`의
+`assessment_input`으로 evidence type, 관측 시각, 표본 수, `PRESENT|NO_DATA|STALE`, scope와
+측정값을 전달한다.
+
+Monitor mapping은 요구 evidence type, 최소 표본, freshness, evidence role을 함께 선언한다.
+Correlator는 type·scope·표본·freshness를 모두 통과한 신호만 역할 배열에 넣는다. `NO_DATA`는
+0이나 정상으로 바꾸지 않고 data quality 상태로 보존하며 primary/corroborating을 채우지 않는다.
+S1 evidence에는 broadcast scope가, S2 pod evidence에는 pod가, version evidence에는 version이
+필수다.
+
+---
+
+## D-080. severity·recovery·strong exception은 결정론적 상태 계약이다
+
+Severity 숫자 임계값은 Correlator에 복제하지 않는다. 해당 임계값을 소유하는 Monitor mapping이
+`INFORMATIONAL|WARNING|HIGH|CRITICAL` 등급을 선언하고, 유효 evidence 중 가장 높은 등급을
+Incident severity로 사용한다. 등급 상승만 `MATERIAL_SEVERITY_CHANGE` revision이 된다.
+
+`Recovered` 한 건은 `RECOVERING`일 뿐이다. primary와 corroborating 역할의 recovery evidence가
+모두 모이고 설정된 recovery window가 지난 revision만 `RESOLVED`가 된다. window가 0이면
+Shadow 계약 시험은 가능하지만 운영 전환 gate는 열리지 않는다.
+
+단일 강신호 예외는 `DATA_INTEGRITY_SECURITY_RISK` family의 `INTEGRITY_VIOLATION` mapping이
+`strong_exception_allowed=true`를 선언하고 trigger도 `signal_strength=STRONG`이며 data quality가
+유효할 때만 허용한다. 다른 family와 evidence type에서는 설정 로드 단계부터 거부한다.
+
+---
+
+## D-081. Incident 운영 전환은 Shadow 모드와 승인 gate를 분리한다
+
+Shadow 모드는 한 lifecycle trial(active 2·recovery 2·reopen 1)을 담도록 합성 idempotency key
+1~8개와 Datadog monitor 하나만 허용한다. Operational
+모드는 exact cycle key allowlist를 사용하지 않고 명시 monitor mapping을 allowlist로 사용한다.
+대신 운영자 승인 플래그, 0보다 큰 recovery/cooldown/reopen window, 활성 source와 consumer gate가
+모두 있어야 Terraform precondition을 통과한다.
+
+같은 Incident의 material revision이 cooldown 안에 오면 authoritative State에는 저장하되 Agent
+Invocation을 억제한다. `RESOLVED` 이후 reopen window 안에 같은 grouping key 신호가 오면 기존
+Incident ID의 다음 revision으로 `OPEN`한다. 측정 전 tfvars는 Shadow·비활성·window 0을 유지하며,
+이 코드 변경 자체는 운영 Monitor/Webhook 연결 승인이 아니다.
+
+---
+
+## D-082. 운영 READ_PATH Incident handoff는 composite evidence와 세 승인 window를 사용한다
+
+2026-08-25 운영자가 Incident 운영 전환을 승인하고 window를 하나씩 확정했다. recovery는
+300초, material revision cooldown은 300초, resolved Incident reopen은 1800초다. 이 값은
+성능 실측치가 아니라 운영자가 승인한 상태 정책값이며, 실제 source 반복 측정 후 변경할 수 있다.
+
+운영 Datadog source는 D-072의 monitor `21940250` 하나다. 이 monitor는 cache hit 저하와 API
+p95 상승을 함께 요구하는 composite라 단일 p95 값을 Webhook에서 수치 evidence처럼 만들지 않는다.
+`COMPOSITE_CONDITION`, sample count 1, 빈 measurements로 조건 성립 자체를 corroborating evidence로
+기록한다. Chat READ_PATH Candidate가 primary 역할을 채워야 `VERIFIED`와 Agent Invocation이 된다.
+
+Operational mode에서는 합성 cycle/Incident/broadcast allowlist를 비운다. 대신 09 Incident,
+06 Agent Worker, 08 Chat Adapter 각각의 운영자 승인 플래그와 execution/event-source gate가 함께
+true여야 한다. Datadog Monitor에는 기존 `@webhook-o2-dify`를 보존하고 별도
+`@webhook-o2-incident-entry`를 추가해 cutover 중 기존 알림 경로를 제거하지 않는다.

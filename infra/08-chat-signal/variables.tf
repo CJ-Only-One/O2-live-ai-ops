@@ -62,6 +62,12 @@ variable "chat_source_adapter_event_source_enabled" {
   default     = false
 }
 
+variable "chat_source_adapter_operational_handoff_approved" {
+  description = "운영 Chat Candidate를 빈 합성 allowlist로 전달하도록 승인한 운영자 gate"
+  type        = bool
+  default     = false
+}
+
 variable "chat_source_adapter_allowed_broadcast_ids" {
   description = "Phase 3에서 Agent Queue 전송을 허용할 합성 broadcast_id. 활성화 시 정확히 1개"
   type        = set(string)

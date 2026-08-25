@@ -18,6 +18,7 @@
   },
   "normalized_context": {
     "environment": "dev",
+    "incident_family": "READ_PATH_DEGRADATION",
     "symptom_family": "LATENCY",
     "suspected_surfaces": [
       "READ_PATH"
@@ -29,6 +30,22 @@
       "bc_1042"
     ]
   },
+  "evidence_assessment": {
+    "primary": [
+      "trg_01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    ],
+    "corroborating": [],
+    "context": [],
+    "missing_required_roles": [
+      "CORROBORATING"
+    ],
+    "verification_state": "INSUFFICIENT_EVIDENCE",
+    "strong_exception_applied": false
+  },
+  "data_quality": {"state":"SUFFICIENT","assessments":[{"trigger_id":"trg_01ARZ3NDEKTSV4RRFFQ69G5FAW","evidence_type":"USER_SYMPTOM_CLUSTER","configured_role":"PRIMARY","state":"VALID","sample_count":4,"minimum_samples":1,"observed_at":"2026-08-23T00:00:15.000Z","freshness_seconds":300,"age_seconds":1}]},
+  "severity_assessment": {"level":"WARNING","previous_level":"UNKNOWN","material_change":true,"basis_trigger_ids":["trg_01ARZ3NDEKTSV4RRFFQ69G5FAW"]},
+  "recovery_assessment": {"state":"NOT_STARTED","started_at":null,"required_until":null,"recovered_roles":[]},
+  "notification_policy": {"mode":"SHADOW","cooldown_seconds":0,"suppressed":false,"reason":"NONE"},
   "signals": [
     {
       "schema_version": "1.0",

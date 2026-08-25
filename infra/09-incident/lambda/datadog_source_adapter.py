@@ -18,6 +18,7 @@ import hmac
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -42,6 +43,7 @@ SOURCE_FIELDS = {
     "host",
     "tags",
     "link",
+    "assessment_input",
 }
 
 STRING_LIMITS = {
@@ -81,6 +83,7 @@ EVIDENCE_FIELDS = {
     "host",
     "tags",
     "link",
+    "assessment_input",
 }
 
 GUARDRAILS = {
@@ -237,6 +240,7 @@ def validate_source(payload: Any) -> tuple[dict[str, Any], int]:
     transition = payload["alert_transition"]
     if transition not in TRANSITIONS:
         raise ContractError("ALERT_TRANSITION")
+    _validate_assessment_input(payload["assessment_input"])
 
     occurred_at, occurred_at_epoch = _normalize_occurred_at(payload["occurred_at"])
     normalized = dict(payload)
@@ -244,12 +248,70 @@ def validate_source(payload: Any) -> tuple[dict[str, Any], int]:
     return normalized, occurred_at_epoch
 
 
-def _allowed_monitor_id() -> str:
+def _validate_assessment_input(value: Any) -> None:
+    fields = {
+        "evidence_type", "observed_at", "sample_count", "data_state",
+        "signal_strength", "scope", "measurements",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ContractError("ASSESSMENT_INPUT_FIELDS")
+    if value["evidence_type"] not in {
+        "CHAT_PROPAGATION_P95", "CHAT_NORMAL_USER_BLOCK_RATE",
+        "SERVICE_TAIL_LATENCY", "POD_TAIL_LATENCY", "POD_CPU_UTILIZATION",
+        "POD_VERSION", "POD_AGE", "TELEMETRY_FRESHNESS", "INTEGRITY_VIOLATION",
+        "COMPOSITE_CONDITION",
+    }:
+        raise ContractError("ASSESSMENT_EVIDENCE_TYPE")
+    _normalize_occurred_at(value["observed_at"])
+    if not isinstance(value["sample_count"], int) or isinstance(value["sample_count"], bool) or value["sample_count"] < 0:
+        raise ContractError("ASSESSMENT_SAMPLE_COUNT")
+    if value["data_state"] not in {"PRESENT", "NO_DATA", "STALE"}:
+        raise ContractError("ASSESSMENT_DATA_STATE")
+    if value["signal_strength"] not in {"STANDARD", "STRONG"}:
+        raise ContractError("ASSESSMENT_SIGNAL_STRENGTH")
+    scope = value["scope"]
+    if not isinstance(scope, dict) or set(scope) != {"environment", "service", "pod", "version", "broadcast_id"}:
+        raise ContractError("ASSESSMENT_SCOPE_FIELDS")
+    for field in ("environment", "service"):
+        if not isinstance(scope[field], str) or not 1 <= len(scope[field]) <= 128:
+            raise ContractError("ASSESSMENT_SCOPE")
+    for field, maximum in (("pod", 253), ("version", 128), ("broadcast_id", 128)):
+        if scope[field] is not None and (not isinstance(scope[field], str) or not 1 <= len(scope[field]) <= maximum):
+            raise ContractError("ASSESSMENT_SCOPE")
+    measurements = value["measurements"]
+    if not isinstance(measurements, dict) or len(measurements) > 16:
+        raise ContractError("ASSESSMENT_MEASUREMENTS")
+    for key, measurement in measurements.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key):
+            raise ContractError("ASSESSMENT_MEASUREMENTS")
+        if not isinstance(measurement, (int, float)) or isinstance(measurement, bool):
+            raise ContractError("ASSESSMENT_MEASUREMENTS")
+    evidence_type = value["evidence_type"]
+    if evidence_type in {"CHAT_PROPAGATION_P95", "CHAT_NORMAL_USER_BLOCK_RATE"} and scope["broadcast_id"] is None:
+        raise ContractError("ASSESSMENT_S1_SCOPE")
+    if evidence_type in {"POD_TAIL_LATENCY", "POD_CPU_UTILIZATION", "POD_VERSION", "POD_AGE"} and scope["pod"] is None:
+        raise ContractError("ASSESSMENT_S2_POD_SCOPE")
+    if evidence_type == "POD_VERSION" and scope["version"] is None:
+        raise ContractError("ASSESSMENT_S2_VERSION_SCOPE")
+    required_measurement = {
+        "CHAT_PROPAGATION_P95": "p95_ms",
+        "CHAT_NORMAL_USER_BLOCK_RATE": "block_rate_ratio",
+        "SERVICE_TAIL_LATENCY": "p95_ms",
+        "POD_TAIL_LATENCY": "p95_ms",
+        "POD_CPU_UTILIZATION": "cpu_utilization_ratio",
+        "POD_AGE": "pod_age_seconds",
+    }.get(evidence_type)
+    if value["data_state"] == "PRESENT" and required_measurement and required_measurement not in measurements:
+        raise ContractError("ASSESSMENT_REQUIRED_MEASUREMENT")
+
+
+def _allowed_monitor_ids() -> set[str]:
     raw = os.environ.get("DATADOG_SOURCE_ADAPTER_ALLOWED_MONITOR_IDS", "")
     values = raw.split(",") if raw else []
-    if len(values) != 1 or not 1 <= len(values[0]) <= 128:
+    shadow_mode = os.environ.get("INCIDENT_SHADOW_MODE", "true").lower() == "true"
+    if not values or any(not 1 <= len(value) <= 128 for value in values) or (shadow_mode and len(values) != 1):
         raise AdapterError("SYNTHETIC_MONITOR_ALLOWLIST_INVALID")
-    return values[0]
+    return set(values)
 
 
 def _deterministic_ulid(payload: dict[str, Any]) -> str:
@@ -322,7 +384,7 @@ def lambda_handler(event: Any, context: Any) -> dict[str, Any]:
             return _response(200, "disabled")
 
         payload, occurred_at_epoch = validate_source(_decode_body(event))
-        if payload["monitor_id"] != _allowed_monitor_id():
+        if payload["monitor_id"] not in _allowed_monitor_ids():
             LOGGER.info(
                 "datadog_source_adapter request=%s status=IGNORED_MONITOR_NOT_ALLOWED",
                 request_id,

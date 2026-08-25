@@ -82,9 +82,28 @@ class AgentEntryWorkerTest(unittest.TestCase):
         with self.assertRaisesRegex(worker.ContractError, "TRIGGER_EVIDENCE_FIELDS"):
             worker.validate_envelope(self.chat_first)
 
-    def test_rejects_correlated_incident_without_both_sources(self):
+    def test_rejects_assessment_that_references_missing_signal(self):
         self.correlated["signals"] = [self.correlated["signals"][0]]
-        with self.assertRaisesRegex(worker.ContractError, "CORRELATED_SOURCES"):
+        with self.assertRaisesRegex(worker.ContractError, "EVIDENCE_ASSESSMENT_UNKNOWN_SIGNAL"):
+            worker.validate_envelope(self.correlated)
+
+    def test_rejects_unknown_incident_family(self):
+        self.correlated["normalized_context"]["incident_family"] = "MADE_UP_FAMILY"
+        with self.assertRaisesRegex(worker.ContractError, "CONTEXT_INCIDENT_FAMILY"):
+            worker.validate_envelope(self.correlated)
+
+    def test_rejects_signal_assigned_to_multiple_evidence_roles(self):
+        self.correlated["evidence_assessment"]["context"] = [
+            self.correlated["evidence_assessment"]["primary"][0]
+        ]
+        with self.assertRaisesRegex(worker.ContractError, "EVIDENCE_ASSESSMENT_ROLE_OVERLAP"):
+            worker.validate_envelope(self.correlated)
+
+    def test_rejects_verified_assessment_with_missing_required_role(self):
+        self.correlated["evidence_assessment"]["missing_required_roles"] = [
+            "CORROBORATING"
+        ]
+        with self.assertRaisesRegex(worker.ContractError, "VERIFIED_INVARIANT"):
             worker.validate_envelope(self.correlated)
 
     def test_oversized_payload_fails_before_state_secret_and_lock(self):
@@ -110,6 +129,21 @@ class AgentEntryWorkerTest(unittest.TestCase):
                         worker._process_record(record)
         latest.assert_not_called()
         api_key.assert_not_called()
+
+    def test_operational_mode_accepts_any_valid_incident_with_empty_allowlist(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "AGENT_ENTRY_OPERATIONAL_MODE": "true",
+                "AGENT_ENTRY_ALLOWED_INCIDENT_IDS": "",
+            },
+        ):
+            self.assertTrue(worker._incident_allowed(self.chat_first["incident_id"]))
+
+    def test_operational_mode_rejects_nonempty_synthetic_allowlist(self):
+        with mock.patch.dict(os.environ, {"AGENT_ENTRY_OPERATIONAL_MODE": "true"}):
+            with self.assertRaisesRegex(worker.WorkerError, "ALLOWLIST_NOT_EMPTY"):
+                worker._incident_allowed(self.chat_first["incident_id"])
 
     def test_unlisted_incident_fails_before_state_and_secret(self):
         record = {"body": json.dumps(self.chat_first)}

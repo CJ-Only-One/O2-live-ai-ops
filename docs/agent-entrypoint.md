@@ -1,8 +1,8 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 4E monitor mapping applied; Phase 4F initial correlation window implemented, not applied; all production execution gates disabled
-> **Updated:** 2026-08-24
+> **Status:** Operational READ_PATH Incident handoff enabled; waiting for the first real correlated Incident
+> **Updated:** 2026-08-25
 > **Decision:** `decisions.md` D-050, D-055, D-066, D-070, D-072, and D-073
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
 
@@ -11,14 +11,14 @@ implementation_state:
   runtime_baseline_verified: COMPLETE
   common_contract: COMPLETE
   agent_trigger_queue: DEPLOYED_EMPTY
-  chat_candidate_adapter: DEPLOYED_EXECUTION_DISABLED
-  generic_dify_worker_runtime: DEPLOYED_PHASE3D_INCIDENT_CONTRACT_EXECUTION_DISABLED
+  chat_candidate_adapter: DEPLOYED_OPERATIONAL
+  generic_dify_worker_runtime: DEPLOYED_OPERATIONAL_EXISTING_DIFY_AND_HISTORY_PRESERVED
   phase3d_incident_worker_repository: APPLIED_EXECUTION_DISABLED
   phase3d_targeted_plan: APPLIED_1_ADD_2_CHANGE_0_DESTROY
   phase3_synthetic_guard: DEPLOYED_EXECUTION_DISABLED
   incident_correlation_contract: COMPLETE
-  incident_correlator: DEPLOYED_EXECUTION_DISABLED
-  agent_invocation_queue: DEPLOYED_DISABLED_CONSUMER
+  incident_correlator: DEPLOYED_OPERATIONAL
+  agent_invocation_queue: DEPLOYED_ENABLED_CONSUMER
   phase3c_signal_queue_correlation_e2e: PASS
   phase3c_source_pipeline_delay_measurement: PASS_PHASE4B_TWO_ORDER_RUNS
   phase3d_dify_incident_contract_dsl: PUBLISHED
@@ -30,7 +30,7 @@ implementation_state:
   dedicated_test_workflow_dsl: RECORDED_IN_REPOSITORY
   dedicated_test_workflow_api_key: STORED_IN_SECRETS_MANAGER
   existing_team_workflow_targeted: false
-  datadog_source_adapter: DEPLOYED_EXECUTION_DISABLED
+  datadog_source_adapter: DEPLOYED_OPERATIONAL_MONITOR_21940250
   phase4a_targeted_plan: APPLIED_8_ADD_0_CHANGE_0_DESTROY
   datadog_shadow_webhook: CONFIGURED_PRODUCTION_PAYLOAD_NOT_ATTACHED
   phase4b_synthetic_monitor: DELETED_AFTER_TEST
@@ -48,11 +48,11 @@ implementation_state:
   phase4f_window_evidence_validation: PASS
   phase4f_targeted_plan: PASS_0_ADD_1_CHANGE_0_DESTROY_WINDOW_ONLY
   datadog_migration: PHASE4C_SHADOW_E2E_ONLY
-  production_agent_handoff: DISABLED
+  production_agent_handoff: ENABLED_WAITING_FOR_REAL_VERIFIED_INCIDENT
 activation_blockers:
-  - CORRELATION_WINDOW_NOT_APPLIED
+  - NONE
 operational_followups:
-  - EXISTING_06_AGENT_LAMBDA_CHANGES_MUST_BE_SEPARATED_BEFORE_APPLY
+  - MEASURE_FALSE_MERGE_AND_RECOVERY_AFTER_REAL_INCIDENTS
 production_migration_blockers:
   - EXISTING_O2_DIFY_DLQ_NOT_EMPTY
   - DEPLOYED_TEAM_WORKFLOW_DSL_NOT_EXPORTED_TO_REPOSITORY
@@ -212,7 +212,7 @@ Chat Source Adapter는 Candidate DynamoDB Stream의 **새 Candidate INSERT만** 
 | `INV-AGENT-ENTRY-009` | Trigger Queue와 DLQ는 서버 측 암호화하고 Source Adapter와 Worker에만 최소 권한을 준다. |
 | `INV-AGENT-ENTRY-010` | Dify에 보낼 최종 직렬화 문자열이 게시 입력 상한 30,000자를 넘으면 외부 호출과 ledger 획득 전에 거부한다. |
 | `INV-AGENT-ENTRY-011` | Agent Invocation Queue의 모든 요청은 `agent.incident.v1`이어야 한다. |
-| `INV-AGENT-ENTRY-012` | `CORRELATED`는 Chat과 Datadog trigger를 각각 하나 이상 포함해야 한다. |
+| `INV-AGENT-ENTRY-012` | `VERIFIED`는 `primary`와 `corroborating` trigger가 모두 있고 ambiguity가 없어야 한다. source 제품명 조합을 하드코딩하지 않는다. |
 | `INV-AGENT-ENTRY-013` | 자동 병합은 환경·증상군·대상 범위·시간이 맞는 진행 중 사건이 정확히 하나일 때만 허용한다. |
 | `INV-AGENT-ENTRY-014` | 후보가 둘 이상이거나 비교 차원이 부족하면 강제 병합하지 않고 `AMBIGUOUS`로 남긴다. |
 | `INV-AGENT-ENTRY-015` | 같은 Incident의 Agent 실행과 조치 락은 하나이며 revision별 실행은 직렬화한다. |
@@ -457,7 +457,11 @@ durable Incident State를 소유하고 Agent Worker에는 `agent.incident.v1` re
 5. 위 조건을 만족하는 OPEN Incident가 정확히 하나
 
 0개면 새 provisional Incident를 만들고, 2개 이상이거나 필수 차원이 없으면
-`AMBIGUOUS`로 기록해 강제 병합하지 않는다. LLM은 이 결정을 소유하지 않는다. 운영
+`AMBIGUOUS`로 기록해 강제 병합하지 않는다. 두 상태는 Incident State에만 남기고 Agent
+Invocation Queue에는 보내지 않는다. 명시 mapping의 `primary`와 `corroborating` 역할이
+모두 채워져 `evidence_assessment.verification_state=VERIFIED`가 된 material revision만
+Queue로 보낸다. 같은 source라도 서로 다른 역할이면 결합할 수 있다. LLM은 이 결정을
+소유하지 않는다. 운영
 correlation window 값은 아직 측정하지 않았으므로 Phase 3C의 양방향 도착 지연 실측 전에는
 확정하지 않는다.
 
@@ -466,8 +470,8 @@ correlation window 값은 아직 측정하지 않았으므로 Phase 3C의 양방
 Worker가 같은 SQS의 competing consumer가 되는 순간 신호가 임의 소비되므로, 기존 Worker
 mapping을 비활성·분리했다고 확인하기 전에는 Correlator event source를 켜지 않는다.
 
-Phase 3B 구현은 `infra/06-agent/incident_correlation.tf`과
-`lambda/incident_correlator.py`에 있다. 구성은 다음과 같다.
+Phase 3B 구현은 현재 모니터링 팀 소유의 `infra/09-incident/incident_correlation.tf`과
+`lambda/incident_correlator.py`에 있다(D-078). 구성은 다음과 같다.
 
 | 구성 | Phase 3B 상태 |
 |---|---|
@@ -480,10 +484,11 @@ Phase 3B 구현은 `infra/06-agent/incident_correlation.tf`과
 | Agent Invocation Queue | 배포됨; Phase 3B consumer 없음 |
 | Generic Worker / Dify | 기존 비활성 경로 그대로, 신규 Queue 미연결 |
 
-source signal claim과 Incident revision 갱신은 한 DynamoDB transaction으로 묶는다. Queue
-전송 전 claim은 `PENDING`, 성공 후 `EMITTED`가 된다. 전송이 실패하면 같은 snapshot을
-재전송하고 새 revision을 만들지 않는다. 전송 성공 후 claim 확정만 실패해 중복 전송되는
-경우는 Phase 3D Worker의 revision 멱등 키가 막는다.
+source signal claim과 Incident revision 갱신은 한 DynamoDB transaction으로 묶는다.
+`PROVISIONAL`·`AMBIGUOUS` claim은 `NOT_REQUIRED`, Queue 전송 대상인 `CORRELATED` revision은
+전송 전 `PENDING`, 성공 후 `EMITTED`가 된다. 전송이 실패하면 같은 snapshot을 재전송하고
+새 revision을 만들지 않는다. 전송 성공 후 claim 확정만 실패해 중복 전송되는 경우는
+Phase 3D Worker의 revision 멱등 키가 막는다.
 
 같은 correlation key의 첫 Chat·Datadog이 동시에 `0 matches`를 읽는 경쟁은 correlation
 pointer의 조건부 transaction으로 직렬화한다. 한쪽만 신규 Incident를 만들고 패자는 재시도한다.
@@ -803,7 +808,7 @@ D-073에 따라 초기 Shadow correlation window를 420초로 준비한다. 값�
 아니라 실제 매핑한 Datadog monitor의 5분 full window 300초와, 관측된 Datadog Triggered
 source-to-Queue 최대 69.474초를 60초 단위로 올린 120초를 합한 보수적 상한이다.
 
-기계 판독 근거는 `infra/06-agent/correlation-window-evidence.json`이고
+기계 판독 근거는 `infra/09-incident/correlation-window-evidence.json`이고
 `scripts/validate-incident-correlation-window.py`가 다음 drift를 CI에서 막는다.
 
 - Chat Worker 고정 window가 15초인지

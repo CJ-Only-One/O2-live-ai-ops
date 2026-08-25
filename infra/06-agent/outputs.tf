@@ -69,16 +69,6 @@ output "alert_relay_log_command" {
 
 # ── Agent 공통 진입점 (기본 비활성) ──────────────────────────────
 
-output "agent_entry_queue_url" {
-  description = "agent.trigger.v1 전용 Queue. Phase 1B event source는 disabled"
-  value       = aws_sqs_queue.agent_entry.url
-}
-
-output "agent_entry_dlq_url" {
-  description = "Agent Entry Worker가 세 번 처리하지 못한 envelope가 이동하는 DLQ"
-  value       = aws_sqs_queue.agent_entry_dlq.url
-}
-
 output "agent_entry_idempotency_table" {
   description = "idempotency_key별 IN_PROGRESS/SUCCEEDED/FAILED 상태와 lease를 보관"
   value       = aws_dynamodb_table.agent_entry_idempotency.name
@@ -100,54 +90,6 @@ output "agent_entry_execution_enabled" {
 }
 
 # ── Datadog Source Adapter (Phase 4A: 기본 비활성) ───────────────
-
-output "datadog_source_adapter_function_name" {
-  description = "기존 O2 ingress와 분리된 agent.trigger.v1 Datadog Source Adapter"
-  value       = aws_lambda_function.datadog_source_adapter.function_name
-}
-
-output "datadog_source_adapter_function_url" {
-  description = "합성 dual-run 전용 Datadog webhook URL. x-dd-secret 인증이며 공유 문서에 기록하지 않는다."
-  value       = aws_lambda_function_url.datadog_source_adapter.function_url
-  sensitive   = true
-}
-
-output "datadog_source_adapter_execution_enabled" {
-  description = "Datadog Source Adapter Signal Queue 전송 게이트"
-  value       = var.datadog_source_adapter_execution_enabled
-}
-
-# ── Incident Correlator (Phase 3B: 비활성) ───────────────────────
-
-output "incident_state_table" {
-  description = "agent.trigger.v1 귀속 상태와 source signal claim을 보관하는 DynamoDB table"
-  value       = aws_dynamodb_table.incident_state.name
-}
-
-output "incident_correlator_function_name" {
-  description = "Phase 3B에서는 event source와 실행 플래그가 모두 disabled인 Correlator"
-  value       = aws_lambda_function.incident_correlator.function_name
-}
-
-output "incident_correlator_event_source_enabled" {
-  description = "Signal Queue의 Correlator 자동 소비 활성화 여부"
-  value       = aws_lambda_event_source_mapping.incident_correlator.enabled
-}
-
-output "incident_correlator_execution_enabled" {
-  description = "Incident Correlator 실행 게이트"
-  value       = var.incident_correlator_execution_enabled
-}
-
-output "agent_invocation_queue_url" {
-  description = "agent.incident.v1 전용 Queue. Generic Worker event source 기본값은 disabled"
-  value       = aws_sqs_queue.agent_invocation.url
-}
-
-output "agent_invocation_dlq_url" {
-  description = "Phase 3D Generic Worker가 처리하지 못한 Incident revision이 이동할 DLQ"
-  value       = aws_sqs_queue.agent_invocation_dlq.url
-}
 
 # ── O2 알림 중계 Lambda (병렬 파이프라인) ──────────────────────────
 
