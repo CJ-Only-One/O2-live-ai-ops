@@ -65,6 +65,11 @@ loadtest/results/
 !.env.*.example
 kubeconfig*
 
+# Dify DSL의 environment_variables 실제 값. infra/06-agent/dify/*.yml 은
+# value를 전부 빈 문자열로 커밋하고, 진짜 값은 이 파일에만 있다
+# (infra/06-agent/dify/README.md "커밋 전에 비밀값 확인" 절).
+infra/06-agent/dify/.env.*
+
 # ── IDE / OS ─────────────────────────────────────────────
 .idea/
 *.iml

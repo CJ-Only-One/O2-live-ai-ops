@@ -111,6 +111,12 @@ resource "aws_lambda_event_source_mapping" "client" {
 
   maximum_retry_attempts         = 3
   bisect_batch_on_function_error = true
+
+  destination_config {
+    on_failure {
+      destination_arn = aws_sqs_queue.aggregate_dlq.arn
+    }
+  }
 }
 
 # 비즈니스 스트림 매핑은 lambda.tf 가 소유하고, 같은 이유로 그쪽에도

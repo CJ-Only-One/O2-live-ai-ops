@@ -39,6 +39,7 @@ import traceback
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from o2hot.datadog import DatadogKeyError, query  # noqa: E402
+from o2hot.metric_catalog import MetricRequestError, read_metric  # noqa: E402
 
 
 def _resp(status: int, body) -> dict:
@@ -111,5 +112,10 @@ def _dispatch(method: str, path: str, body: dict):
             return _resp(500, {"error": "datadog_api_call_failed", "detail": str(ex)})
 
         return _resp(200, {"path_type": "HOT_PATH", **result})
+
+    if path.endswith("/datadog/metric"):
+        if method != "POST":
+            raise MetricRequestError("POST method required")
+        return _resp(200, {"path_type": "HOT_PATH", **read_metric(body)})
 
     raise ValueError(f"지원하지 않는 경로입니다: {method} {path}")

@@ -23,6 +23,7 @@ import { config } from './config.js';
 import { createChatIngressHandler, type ChatIngressConnection } from './chat-ingress.js';
 import { emitChatSend, hashUserKey } from './events.js';
 import { emitChatSignal } from './chat-signal.js';
+import { activeConnections, businessEvent, fanoutItems } from './telemetry.js';
 
 // ── Valkey ────────────────────────────────────────────────────
 // 구독 전용 연결과 명령용 연결을 나눈다. 구독 모드에 들어간 연결은 다른
@@ -83,7 +84,9 @@ setInterval(() => {
 
     // 초과분은 버린다. 스파이크 방어이지 상시 최적화가 아니다.
     const batch = conn.pending.splice(0, config.maxPerTick);
+    const dropped = conn.pending.length;
     conn.pending.length = 0;
+    if (dropped > 0) fanoutItems('dropped', dropped);
 
     const byType = new Map<string, unknown[]>();
     for (const { t, item } of batch) {
@@ -95,6 +98,7 @@ setInterval(() => {
     if (conn.socket.readyState !== WebSocket.OPEN) continue;
     for (const [t, items] of byType) {
       conn.socket.send(JSON.stringify({ t, items }));
+      fanoutItems('delivered', items.length);
     }
   }
 }, config.tickMs);
@@ -271,6 +275,8 @@ async function open(socket: WebSocket, broadcastId: string, token: string): Prom
   const userKey = hashUserKey(rawUserKey);
   const conn: Conn = { socket, broadcastId, userKey, pending: [], lastHash: null };
   conns.add(conn);
+  activeConnections(conns.size);
+  businessEvent('websocket.connect', 'success');
 
   if (!subscribed.has(broadcastId)) {
     subscribed.add(broadcastId);
@@ -289,8 +295,13 @@ async function open(socket: WebSocket, broadcastId: string, token: string): Prom
     if (msg.t === 'chat' && typeof msg.msg === 'string') void handleChat(conn, msg.msg);
   });
 
-  socket.on('close', () => conns.delete(conn));
-  socket.on('error', () => conns.delete(conn));
+  const remove = () => {
+    if (!conns.delete(conn)) return;
+    activeConnections(conns.size);
+    businessEvent('websocket.disconnect', 'success');
+  };
+  socket.on('close', remove);
+  socket.on('error', remove);
 }
 
 server.listen(config.port, () => {

@@ -4,8 +4,11 @@
 쓰지 않는 것이 이 파일의 규칙이다 — 안 잰 축은 아예 계산하지 않고 None 을
 돌려 호출자가 "모른다" 를 그대로 다루게 한다.
 
-order-worker 는 여기서 다루지 않는다. KEDA 가 SQS 큐 길이로 소유하고 있어
-(order-worker-scaledobject.yaml) 워머가 만지면 소유자가 둘이 된다.
+서비스마다 쓰는 필드가 다르다. api·chat-gateway 는 Deployment 의 replicas 를
+직접 잡고, order-worker 는 그 필드를 KEDA 가 소유하므로
+(order-worker-scaledobject.yaml) ScaledObject 의 minReplicaCount 만 올린다.
+여기서 내는 것은 어느 쪽이든 "목표 파드 수" 하나이고, 그 값을 어느 필드에
+쓸지는 main.reconcile_scale 이 정한다.
 """
 
 import math
@@ -23,6 +26,11 @@ API_RPS_PER_POD = 300
 # 도는 구조)고 했으므로 실제로는 선형보다 나쁠 수 있다. 파드를 늘려 재면
 # 그 값으로 바꾼다.
 CHAT_ITEMS_PER_POD = 10_000
+
+# M-014: order-worker 파드 하나가 SQS 에서 빼 MySQL 에 넣는 주문 처리량.
+# 1 → 12 파드에서 47~49/s 로 평평했고 꺾이는 지점을 못 찾았다(12파드
+# 588.9/s 에서도 RDS CPU 18.2%). 보수적으로 아래쪽을 쓴다.
+ORDER_PER_POD = 47
 
 
 def api_pods(concurrent: int | None, entry_window_s: int | None) -> int | None:
@@ -46,6 +54,20 @@ def chat_pods(concurrent: int | None, chat_rate: float | None) -> int | None:
     return math.ceil(items_per_s / CHAT_ITEMS_PER_POD)
 
 
+def order_pods(order_rate: float | None) -> int | None:
+    """특가 오픈·마감의 주문 폭주를 큐 소비 파드 수로 옮긴다.
+
+    order-worker 의 파드 수는 KEDA 가 SQS 큐 길이로 소유한다. 워머가 그
+    소유권을 뺏지 않는다 — ScaledObject 의 minReplicaCount(바닥)만 올리고,
+    KEDA 는 그 위에서 큐 길이를 보고 계속 조절한다. 워머가 미리 올려둔
+    것으로도 부족하면 KEDA 가 더 올린다(D-041 의 층 구조 — 사전 확장이
+    주력, KEDA 가 2차 보정).
+    """
+    if not order_rate:
+        return None
+    return math.ceil(order_rate / ORDER_PER_POD)
+
+
 def targets(expected: dict) -> dict[str, int]:
     """세그먼트 하나의 expected 에서 서비스별 목표 파드 수를 낸다.
 
@@ -61,6 +83,10 @@ def targets(expected: dict) -> dict[str, int]:
     chat = chat_pods(expected.get("concurrent"), expected.get("chat_rate"))
     if chat is not None:
         out["chat-gateway"] = chat
+
+    order = order_pods(expected.get("order_rate"))
+    if order is not None:
+        out["order-worker"] = order
 
     return out
 

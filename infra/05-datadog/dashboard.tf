@@ -103,7 +103,7 @@ resource "datadog_dashboard" "business" {
           precision  = 3
 
           request {
-            q          = "avg:${local.p}overall_failure_rate{${local.scope}}"
+            q          = "sum:o2.app.failure{${local.scope}}.as_count() / sum:o2.app.business_event{${local.scope}}.as_count()"
             aggregator = "last"
 
             conditional_formats {
@@ -133,7 +133,8 @@ resource "datadog_dashboard" "business" {
           precision  = 0
 
           request {
-            q          = "avg:${local.p}latency_p95{${local.scope}}"
+            # APM 원시 단위(second)를 기존 화면 계약(ms)으로 변환한다.
+            q          = "p95:trace.fastapi.request{${local.scope}} * 1000"
             aggregator = "last"
 
             conditional_formats {
@@ -165,7 +166,7 @@ resource "datadog_dashboard" "business" {
           precision  = 3
 
           request {
-            q          = "avg:${local.p}retry_rate{${local.scope}}"
+            q          = "sum:o2.app.retry{${local.scope}}.as_count() / sum:o2.app.retry_eligible{${local.scope}}.as_count()"
             aggregator = "last"
 
             conditional_formats {
@@ -196,7 +197,7 @@ resource "datadog_dashboard" "business" {
           precision  = 3
 
           request {
-            q          = "avg:${local.p}cancel_rate{${local.scope}}"
+            q          = "sum:o2.app.cancel{${local.scope}}.as_count() / sum:o2.app.order_create{${local.scope}}.as_count()"
             aggregator = "last"
 
             conditional_formats {
@@ -228,7 +229,7 @@ resource "datadog_dashboard" "business" {
           legend_layout = "horizontal"
 
           request {
-            q            = "avg:${local.p}overall_failure_rate{${local.scope}}"
+            q            = "sum:o2.app.failure{${local.scope}}.as_count() / sum:o2.app.business_event{${local.scope}}.as_count()"
             display_type = "line"
             style {
               palette    = "warm"
@@ -238,7 +239,7 @@ resource "datadog_dashboard" "business" {
           }
 
           request {
-            q            = "avg:${local.p}retry_rate{${local.scope}}"
+            q            = "sum:o2.app.retry{${local.scope}}.as_count() / sum:o2.app.retry_eligible{${local.scope}}.as_count()"
             display_type = "line"
             style {
               palette    = "purple"
@@ -248,7 +249,7 @@ resource "datadog_dashboard" "business" {
           }
 
           request {
-            q            = "avg:${local.p}cancel_rate{${local.scope}}"
+            q            = "sum:o2.app.cancel{${local.scope}}.as_count() / sum:o2.app.order_create{${local.scope}}.as_count()"
             display_type = "line"
             style {
               palette    = "orange"
@@ -290,7 +291,7 @@ resource "datadog_dashboard" "business" {
           show_legend = true
 
           request {
-            q            = "avg:${local.p}rps_ratio{${local.scope}}"
+            q            = "anomalies(sum:trace.fastapi.request.hits{${local.scope}}.as_rate(), 'agile', 3, direction='above', interval=60, alert_window='last_5m', seasonality='hourly')"
             display_type = "area"
             style {
               palette   = "cool"
@@ -320,7 +321,7 @@ resource "datadog_dashboard" "business" {
           show_legend = true
 
           request {
-            q            = "avg:${local.p}rps{${local.scope}}"
+            q            = "sum:trace.fastapi.request.hits{${local.scope}}.as_rate()"
             display_type = "bars"
             style {
               palette = "dog_classic"
@@ -378,7 +379,7 @@ resource "datadog_dashboard" "business" {
           legend_layout = "auto"
 
           request {
-            q            = "avg:${local.p}failure_rate{${local.scope}} by {event}"
+            q            = "sum:o2.app.failure{${local.scope}} by {event}.as_count() / sum:o2.app.business_event{${local.scope}} by {event}.as_count()"
             display_type = "line"
             style {
               palette = "warm"
@@ -401,7 +402,7 @@ resource "datadog_dashboard" "business" {
           # 두 선이 함께 오르면 전반적 지연, p95만 오르면 꼬리만 나빠진 것이다.
           # 후자는 평균으로는 보이지 않는다.
           request {
-            q            = "avg:${local.p}latency_p50{${local.scope}}"
+            q            = "p50:trace.fastapi.request{${local.scope}} * 1000"
             display_type = "line"
             style {
               palette   = "cool"
@@ -410,7 +411,7 @@ resource "datadog_dashboard" "business" {
           }
 
           request {
-            q            = "avg:${local.p}latency_p95{${local.scope}}"
+            q            = "p95:trace.fastapi.request{${local.scope}} * 1000"
             display_type = "line"
             style {
               palette    = "warm"
@@ -441,7 +442,7 @@ resource "datadog_dashboard" "business" {
           show_legend = true
 
           request {
-            q            = "avg:${local.p}cache_hit_rate{${local.scope}}"
+            q            = "sum:o2.app.cache_access{${local.scope},result:hit}.as_count() / sum:o2.app.cache_access{${local.scope}}.as_count()"
             display_type = "line"
             style {
               palette = "green"
@@ -449,7 +450,7 @@ resource "datadog_dashboard" "business" {
           }
 
           request {
-            q            = "avg:${local.p}fallback_rate{${local.scope}}"
+            q            = "sum:o2.app.fallback{${local.scope}}.as_count() / sum:o2.app.fallback_attempt{${local.scope}}.as_count()"
             display_type = "line"
             style {
               palette    = "orange"
@@ -473,7 +474,7 @@ resource "datadog_dashboard" "business" {
           show_legend = true
 
           request {
-            q            = "avg:${local.p}pg_latency_ratio{${local.scope}}"
+            q            = "p95:o2.apm.db.duration{${local.scope}} / p95:o2.apm.request.duration{${local.scope}}"
             display_type = "line"
             style {
               palette = "purple"
@@ -646,7 +647,7 @@ resource "datadog_dashboard" "business" {
           show_legend = true
 
           request {
-            q            = "avg:${local.p}version_fail_delta{${local.scope}}"
+            q            = "sum:o2.app.failure{${local.scope}} by {version}.as_count() / sum:o2.app.business_event{${local.scope}} by {version}.as_count()"
             display_type = "bars"
             style {
               palette = "warm"
@@ -705,7 +706,7 @@ resource "datadog_dashboard" "business" {
           show_legend = true
 
           request {
-            q            = "avg:${local.p}event_count{${local.scope}}"
+            q            = "sum:o2.app.business_event{${local.scope}}.as_count()"
             display_type = "bars"
             style {
               palette = "grey"
@@ -787,7 +788,7 @@ resource "datadog_dashboard" "business" {
           show_legend = true
 
           request {
-            q            = "avg:${local.p}latency_p95{${local.scope}} by {pod_name}"
+            q            = "p95:o2.apm.request.duration{${local.scope}} by {pod_name} / 1000000"
             display_type = "line"
             style {
               palette   = "warm"
@@ -820,7 +821,7 @@ resource "datadog_dashboard" "business" {
           show_legend = true
 
           request {
-            q            = "avg:${local.p}cache_hit_rate{${local.scope}} by {pod_name}"
+            q            = "sum:o2.app.cache_access{${local.scope},result:hit} by {pod_name}.as_count() / sum:o2.app.cache_access{${local.scope}} by {pod_name}.as_count()"
             display_type = "line"
             style {
               palette   = "cool"

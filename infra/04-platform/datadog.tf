@@ -70,6 +70,15 @@ resource "helm_release" "datadog" {
         socketEnabled = false
       }
 
+      # 애플리케이션의 원자 counter/distribution은 노드 Agent의 UDP hostPort로
+      # 받는다. APM과 같은 status.hostIP 경로를 써서 hostPath 마운트를 추가하지
+      # 않는다. Kubernetes 노드 밖으로 포트를 여는 Service/보안그룹은 만들지 않는다.
+      dogstatsd = {
+        portEnabled     = true
+        nonLocalTraffic = true
+        useHostPort     = true
+      }
+
       collectEvents = true
       kubernetesEvents = {
         # 실패·스케줄링·노드 이상 이벤트만 모아 이벤트 폭주를 피한다.

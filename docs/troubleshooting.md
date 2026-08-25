@@ -45,6 +45,9 @@
 | T-027 | 시험 파일을 저장소에 넣었는데 CI 가 한 번도 안 돌린다 | 명시 파일 목록, 두 가지 시험 양식, `NO TESTS RAN` 종료 코드 5 |
 | T-028 | 로컬에서는 통과한 `test_history.py`가 CI에서 `NoRegionError`로 죽는다 | boto3 import-time client, AWS_DEFAULT_REGION, EC2 metadata, hermetic test |
 | T-029 | Chat Source Adapter는 성공했는데 DLQ가 늘어난다 | disabled DynamoDB Stream, maximum record age, on-failure destination, cutover는 handler 안쪽 |
+| T-030 | 앱은 정상인데 `o2.app.*`가 전부 No Data다 | DogStatsD, `useHostPort`, `DD_AGENT_HOST`, UDP 8125 |
+| T-031 | distribution 값은 보이는데 p95 위젯만 No Data다 | `include_percentiles`, metric tag configuration, custom metric 비용, `avg` |
+| T-032 | APM span에는 pod_name이 있는데 trace metric에서 by pod_name이 안 된다 | APM primary tag 후보, span-based metric, `@duration`, 나노초 |
 
 
 ---
@@ -1480,3 +1483,69 @@ cutover로는 이 record를 `IGNORED_BEFORE_ACTIVATION` 처리할 수 없다.
 호출 전에 일어나 Lambda `Errors`와 애플리케이션 로그가 모두 정상이다. DLQ 전송 시각,
 mapping의 최대 record age, 성공한 Candidate sequence를 함께 보지 않으면 서로 모순된 상태처럼
 보인다.
+
+---
+
+## T-030. 앱은 정상인데 `o2.app.*`가 전부 No Data다
+
+**증상** — 신규 이미지와 `DD_AGENT_HOST=status.hostIP`가 배포됐고 API 요청도 200이지만
+Datadog에서 `o2.app.*` series가 하나도 생기지 않았다. 애플리케이션의 UDP `sendto`는
+예외 없이 성공했다.
+
+**원인** — Datadog Helm chart의 `dogstatsd.portEnabled=true`는 컨테이너의 8125/UDP만
+선언한다. 노드 IP로 보내는 경로에 필요한 hostPort는 `dogstatsd.useHostPort=true`가 별도다.
+실제 DaemonSet에는 `containerPort=8125`만 있고 `hostPort`가 비어 있어 패킷이 Agent에
+도달하지 않았다.
+
+**조치** — `04-platform` Datadog values에 `useHostPort=true`를 추가하고 plan/apply 뒤
+DaemonSet의 `8125/UDP hostPort=8125`를 확인한다. 앱 파드에는 `DD_ENTITY_ID=metadata.uid`도
+주입해 UDP와 APM의 Kubernetes origin 연결 근거를 제공한다. 그 뒤 실제 앱 요청과 Datadog
+recent point를 다시 확인한다.
+
+**왜 늦게 찾았나** — `portEnabled`라는 이름과 UDP `sendto`의 성공 때문에 수신 포트가
+노드에도 열렸다고 오해했다. UDP는 목적지 listener가 없어도 송신 성공으로 보이며,
+Datadog Agent 자체에는 다른 소스의 DogStatsD 패킷이 계속 들어와 전체 상태도 정상처럼 보였다.
+
+---
+
+## T-031. distribution 값은 보이는데 p95 위젯만 No Data다
+
+**증상** — `o2.app.operation.duration`을 DogStatsD distribution(`|d`)으로 보냈고
+`avg:` 쿼리에는 파드별 값이 보이는데, 같은 범위의 `p95:` 쿼리는 series가 0이었다.
+대시보드 위젯과 Terraform은 오류 없이 생성되어 구성 자체는 정상처럼 보였다.
+
+**원인** — Datadog distribution metric의 percentile 집계는 기본으로 활성화되지 않는다.
+`datadog_metric_tag_configuration`에서 `include_percentiles=true`를 관리하지 않는 metric은
+평균을 조회할 수 있어도 p95 시계열이 만들어지지 않는다.
+
+**조치** — percentile이 명시 요구사항이 아닌 운영 현황 위젯은 실제 존재하는 `avg:`로
+연결했다. p95가 필요한 monitor나 SLO를 추가할 때만 queryable tag 목록과
+`include_percentiles=true`를 Terraform으로 함께 관리하고, 늘어나는 custom metric 비용을
+먼저 확인한다. 데이터 주입 검증에서는 대시보드와 같은 tag filter로 recent point를 조회한다.
+
+**왜 늦게 찾았나** — distribution 타입이면 percentile도 자동 생성된다고 생각했고,
+Terraform validate와 dashboard apply가 유효한 쿼리의 데이터 존재 여부까지 검사하지 않는다.
+단일 진단값도 정상 수집되어 `avg`에는 보였기 때문에 p95 쿼리를 따로 실행하기 전까지
+수집 실패와 집계 설정 누락을 구분할 수 없었다.
+
+---
+
+## T-032. APM span에는 `pod_name`이 있는데 trace metric에서 `by {pod_name}`이 안 된다
+
+**증상** — Trace Explorer의 개별 `fastapi.request` span에는 `pod_name`이 보이지만
+`p95:trace.fastapi.request{service:api} by {pod_name}`은 파드별 시계열을 만들지 못했다.
+APM additional primary tag 설정 화면에도 `pod_name`이 후보로 나오지 않았다.
+
+**원인** — 수집된 span의 태그와 미리 집계되는 표준 trace metric의 tag set은 별개다.
+`pod_name`은 span에는 들어왔지만 이 조직의 APM additional primary tag 후보가 아니므로
+표준 `trace.fastapi.request` metric의 group-by 축으로 승격할 수 없다.
+
+**조치** — `@duration`을 distribution으로 계산하는 span-based metric을 만들고
+`pod_name`을 `group_by`로 선언한다. 실제 span 검색에서 `custom.pod_name`과
+`duration`(나노초)을 먼저 확인한다. 위젯은 생성된 metric을 `by {pod_name}`으로 조회하고
+기존 ms 계약에는 `1,000,000`으로 나눠 연결한다. DB 지연도 같은 방식으로
+`operation_name:pymysql.query` span에서 만든다.
+
+**왜 늦게 찾았나** — Trace Explorer에서 보이는 모든 span tag가 표준 trace metric에도
+자동으로 붙는다고 생각하기 쉽고, additional primary tag UI는 선택 불가능한 이유를
+설명하지 않는다. 실제 span payload와 metric tag set을 따로 확인해야 경계가 드러난다.

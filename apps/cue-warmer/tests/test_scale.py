@@ -247,3 +247,75 @@ def test_two_live_broadcasts_take_max(fake_k8s):
     big = _body(concurrent=12_000, entry_window_s=30)    # 400 RPS -> 2
     main.reconcile_scale([small, big], AT_UTC - timedelta(seconds=30))
     assert k.patches == [("api", 2)]
+
+
+# ── order-worker 는 ScaledObject 를 만진다 ──────────────────
+
+
+class _FakeKeda:
+    """ScaledObject 의 minReplicaCount 를 들고 있는 가짜."""
+
+    def __init__(self, mins: dict[str, int]):
+        self.mins = mins
+        self.patches: list[tuple[str, int]] = []
+
+    def get_min_replicas(self, ns, name):
+        return self.mins.get(name)
+
+    def set_min_replicas(self, ns, name, replicas):
+        self.mins[name] = replicas
+        self.patches.append((name, replicas))
+        return True
+
+
+@pytest.fixture
+def fake_keda(monkeypatch):
+    def _install(mins):
+        fake = _FakeKeda(mins)
+        monkeypatch.setattr(main.k8s, "get_min_replicas", fake.get_min_replicas)
+        monkeypatch.setattr(main.k8s, "set_min_replicas", fake.set_min_replicas)
+        return fake
+
+    return _install
+
+
+def _sale_body(at=AT, ends_at=None, order_rate=200.0):
+    return {
+        "broadcast_id": "bc_1042",
+        "segments": [
+            {
+                "seq": 1, "at": at, "duration_s": 300,
+                "segment_type": "SALE_OPEN", "sku_id": "88213",
+                "expected": {"order_rate": order_rate, "by": "operator"},
+            }
+        ],
+        **({"ends_at": ends_at} if ends_at else {}),
+    }
+
+
+def test_order_worker_uses_scaledobject_not_deployment(fake_k8s, fake_keda):
+    """Deployment 의 replicas 를 만지면 KEDA 가 다음 조절 주기에 되돌린다.
+    ScaledObject 의 minReplicaCount 로 가야 한다."""
+    dep = fake_k8s({"order-worker": 1})   # Deployment 쪽 — 안 건드려야 함
+    keda = fake_keda({"order-worker": 1})  # ScaledObject 쪽 — 여기로 가야 함
+
+    main.reconcile_scale([_sale_body()], AT_UTC - timedelta(seconds=30))
+
+    assert dep.patches == []
+    assert keda.patches == [("order-worker", 5)]  # 200/47 -> 5
+
+
+def test_order_worker_only_raises_floor(fake_k8s, fake_keda):
+    # KEDA 가 이미 큐를 보고 min 을 올려둔 상태라면 내리지 않는다.
+    fake_k8s({})
+    keda = fake_keda({"order-worker": 8})
+    main.reconcile_scale([_sale_body()], AT_UTC - timedelta(seconds=30))
+    assert keda.patches == []
+
+
+def test_order_worker_reverts_to_baseline_min(fake_k8s, fake_keda):
+    fake_k8s({"api": 2, "chat-gateway": 2})
+    keda = fake_keda({"order-worker": 5})
+    body = _sale_body(ends_at=_ends(0))
+    main.reconcile_scale([body], AT_UTC + timedelta(seconds=601))
+    assert keda.patches == [("order-worker", 1)]

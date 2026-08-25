@@ -37,7 +37,7 @@ from o2warm import baseline as baseline_mod  # noqa: E402
 from o2warm import datadog  # noqa: E402
 from o2warm.metrics import derive  # noqa: E402
 from o2warm.settings import settings  # noqa: E402
-from o2warm.sketch import WindowSketch  # noqa: E402
+from o2warm.sketch import WindowSketch, event_epoch  # noqa: E402
 from o2warm.store import WarmStore  # noqa: E402
 from o2warm.windows import group_by_window  # noqa: E402
 
@@ -51,6 +51,49 @@ _deploy_cache: dict[str, tuple[float, dict | None]] = {}
 # 평시 기준을 갱신하려다 실패한 윈도우를 기억합니다. 없으면 같은 윈도우에
 # 대해 매 호출마다 조회가 반복됩니다.
 _baseline_probe: dict[str, int] = {}
+_cold_start = True
+
+
+def _emit_operational_metrics(*, source: str, **values: float) -> None:
+    metrics = []
+    payload = {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "O2/Warm",
+                "Dimensions": [["FunctionName", "Environment", "Source"]],
+                "Metrics": metrics,
+            }],
+        },
+        "FunctionName": "o2-agg",
+        "Environment": settings.dd_env,
+        "Source": source,
+    }
+    units = {
+        "HandlerDurationMs": "Milliseconds",
+        "BatchSize": "Count",
+        "DuplicateDiscarded": "Count",
+        "LateArrival": "Count",
+        "DecodeErrors": "Count",
+        "ColdStart": "Count",
+        "MaxMemoryUsedMB": "Megabytes",
+        "SourceRecordCount": "Count",
+        "AggregateEventCount": "Count",
+    }
+    for name, value in values.items():
+        metrics.append({"Name": name, "Unit": units[name]})
+        payload[name] = value
+    print(json.dumps(payload, separators=(",", ":")))
+
+
+def _max_memory_used_mb() -> float:
+    try:
+        import resource
+
+        # Lambda Linux의 ru_maxrss는 KiB입니다.
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    except (ImportError, OSError):
+        return 0
 
 
 def store() -> WarmStore:
@@ -161,17 +204,41 @@ def advance_baseline(service: str, current_window: int, now: float) -> dict | No
 
 
 def handler(event, context):
+    global _cold_start
     started = time.time()
     records = event.get("Records", [])
+    source_name = (
+        ((records[0].get("eventSourceARN") or "").rsplit("/", 1)[-1])
+        if records else "unknown"
+    )
     envelopes, errors, seq_hi = decode(records)
 
     if not envelopes:
+        _emit_operational_metrics(
+            source=source_name,
+            HandlerDurationMs=(time.time() - started) * 1000,
+            BatchSize=len(records),
+            DuplicateDiscarded=0,
+            LateArrival=0,
+            DecodeErrors=len(errors),
+            ColdStart=1 if _cold_start else 0,
+            MaxMemoryUsedMB=_max_memory_used_mb(),
+            SourceRecordCount=len(records),
+            AggregateEventCount=0,
+        )
+        _cold_start = False
         print(json.dumps({"records": len(records), "events": 0, "errors": len(errors)}))
         return {"statusCode": 200, "events": 0, "windows": 0}
 
     grouped = group_by_window(envelopes)
     published: list[dict] = []
     failures: list[str] = []
+    duplicate_discarded = 0
+    late_arrivals = sum(
+        1
+        for envelope in envelopes
+        if started - event_epoch(envelope) > settings.window_seconds * 2
+    )
 
     for (service, win), items in sorted(grouped.items()):
         partial = WindowSketch(service, win)
@@ -181,7 +248,9 @@ def handler(event, context):
             partial.note_source(source, seq)
 
         try:
-            merged = store().merge_sketch(partial)
+            merged, duplicate = store().merge_sketch_with_status(partial)
+            if duplicate:
+                duplicate_discarded += len(items)
         except Exception as e:
             # 여기 실패는 삼키면 안 됩니다. 집계 누락은 조용히 잘못된
             # 판단으로 이어지므로 배치를 재처리시킵니다.
@@ -204,6 +273,19 @@ def handler(event, context):
             traceback.print_exc()
 
     sent = datadog.publish(published) if published else 0
+    _emit_operational_metrics(
+        source=source_name,
+        HandlerDurationMs=(time.time() - started) * 1000,
+        BatchSize=len(records),
+        DuplicateDiscarded=duplicate_discarded,
+        LateArrival=late_arrivals,
+        DecodeErrors=len(errors),
+        ColdStart=1 if _cold_start else 0,
+        MaxMemoryUsedMB=_max_memory_used_mb(),
+        SourceRecordCount=len(records),
+        AggregateEventCount=len(envelopes),
+    )
+    _cold_start = False
 
     print(json.dumps({
         "records": len(records),

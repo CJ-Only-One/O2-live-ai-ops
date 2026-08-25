@@ -229,7 +229,7 @@ def test_datadog_key_collapses_failure_to_empty(monkeypatch, patch_client):
     assert secrets.datadog_api_key() == ""
 
 
-def test_datadog_submit_skips_without_key(monkeypatch):
+def test_datadog_submit_skips_without_key(monkeypatch, capsys):
     """키가 없으면 HTTP 를 시도조차 하지 않습니다."""
     from o2warm import datadog
 
@@ -241,6 +241,34 @@ def test_datadog_submit_skips_without_key(monkeypatch):
     monkeypatch.setattr(datadog.urllib.request, "urlopen", explode)
 
     assert datadog.submit([{"metric": "o2.warm.rps", "points": []}]) is False
+    assert "DATADOG_SUBMIT_FAILED reason=api_key_unavailable" in capsys.readouterr().err
+
+
+def test_datadog_submit_http_failure_is_sanitized(monkeypatch, capsys):
+    """Datadog 응답 본문과 API key를 로그에 남기지 않습니다."""
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    from o2warm import datadog
+
+    monkeypatch.setattr(datadog, "api_key", lambda: "super-secret-key")
+
+    def reject(*args, **kwargs):
+        raise HTTPError(
+            "https://api.us5.datadoghq.com/api/v2/series",
+            403,
+            "Forbidden",
+            {},
+            BytesIO(b"sensitive-response-body"),
+        )
+
+    monkeypatch.setattr(datadog.urllib.request, "urlopen", reject)
+
+    assert datadog.submit([{"metric": "o2.warm.rps", "points": []}]) is False
+    error = capsys.readouterr().err
+    assert "DATADOG_SUBMIT_FAILED reason=http_403" in error
+    assert "super-secret-key" not in error
+    assert "sensitive-response-body" not in error
 
 
 def test_datadog_configured_sees_secret_source(monkeypatch):

@@ -263,6 +263,12 @@ def derive(
         "window_end": sk.window_start + span,
         "window_seconds": span,
         "window_start_iso": iso_from_epoch(sk.window_start),
+        "source_event_first_ts": sk.first_ts,
+        "source_event_last_ts": sk.last_ts,
+        "aggregate_ts": now,
+        "pipeline_freshness_seconds": (
+            max(0.0, now - sk.last_ts) if sk.last_ts is not None else None
+        ),
 
         "event_count": sk.n,
         "business_count": sk.n_business,
@@ -387,8 +393,8 @@ def derive(
 # 맵·리스트는 커스텀 메트릭이 될 수 없고, 되더라도 고카디널리티라
 # 보내면 안 됩니다. 이 경계가 설계의 핵심입니다.
 DATADOG_SCALARS = (
-    "rps",
-    "rps_ratio",
+    # Native 이관 대상은 snapshot 계약에는 남지만 Datadog으로 중복 발행하지 않는다.
+    # rps는 Warm 파이프라인 자체를 감시하는 o2-canary만 datadog.py에서 별도 발행한다.
     "top1pct_share",
     "top5_share",
     "interval_cv",
@@ -396,14 +402,8 @@ DATADOG_SCALARS = (
     "ua_diversity",
     "ip_diversity",
     "click_ratio",
-    "cache_hit_rate",
-    "pg_latency_ratio",
-    "version_fail_delta",
-    "event_count",
     "distinct_users",
     # 사용자 경험 저하 — 인프라 임계로는 안 울리므로 별도 Monitor 가 필요합니다.
-    "latency_p50",
-    "latency_p95",
     # p99 는 오래 계산만 되고 보내지지 않았습니다. 명세 S2 의 1차 조치 검증이
     # p50·p95·**p99** 셋을 함께 보는 것을 전제하는데, Datadog 에는 둘뿐이라
     # 그 단계에서 읽을 값이 없었습니다.
@@ -411,10 +411,4 @@ DATADOG_SCALARS = (
     # p95 로 대신할 수 없습니다. 파드 하나가 느린 상황에서 그 파드의 몫이
     # 전체의 5% 미만이면 **p95 는 안 움직이고 p99 만 움직입니다.** 조치가
     # 꼬리 끝을 건드렸는지는 p99 에서만 보입니다.
-    "latency_p99",
-    "retry_rate",
-    "fallback_rate",
-    "cancel_rate",
-    "overall_failure_rate",
-    "channel_limited_rate",
 )

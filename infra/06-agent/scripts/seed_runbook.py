@@ -39,8 +39,8 @@ RUNBOOKS = [
         "success_criteria": {
             # 절대 SLO — architecture.md 12.1 계약, M-009 실측이 이 기준으로 판정됨.
             "conditions": [
-                {"metric": "p95_ms", "comparison": "<=", "threshold": 800},
-                {"metric": "error_rate", "comparison": "<=", "threshold": Decimal("0.01")},
+                {"metric": "latency_p95", "comparison": "<=", "threshold": 800},
+                {"metric": "failure_rate", "comparison": "<=", "threshold": Decimal("0.01")},
             ],
             # 기준선 상대(D-058) — canary 붙이기 전 정상 파드만의 p95 가
             # baseline_p95_ms 로 Baseline 상태에서 기록된다(0.4). 격리 후,
@@ -48,7 +48,7 @@ RUNBOOKS = [
             # 그 파드였다"는 근거가 된다(2.2 최종 재검증).
             # 허용 오차는 아직 안 잰다 — 정하는 대로 이 값을 채운다.
             "baseline_conditions": [
-                {"metric": "p95_ms", "comparison": "<=", "relative_to": "baseline_p95_ms"},
+                {"metric": "latency_p95", "comparison": "<=", "relative_to": "baseline_p95_ms"},
             ],
             "logic": "AND",
         },
@@ -109,25 +109,25 @@ RUNBOOKS = [
         #   숫자를 지어내지 않는다는 AGENTS.md 원칙의 예외이므로 굵게 표시.
         #
         #   2026-08-24 데이터팀 회신(specification/2026-08-24-AIAgent-
-        #   시나리오테스트.md)으로 필드명 정리됨:
-        #   - block_rate → channel_block_rate 로 개명 확정. chat.send 의
-        #     failure_code=CHANNEL_LIMITED 로 데이터팀이 계산해 Warm API에
-        #     노출할 예정 — 아직 미구현이라 threshold 는 여전히 임시값이다.
-        #   - chat_propagation_p95_ms 는 원본 이벤트에 전달 완료 시각이
-        #     없어 집계만으로 못 만든다. 데이터팀 제안 후보는 서버측
-        #     chat_fanout_p95_ms(수락→fanout publish) 인데, chat-gateway
-        #     담당과 계측 계약이 아직 미확정이라 필드명 자체를 못 바꾼다.
-        #     실제 end-to-end 전파는 별도(합성 카나리아) 지표로 간다고 함.
+        #   시나리오테스트.md)으로 필드명 정리됨, 같은 날 observability
+        #   telemetry 마이그레이션(olavvn, c6a846b)에서 실제로 구현됨:
+        #   - block_rate → channel_block_rate 로 개명 확정됐지만 아직 Warm
+        #     API에 안 붙어있다(chat.send 의 failure_code=CHANNEL_LIMITED
+        #     로 데이터팀이 계산해 노출할 예정). 지금 실제로 존재하는 이름은
+        #     여전히 block_rate 라 그걸 쓴다 — 개명되면 이 표도 같이 고칠 것.
+        #   - chat_propagation_p95_ms 후보였던 서버측 지표는 olavvn 쪽
+        #     telemetry 마이그레이션에서 chat_fanout_p95(수락→fanout
+        #     publish)로 이미 구현됨. 실제 end-to-end 전파는 별도(합성
+        #     카나리아) 지표로 간다.
         "rca_type": "chat_channel_overload",
         "success_criteria": {
             "conditions": [
-                # TEMP: 위 주석 참고 — chat-gateway 계측 계약 확정 전까지는
-                # 필드명도 값도 자리채움이다. read-path 계약(800ms,
-                # architecture.md 12.1)을 그대로 빌려 썼다.
-                {"metric": "chat_propagation_p95_ms", "comparison": "<=", "threshold": 800},
-                # TEMP: 이름은 확정(channel_block_rate), 아직 Warm API 미구현.
-                # 5% 는 근거 없는 임시 상한이다.
-                {"metric": "channel_block_rate", "comparison": "<=", "threshold": Decimal("0.05")},
+                # 실제 구현된 서버측 지표명(olavvn, telemetry 마이그레이션).
+                {"metric": "chat_fanout_p95", "comparison": "<=", "threshold": 800},
+                # TEMP: 개명 확정(channel_block_rate)됐지만 아직 미구현이라
+                # 지금 존재하는 이름(block_rate)을 쓴다. 5% 는 근거 없는
+                # 임시 상한이다.
+                {"metric": "block_rate", "comparison": "<=", "threshold": Decimal("0.05")},
                 # 실측값 — M-010 2파드 안전선(2026-08-21). 파드 수를 바꾸면
                 # 다시 재야 한다(측정 조건, measurements.md M-010).
                 {"metric": "items_per_sec", "comparison": "<=", "threshold": 20000},
@@ -135,7 +135,7 @@ RUNBOOKS = [
             # 기준선 상대(D-058) — S1은 "복구"가 아니라 "감내 가능한 열화"라
             # (2.1) 절대 임계만으론 자연 회복과 조치 효과를 못 가른다.
             "baseline_conditions": [
-                {"metric": "chat_propagation_p95_ms", "comparison": "<=", "relative_to": "baseline_propagation_p95_ms"},
+                {"metric": "chat_fanout_p95", "comparison": "<=", "relative_to": "baseline_propagation_p95_ms"},
             ],
             "logic": "AND",
         },
@@ -322,7 +322,9 @@ KNOBS = [
         "diagnostic_contamination": True,
         "rollback_method": "immediate_delete",
         "rollback_call": {"endpoint": "$CHAT_GATEWAY_ADMIN_URL", "action": "clear"},
-        "verification_metrics": ["chat_propagation_p95_ms", "block_rate", "items_per_sec"],
+        # 서버 fanout 완료와 합성 consumer E2E는 서로 다른 지표다. 자동 검증은
+        # 항상 수집되는 서버측 논리 지표를 쓰고 E2E는 k6 수용 시험에서 확인한다.
+        "verification_metrics": ["chat_fanout_p95", "block_rate", "items_per_sec"],
         # 결정론적 사전 검사. 통과 못 하면 자동 실행하지 않는다.
         "preconditions": [
             {"check": "broadcast_is_live", "source": "observability.alert.broadcast_id"},
@@ -346,7 +348,7 @@ KNOBS = [
         "diagnostic_contamination": True,
         "rollback_method": "previous_value",
         "rollback_call": {"endpoint": "$SCALE_EXECUTOR_URL", "note": "replicas 를 이전 값으로"},
-        "verification_metrics": ["p95_ms", "error_rate"],
+        "verification_metrics": ["latency_p95", "failure_rate"],
         # 이게 없으면 서비스를 통째로 내릴 수 있다 (scenario-experiment.md 3절).
         "preconditions": [
             {"check": "healthy_capacity_at_or_above_safe_minimum"},
@@ -379,7 +381,7 @@ KNOBS = [
         "rollback_method": "immediate_delete",
         "rollback_call": {"endpoint": "$API_ADMIN_URL", "action": "clear"},
         # 효율 축(포화점 이동)은 아직 못 넣는다 — 안 쟀다.
-        "verification_metrics": ["block_rate", "api_cpu_per_request"],
+        "verification_metrics": ["latency_p95", "failure_rate"],
         "preconditions": [
             {"check": "broadcast_is_live", "source": "observability.alert.broadcast_id"},
             {"check": "read_path_not_already_degraded", "source": "cfg:read_path_degraded:{broadcast_id}"},

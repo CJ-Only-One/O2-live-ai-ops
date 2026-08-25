@@ -76,6 +76,16 @@ def build_series(metrics: dict, *, prefix: str | None = None, env: str | None = 
         if metrics.get(name) is not None
     ]
 
+    # 파이프라인 생존 감시는 의도적으로 Warm end-to-end 경로를 본다. 일반
+    # 서비스 rps 소비자는 APM/DogStatsD로 이관했으므로 카나리만 예외 발행한다.
+    if metrics["service"] == "o2-canary" and metrics.get("rps") is not None:
+        series.append({
+            "metric": f"{prefix}rps",
+            "points": [{"timestamp": ts, "value": float(metrics["rps"])}],
+            "type": GAUGE,
+            "tags": tags,
+        })
+
     # 실패율은 이벤트 종류별로 갈라야 알림 조건을 세울 수 있습니다.
     # event_name 은 값의 종류가 고정이라 태그로 안전합니다.
     for event, rate in (metrics.get("failure_rate") or {}).items():
@@ -111,34 +121,14 @@ def build_series(metrics: dict, *, prefix: str | None = None, env: str | None = 
     # 시계열이 다르게 잡혀 outlier 탐지 쿼리(`by {pod_name}`)가 이 태그가
     # 있는 시계열만 골라 씁니다. pod_name 은 K8s 가 정하는 값이라 카디널리티가
     # 입력값에 안 좌우됩니다(failure_rate/event_rate 와 같은 이유).
-    for pod, rate in (metrics.get("cache_hit_rate_by_pod") or {}).items():
-        if rate is None:
-            continue
-        series.append(
-            {
-                "metric": f"{prefix}cache_hit_rate",
-                "type": GAUGE,
-                "points": [{"timestamp": ts, "value": float(rate)}],
-                "tags": tags + [f"pod_name:{pod}"],
-            }
-        )
+    # cache_hit_rate_by_pod는 native o2.app.cache_access가 대체한다.
 
     # 같은 이유로 파드별 지연도 pod_name 태그만 얹어 보냅니다 — 파드 하나가
     # 느려도 service 단위 latency_p95 는 나머지 파드에 희석돼 임계 안에
     # 머뭅니다. 메트릭 이름은 `latency_p95` 그대로이고 태그만 다릅니다
     # (cache_hit_rate 와 같은 방식). `latency_p95_by_pod` 는 metrics.py 가
     # 표본 부족 파드를 이미 걸러낸 뒤의 맵입니다.
-    for pod, value in (metrics.get("latency_p95_by_pod") or {}).items():
-        if value is None:
-            continue
-        series.append(
-            {
-                "metric": f"{prefix}latency_p95",
-                "type": GAUGE,
-                "points": [{"timestamp": ts, "value": float(value)}],
-                "tags": tags + [f"pod_name:{pod}"],
-            }
-        )
+    # latency_p95_by_pod는 APM span-based metric이 대체한다.
 
     conf = metrics.get("confidence") or {}
     if conf.get("score") is not None:
@@ -147,6 +137,18 @@ def build_series(metrics: dict, *, prefix: str | None = None, env: str | None = 
                 "metric": f"{prefix}confidence",
                 "type": GAUGE,
                 "points": [{"timestamp": ts, "value": float(conf["score"])}],
+                "tags": tags,
+            }
+        )
+    if metrics.get("service") == "o2-canary" and metrics.get("pipeline_freshness_seconds") is not None:
+        series.append(
+            {
+                "metric": f"{prefix}pipeline_freshness_seconds",
+                "type": GAUGE,
+                "points": [{
+                    "timestamp": int(metrics.get("aggregate_ts") or ts),
+                    "value": float(metrics["pipeline_freshness_seconds"]),
+                }],
                 "tags": tags,
             }
         )
@@ -159,6 +161,7 @@ def submit(series: list[dict]) -> bool:
         return True
     key = api_key()
     if not key:
+        _submit_failed("api_key_unavailable")
         return False
 
     url = f"https://api.{settings.dd_site}/api/v2/series"
@@ -175,10 +178,10 @@ def submit(series: list[dict]) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=settings.dd_timeout) as resp:
             return 200 <= resp.status < 300
-    except urllib.error.HTTPError as e:
-        _warn(f"Datadog {e.code}: {e.read()[:200]!r}")
-    except Exception as e:  # 네트워크·타임아웃 전부 여기로
-        _warn(f"Datadog 전송 실패: {e}")
+    except urllib.error.HTTPError as error:
+        _submit_failed(f"http_{error.code}")
+    except Exception:
+        _submit_failed("transport_error")
     return False
 
 
@@ -195,3 +198,8 @@ def publish(metrics_list: list[dict]) -> int:
 
 def _warn(msg: str) -> None:
     sys.stderr.write(f"[o2warm] {msg}\n")
+
+
+def _submit_failed(reason: str) -> None:
+    """CloudWatch가 읽는 고정되고 비민감한 실패 신호를 남깁니다."""
+    _warn(f"DATADOG_SUBMIT_FAILED reason={reason}")

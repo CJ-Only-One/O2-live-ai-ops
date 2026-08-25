@@ -1219,6 +1219,82 @@ S2 의 "느린 파드" 판정은 서버 값으로 한다 — 인터넷 왕복이
   = 2.5)의 근거. 위 부하에서 두 파드가 2.0ms 대 4.0ms 였는데 표본이 적어
   분산을 말할 수 없다
 
+### Datadog-native 이관 전 F-0 재검증 (2026-08-24 19:49 KST)
+
+US5 Datadog API를 최근 2시간 범위로 직접 조회했다. 이름 검색만으로 수집 중이라
+판정하지 않고 series 수와 마지막 non-null point 시각을 함께 확인했다.
+
+| 항목 | query | series · 마지막 point (UTC) | 판정 |
+|---|---|---|---|
+| API request hits | `sum:trace.fastapi.request.hits{service:api,env:dev} by {pod_name}.as_count()` | 1 · `2026-08-24T10:35:00Z` · `pod_name:N/A` | `COLLECTED_NOT_USED` — recent point는 있으나 이관 전 비즈니스 Monitor는 Warm 사용 |
+| API p95 | `p95:trace.fastapi.request{service:api,env:dev} by {pod_name}` | 1 · `2026-08-24T10:35:00Z` · `pod_name:N/A` | `COLLECTED_NOT_USED` — 값 단위는 second, 논리 계약은 ms |
+| API 5xx hits | `sum:trace.fastapi.request.hits.by_http_status{service:api,env:dev,http.status_code:5*}.as_count()` | 0 · 마지막 point 없음 | 정상 0과 `NO_DATA`를 구분해야 하므로 수집 판정 보류 |
+| 신규 `o2.app.*` | 배포 전이라 recent query 미실행 | 없음 | `INSTRUMENTED_NOT_INGESTED` |
+
+`/api/v1/search?q=metrics:trace.fastapi.request` 결과 실제 duration 원천 이름은
+`trace.fastapi.request`다. p95 최근 값의 API unit은 `second`(`scale_factor=1.0`)였고
+최근 표본은 약 0.006초였다. Hot Metric Catalog는 primary에만 `×1000`을 적용해 기존
+ms 계약을 유지한다. `pod_name:N/A`는 신규 Downward API/`DD_TAGS` 배포 전 상태와
+일치하며, 배포 뒤 활성 파드 수만큼 분리되기 전에는 F-1.2 완료로 판정하지 않는다.
+
+2026-08-24 후속 구현에서는 아직 배포하지 않은 항목을 recent point처럼 기록하지
+않는다. 현재 판정은 다음과 같다.
+
+| 항목 | producer/소비 경로 | 판정 |
+|---|---|---|
+| Chat 연결·인입·처리·fanout·Kinesis·크기·delivered/dropped | `apps/chat-gateway` DogStatsD → 신규 pipeline dashboard/Hot catalog | `INSTRUMENTED_NOT_INGESTED` |
+| API business/cache/retry/fallback/DB pool | `apps/api` DogStatsD → 신규 pipeline dashboard/Hot catalog | `INSTRUMENTED_NOT_INGESTED` |
+| order-worker confirm/failure/retry/batch/duration | `apps/order-worker` DogStatsD | `INSTRUMENTED_NOT_INGESTED` |
+| o2-agg batch/duration/cold start/max memory/duplicate/late/decode | CloudWatch EMF + CloudWatch alarm | `INSTRUMENTED_NOT_INGESTED` |
+| Warm window age와 S3 business partition missing | 카나리 CloudWatch EMF + CloudWatch alarm | `INSTRUMENTED_NOT_INGESTED` |
+| 모든 실제 업무/Agent DLQ | AWS/SQS → Datadog Monitor 정의 | `COLLECTED_NOT_USED` — 신규 o2-agg DLQ는 아직 미배포 |
+| Firehose freshness/success | AWS/Firehose → 신규 pipeline dashboard/Monitor 정의 | `COLLECTED_NOT_USED` |
+
+`INSTRUMENTED_NOT_INGESTED`는 실패가 아니라 배포 게이트다. 배포 후 query, series 수,
+마지막 point 시각을 이 표에 새 행으로 추가하기 전에는 Warm 중복 series를 끄지 않는다.
+
+### Datadog-native 인프라 배포 후 recent point (2026-08-24 20:44 KST)
+
+`04-platform`, `06-datastream`, `08-chat-signal`, `05-datadog`를 기능 브랜치의
+검토된 Terraform plan으로 적용한 뒤 `o2-canary`를 수동 호출했다. aggregate 로그는
+`records=1`, `events=1`, `published=1`, `datadog_series=8`, `decode_errors=0`이었다.
+
+| 항목 | query | series · 마지막 point (UTC) | 판정 |
+|---|---|---|---|
+| canary pipeline freshness | `max:o2.warm.pipeline_freshness_seconds{service:o2-canary,env:dev}` | 1 · `2026-08-24T11:44:30Z` · `0.4114997387s` | 수집·Datadog 전송 확인 |
+| canary event count | `sum:o2.warm.event_count{service:o2-canary,env:dev}` | 1 · `2026-08-24T11:44:30Z` · `1` | 수집·Datadog 전송 확인 |
+| 신규 business event | `sum:o2.app.business_event{env:dev}.as_count()` | 0 · 마지막 point 없음 | 앱 이미지 미배포로 `INSTRUMENTED_NOT_INGESTED` 유지 |
+| 신규 operation duration | `p95:o2.app.operation.duration{env:dev}` | 0 · 마지막 point 없음 | 앱 이미지 미배포로 `INSTRUMENTED_NOT_INGESTED` 유지 |
+| 신규 cache access | `sum:o2.app.cache_access{env:dev}.as_count()` | 0 · 마지막 point 없음 | 앱 이미지 미배포로 `INSTRUMENTED_NOT_INGESTED` 유지 |
+| 신규 fanout items | `sum:o2.app.fanout.items{env:dev}.as_count()` | 0 · 마지막 point 없음 | 앱 이미지 미배포로 `INSTRUMENTED_NOT_INGESTED` 유지 |
+
+앱 배포는 `main` 푸시 → `app.yml` → ECR → GitOps 태그 갱신 경로만 허용된다.
+기능 브랜치 상태에서 클러스터를 직접 덮어쓰지 않았으므로 앱 네 항목은 실제 이미지가
+정식 CI 경로로 배포된 뒤 같은 query로 다시 측정한다.
+
+### DogStatsD hostPort 수정 후 앱 recent point (2026-08-24 22:19 KST)
+
+`dogstatsd.useHostPort=true` 적용과 GitOps `DD_ENTITY_ID=metadata.uid` 배포 후 API 정상
+요청 20건 및 파드 내부 단일 진단 전송으로 수집 경로를 확인했다. 신규 metric/tag의
+Datadog index 전파 전에는 query가 잠시 0 series였으며, `all-tags`에 태그가 나타난 뒤
+같은 query가 값을 반환했다.
+
+| 항목 | query | series · 마지막 non-zero point (UTC) | 판정 |
+|---|---|---|---|
+| inventory success | `sum:o2.app.business_event{service:api,env:dev,event:inventory.check,result:success} by {pod_name}.as_count()` | 1 · `2026-08-24T13:14:50Z` · `1` · `api-7dd8f759cb-hf478` | `COLLECTED_AND_USED` |
+| cache access | `sum:o2.app.cache_access{service:api,env:dev} by {pod_name,result}.as_count()` | 태그 완전 series 1 · `2026-08-24T13:14:50Z` · `1` · `result:hit` | `COLLECTED_AND_USED`; 최소 태그 진단 series 1은 `N/A`로 별도 존재 |
+| inventory duration | `avg:o2.app.operation.duration{service:api,env:dev} by {pod_name,operation}` | 1 · `2026-08-24T13:14:50Z` · `3.5ms` · `operation:inventory.read` | `COLLECTED_NOT_USED` — inventory.read 소비 위젯 미연결 |
+| DB pool active | `max:o2.app.db.pool.active{*} by {service,pod_name,operation}` | 최신 API 파드별 series 확인 · `2026-08-24T13:13:30Z` · `1` | `COLLECTED_NOT_USED` — 소비 위젯 미연결 |
+| order batch size | `avg:o2.app.batch.size{*} by {service,pod_name}` | order-worker 파드별 series 확인 · 최신 `2026-08-24T13:13:20Z` · `0` | `COLLECTED_NOT_USED` — 빈 poll의 정상값, 소비 위젯 미연결 |
+| API APM hits | `sum:trace.fastapi.request.hits{service:api,env:dev} by {pod_name}.as_count()` | 1 · `2026-08-24T13:11:10Z` · `pod_name:N/A` | APM recent point는 있으나 pod 분해 미완료 |
+
+Datadog trace metric은 기본 태그와 조직에 설정된 additional primary tag만 집계 축으로
+노출한다. 현재 `trace.fastapi.request/all-tags`에는 `service`와 `version`만 있고
+`pod_name`은 없다. custom metric의 pod 분해는 정상이나 APM pod 분해는 Datadog APM
+Settings에서 container-based additional primary tag로 `pod_name`을 활성화한 뒤 다시
+측정해야 한다. 이 설정은 반영에 최대 2시간이 걸릴 수 있으므로 현재 값을 완료 증거로
+바꾸지 않는다.
+
 ### 채팅 이벤트는 이미 Kinesis 로 흐른다 (2026-08-24)
 
 `monitor.tf` 가 `chat_ingest_surge` 를 껐던 사유(*"목적지가 stdout 뿐이라
@@ -1407,6 +1483,21 @@ api 이미지가 **그 노드에 이미 캐시돼 있었다**(api 파드가 두 
 | 2026-08-24 | 6 | 13.11s |
 | 2026-08-24 | 7 | **4.09s** |
 | 2026-08-24 | 8 | 13.07s |
+
+같은 날 order-worker의 큐시트 사전 확장도 실제 클러스터에서 확인했다. 기존 큐시트를
+덮어쓰지 않도록 계약에 맞는 합성 ID `bc_99990824`를 사용했고, JSON Schema 검증 후
+`SALE_OPEN`의 `order_rate=200/s`를 적재했다. M-014의 47 msg/s/pod를 적용한 목표는
+`ceil(200/47)=5`다.
+
+| 날짜 · 조건 | ScaledObject min | Deployment spec | Ready | 결과 |
+|---|---:|---:|---:|---|
+| 2026-08-24 · 적재 전 | 1 | 1 | 1 | baseline |
+| 2026-08-24 13:08:48 UTC · 합성 큐시트 적재 후 | **5** | **5** | **5** | 사전 확장 성공 |
+| 2026-08-24 13:09:59 UTC · 합성 행 삭제 후 | **1** | 5 | 5 | 바닥값 원복 성공; 파드 축소는 KEDA 300초 cooldown 뒤 수행 |
+
+cue-warmer 로그에는 `13:08:40 UTC 사전 확장: order-worker 1 -> 5`와
+`13:09:51 UTC 원복: order-worker 5 -> 1`이 남았다. 합성 큐시트 행은 삭제했고
+ScaledObject의 baseline도 1로 복구했다.
 
 **해석 1 — 값이 양분된다. 중간이 없다.**
 

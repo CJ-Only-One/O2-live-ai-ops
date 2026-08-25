@@ -5,6 +5,13 @@ Agent(Dify)가 `@webhook-dify` 알림을 받은 뒤 Datadog 에 보관된 인프
 `docs/DatadogMcpQueryInstruction.md` 구현안 A(HTTP REST API Gateway)를
 구현합니다.
 
+Dify에는 raw Datadog query 대신 `/v1/hot/datadog/metric`만 노출한다. 요청은
+`rps`, `latency_p95`, `failure_rate`, `cache_hit_rate`, `chat_fanout_p95`,
+`block_rate`, `items_per_sec` 같은 논리 이름을 쓰며,
+단일 catalog가 APM/DogStatsD primary와 기존 `o2.warm.*` fallback을 선택한다.
+빈 series는 정상값 `0`이 아니라 `NO_DATA`다. 기존 `/datadog/query`는 운영
+디버깅과 하위 호환을 위해 백엔드에만 남기고 Dify OpenAPI에서는 제거한다.
+
 ```
 hot/
 ├── src/o2hot/
@@ -124,9 +131,28 @@ awscurl --service lambda --region ap-northeast-2 \
 
 awscurl --service lambda --region ap-northeast-2 \
   -X POST -H "Content-Type: application/json" \
-  -d '{"query": "avg:system.cpu.user{*}"}' \
-  "$HOT_URL/v1/hot/datadog/query"
+  -d '{"metric":"latency_p95","service":"api","window_seconds":300}' \
+  "$HOT_URL/v1/hot/datadog/metric"
 ```
+
+응답에서 `status`, `source`, `freshness_seconds`, `sample_count`,
+`fallback_used`를 함께 확인한다. 값이 없으면 `value: 0`이 아니라
+`status: NO_DATA`여야 한다.
+
+## AI 팀 인수 항목
+
+저장소 측 완료물은 `infra/06-agent/hot-proxy/openapi.yaml`과 이 논리 지표
+endpoint다. AI 팀은 실제 Dify 환경에서 다음만 수행한다.
+
+1. OpenAPI를 Custom Tool에 등록하고 게시한다.
+2. `latency_p95(api)`, `chat_fanout_p95(chat-gateway)`,
+   `block_rate(chat-gateway)`를 각각 한 번 호출한다.
+3. 정상 응답의 source/freshness/sample_count와 결측 응답의 NO_DATA를 확인한다.
+4. primary를 의도적으로 결측시켜 Warm fallback이 가능한 지표에서
+   `fallback_used: true`를 확인한다.
+
+실제 Dify 게시와 UI 수동 실행은 AI 팀 소유이며, 이 저장소에서는 대신 완료로
+간주하지 않는다.
 
 호출자가 `hot_api_invoker_role_arn` 이 아니면 Lambda 코드 실행 전에
 403(`AccessDeniedException`)이 옵니다 — `o2-hot-api` 의 CloudWatch 로그에

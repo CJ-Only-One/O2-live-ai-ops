@@ -57,7 +57,7 @@ locals {
 # 에 `KinesisClient`·`PutRecordCommand` 가 들어왔고(`:16`),
 # `config.eventsSink === 'kinesis'` 분기가 있다(`:100`). 배포 환경변수도
 # 설정돼 실제로 흐른다 — 7일 구간에서
-# `o2.warm.rps{service:chat-gateway}` 와 `rps_ratio{service:chat-gateway}`
+# `o2.app.business_event{service:chat-gateway,event:chat.send}`
 # 가 둘 다 시계열을 갖는다(2026-08-24 API 조회).
 #
 # **교훈은 이 Monitor 가 아니라 주석에 대한 것이다.** 비활성 사유는 조건이
@@ -94,13 +94,13 @@ resource "datadog_monitor" "chat_ingest_surge" {
     @webhook-o2-dify
   EOT
 
-  query = "min(last_${var.chat_early_warning_window_minutes}m):avg:${var.metric_prefix}rps_ratio{service:chat-gateway,env:${local.monitor_env}} >= ${var.chat_rps_ratio_warning}"
+  query = "avg(last_${var.chat_early_warning_window_minutes}m):anomalies(sum:o2.app.business_event{service:chat-gateway,env:${local.monitor_env},event:chat.send}.as_rate(), 'agile', 3, direction='above', interval=60, alert_window='last_${var.chat_early_warning_window_minutes}m', seasonality='hourly') >= 1"
 
   monitor_thresholds {
     # Datadog metric alert의 query 비교값은 critical(Alert) 임계와 일치해야 한다.
     # warning만 정의하면 /api/v1/monitor/validate가 "Alert status is required"를
     # 반환한다. 이 Monitor 자체가 조기 경보이므로 현재 단일 임계를 Alert로 쓴다.
-    critical = var.chat_rps_ratio_warning
+    critical = 1
   }
 
   # EWMA 표본이 30개(~5분) 쌓이기 전에는 rps_ratio 자체가 없다(README 실측
@@ -125,7 +125,7 @@ resource "datadog_monitor" "order_latency_p95" {
   name    = "[O2][시나리오 2·5] 주문 응답 p95 지연"
   type    = "metric alert"
   message = <<-EOT
-    주문 응답 p95(`${var.metric_prefix}latency_p95{service:api}`)가
+    주문 응답 p95(`trace.fastapi.request{service:api}`)가
     위험 임계를 넘었습니다.
 
     **이 alert가 커버하는 두 시나리오**
@@ -143,11 +143,13 @@ resource "datadog_monitor" "order_latency_p95" {
     @webhook-o2-dify
   EOT
 
-  query = "min(last_${var.scenario_entry_window_minutes}m):avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical}"
+  # trace.fastapi.request 의 Datadog API 단위는 second다. 사용자 계약과 변수는
+  # ms를 유지하므로 비교 임계만 1000으로 나눈다(2026-08-24 recent point 확인).
+  query = "min(last_${var.scenario_entry_window_minutes}m):p95:trace.fastapi.request{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical / 1000}"
 
   monitor_thresholds {
-    warning  = var.latency_p95_warning
-    critical = var.latency_p95_critical
+    warning  = var.latency_p95_warning / 1000
+    critical = var.latency_p95_critical / 1000
   }
 
   # dev 에는 주문 트래픽이 상시로 흐르지 않는다. 켜 두면 "지표가 안 온다" 가
@@ -181,7 +183,7 @@ resource "datadog_monitor" "order_latency_p95" {
 resource "datadog_monitor" "cache_hit_rate_low" {
   name    = "[O2][시나리오 4] 캐시 히트율 낮음 (서브 모니터)"
   type    = "metric alert"
-  query   = "min(last_${var.scenario_entry_window_minutes}m):avg:${var.metric_prefix}cache_hit_rate{service:${var.default_service},env:${local.monitor_env}} < ${var.cache_hit_rate_critical}"
+  query   = "min(last_${var.scenario_entry_window_minutes}m):sum:o2.app.cache_access{service:${var.default_service},env:${local.monitor_env},result:hit}.as_count() / sum:o2.app.cache_access{service:${var.default_service},env:${local.monitor_env}}.as_count() < ${var.cache_hit_rate_critical}"
   message = "캐시 히트율이 임계치 미만입니다. 복합 모니터의 하위 조건으로 작동합니다."
 
   monitor_thresholds {
@@ -198,11 +200,11 @@ resource "datadog_monitor" "cache_hit_rate_low" {
 resource "datadog_monitor" "latency_p95_high" {
   name    = "[O2][시나리오 4] 응답 p95 지연 높음 (서브 모니터)"
   type    = "metric alert"
-  query   = "min(last_${var.scenario_entry_window_minutes}m):avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical}"
+  query   = "min(last_${var.scenario_entry_window_minutes}m):p95:trace.fastapi.request{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical / 1000}"
   message = "응답 p95 지연 시간이 임계치를 초과했습니다. 복합 모니터의 하위 조건으로 작동합니다."
 
   monitor_thresholds {
-    critical = var.latency_p95_critical
+    critical = var.latency_p95_critical / 1000
   }
 
   notify_no_data      = false
@@ -286,7 +288,7 @@ resource "datadog_monitor" "cache_absorption_failure" {
 # 시나리오 1 (Phase 2 — 기본 비활성) — 파드 단위 캐시 스큐
 #
 # 트랜스크립트가 "알림으로 절대 안 잡힌다"고 말하는 이유는 정확했다 —
-# `o2.warm.cache_hit_rate` 가 `service`·`env` 두 태그만 갖고 파드 단위
+# `o2.app.cache_access` 가 `pod_name` 태그를 가지므로 파드 단위
 # 분해가 없어서다. 파드 3개가 정상, 1개만 고장이면 평균은 75%로 멀쩡해
 # 보인다. 하지만 이건 "알림 불가능"이 아니라 "지금 이 지표로는 불가능"이다
 # — pod 식별자를 태그에 추가하면 잡을 수 있다.
@@ -311,8 +313,7 @@ variable "enable_pod_cache_outlier_monitor" {
   description = <<-EOT
     시나리오 1(파드 단위 캐시 스큐) Monitor 활성화 여부. 기본 `false`.
 
-    `o2.warm.cache_hit_rate` 에 `pod_name` 태그가 실려야 동작한다 — 지금은
-    SDK 봉투에 그 필드가 없다(모니터 정의 위 주석 참고). 계측이 들어가고
+    `o2.app.cache_access` 에 `pod_name` 태그가 실려야 동작한다. 계측이 들어가고
     Metrics Explorer 에서 `by {pod_name}` 분해가 실제로 나오는 것을 확인한
     뒤 `true` 로 켠다.
   EOT
@@ -354,7 +355,7 @@ resource "datadog_monitor" "cache_hit_rate_pod_outlier" {
     @webhook-o2-dify
   EOT
 
-  query = "avg(last_10m):outliers(avg:${var.metric_prefix}cache_hit_rate{service:${var.default_service},env:${local.monitor_env}} by {pod_name}, 'DBSCAN', ${var.pod_cache_outlier_tolerance}) > 0"
+  query = "avg(last_10m):outliers(sum:o2.app.cache_access{service:${var.default_service},env:${local.monitor_env},result:hit} by {pod_name}.as_count() / sum:o2.app.cache_access{service:${var.default_service},env:${local.monitor_env}} by {pod_name}.as_count(), 'DBSCAN', ${var.pod_cache_outlier_tolerance}) > 0"
 
   notify_no_data      = false
   require_full_window = true
@@ -393,10 +394,9 @@ variable "enable_pod_latency_outlier_monitor" {
   description = <<-EOT
     시나리오 5(파드 단위 지연 이상치) Monitor 활성화 여부. 기본 `false`.
 
-    `o2.warm.latency_p95` 에 `pod_name` 태그가 실려야 동작한다. 계측은
-    06-datastream 의 3단(`sketch` → `metrics` → `datadog`)에 들어가 있고,
+    span-based metric `o2.apm.request.duration` 이 `pod_name` 으로 분해되어야 동작한다.
     **파드가 2개 이상 떠 있는 상태**에서
-    `avg:o2.warm.latency_p95{*} by {pod_name}` 이 파드 수만큼 갈리는 것을
+    `p95:o2.apm.request.duration{*} by {pod_name}` 이 파드 수만큼 갈리는 것을
     확인한 뒤 켠다.
 
     갈리지 않으면 3단 중 어딘가에서 태그가 빠진 것이다. 봉투에 `pod_name`
@@ -429,7 +429,7 @@ resource "datadog_monitor" "latency_p95_pod_outlier" {
     파드에 희석돼 임계 안에 머물 수 있습니다.
 
     **먼저 방향을 봅니다.** 이 탐지는 "무리에서 떨어진 파드" 를 잡지
-    "느린 파드" 를 잡지 않습니다. 대시보드에서 `${var.metric_prefix}latency_p95`
+    "느린 파드" 를 잡지 않습니다. 대시보드에서 `trace.fastapi.request`
     를 `by {pod_name}` 으로 펼쳐, 잡힌 파드가 **위로** 떨어졌는지 확인하세요.
     아래로 떨어진 것이면 조치할 것이 없습니다.
 
@@ -449,7 +449,7 @@ resource "datadog_monitor" "latency_p95_pod_outlier" {
     @webhook-o2-dify
   EOT
 
-  query = "avg(last_10m):outliers(avg:${var.metric_prefix}latency_p95{service:${var.default_service},env:${local.monitor_env}} by {pod_name}, 'DBSCAN', ${var.pod_latency_outlier_tolerance}) > 0"
+  query = "avg(last_10m):outliers(p95:o2.apm.request.duration{service:${var.default_service},env:${local.monitor_env}} by {pod_name}, 'DBSCAN', ${var.pod_latency_outlier_tolerance}) > 0"
 
   notify_no_data      = false
   require_full_window = true
@@ -577,7 +577,7 @@ variable "enable_order_confirm_stall_monitor" {
 resource "datadog_monitor" "order_create_active" {
   name    = "[O2][시나리오 6] 주문 생성 진행 중 (서브 모니터)"
   type    = "metric alert"
-  query   = "min(last_10m):avg:${var.metric_prefix}event_rate{service:${var.default_service},env:${local.monitor_env},event:order.create} > 0"
+  query   = "min(last_10m):sum:o2.app.order_create{service:${var.default_service},env:${local.monitor_env}}.as_rate() > 0"
   message = "주문 생성이 발생하고 있습니다. 복합 모니터의 하위 조건으로 작동합니다."
 
   monitor_thresholds {
@@ -594,7 +594,7 @@ resource "datadog_monitor" "order_create_active" {
 resource "datadog_monitor" "order_confirm_inactive" {
   name    = "[O2][시나리오 6] 주문 확정 정지됨 (서브 모니터)"
   type    = "metric alert"
-  query   = "max(last_10m):avg:${var.metric_prefix}event_rate{service:order-worker,env:${local.monitor_env},event:order.confirm} <= 0"
+  query   = "max(last_10m):sum:o2.app.business_event{service:order-worker,env:${local.monitor_env},event:order.confirm}.as_rate() <= 0"
   message = "주문 확정이 발생하지 않고 있습니다. 복합 모니터의 하위 조건으로 작동합니다."
 
   monitor_thresholds {

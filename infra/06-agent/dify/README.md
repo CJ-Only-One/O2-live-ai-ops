@@ -20,6 +20,7 @@ Dify 콘솔에 들어가지 않고도 워크플로가 무엇을 하는지 읽을
 |---|---|
 | `alert-triage.yml` | Datadog 알림 입력으로 내보낸 과거 workflow DSL |
 | `agent-entry-contract-test-v1.yml` | 병합된 `agent.incident.v1` revision을 LLM 없이 검증하는 격리 테스트 workflow DSL |
+| `o2-aiops-workflow.yml` | S1·S2·S3(scenario-experiment.md) 시연용 인시던트 대응 워크플로 — 진단부터 Slack 승인, 조치 실행, 검증까지 전체 상태 머신. `environment_variables`의 `value`는 전부 빈 문자열로 커밋돼 있다 — 실제 값은 `.env.o2-aiops-workflow`(gitignore됨, 아래 절 참고) |
 
 > **2026-08-23 runtime drift 확인:** Lambda API key가 가리키는 실제 게시 앱은 이 DSL보다
 > 새롭고 `behavior`, `custom_alert_json` 입력을 추가로 가진다. 이 파일을 현재 배포본의
@@ -214,14 +215,29 @@ S3 Vectors 에서 비슷한 과거 인시던트를 찾고, 그 요약을 문장�
 
 ### 커밋 전에 비밀값 확인
 
-지금은 안전하다. Bedrock 을 인스턴스 역할로 쓰므로 DSL 에 키가 없다.
+`alert-triage.yml` 은 지금 안전하다 — Bedrock 을 인스턴스 역할로 쓰므로 DSL 에 키가 없다.
 
 **Datadog 조회(pull) 노드를 붙이는 순간 위험해진다.** HTTP Request 노드에 API 키를
 직접 적으면 그대로 이 파일에 실려 저장소에 올라간다. 워크플로 **환경 변수**를
-`Secret` 타입으로 만들어 쓰면 DSL 에는 이름만 남는다.
+`Secret` 타입으로 만들어 쓰면 된다 — **단, `Secret` 타입이라도 DSL을 Export 하면
+Dify 는 실제 값을 그대로 평문으로 써 넣는다.** UI 에서만 마스킹될 뿐, 파일에는
+안 숨는다(`o2-aiops-workflow.yml` 이 처음에 이 문제로 값이 그대로 노출돼 있었다,
+2026-08-24). 그래서 `environment_variables[].value` 는 커밋 직전에 전부 빈
+문자열로 비우고, 실제 값은 같은 이름의 `.env.<파일명>` 에만 둔다(`.gitignore` 로
+막혀 있다). Studio 에 DSL 을 붙여넣은 뒤 그 파일을 보고 Environment Variables
+패널에 하나씩 채운다. `o2-aiops-workflow.yml` + `.env.o2-aiops-workflow` 가 그 예다.
+
+코드(`code` 타입) 노드는 `{{#env.X#}}` 문자열 치환이 안 먹는다 — URL/헤더 필드와
+달리 코드는 텍스트 그대로 실행되기 때문이다. 그래서 코드 노드가 시크릿이 필요하면
+`variables:` 목록에 `value_selector: [env, VAR_NAME]` 항목을 추가해 함수 인자로
+받아야 한다(`resolve_target` 노드의 `chat_gateway_admin_url` 등이 그 예다). 코드
+문자열 안에 값을 직접 적지 않는다.
+
+커밋 전에 아래로 다시 한번 확인한다 — Lambda Function URL(`*.lambda-url.*.on.aws`),
+ALB DNS(`*.elb.amazonaws.com`), 헥스/베이스64로 보이는 긴 토큰까지 같이 잡는다.
 
 ```bash
-grep -inE "dd-api-key|dd-application-key|Bearer |app-[a-z0-9]{16}" infra/06-agent/dify/*.yml
+grep -inE "dd-api-key|dd-application-key|Bearer [A-Za-z0-9]|app-[a-z0-9]{16}|lambda-url\.[a-z0-9-]+\.on\.aws|elb\.amazonaws\.com|[a-f0-9]{32,}" infra/06-agent/dify/*.yml
 ```
 
 ---

@@ -12,10 +12,12 @@
  */
 
 import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 
 import { KinesisClient, PutRecordCommand } from '@aws-sdk/client-kinesis';
 
 import { config } from './config.js';
+import { businessEvent, duration, failure } from './telemetry.js';
 
 export type ChatSendPayload = {
   msg_length: number;
@@ -102,6 +104,7 @@ function kinesisClient(): KinesisClient {
  */
 function send(env: Envelope): void {
   if (config.eventsSink === 'kinesis') {
+    const started = performance.now();
     kinesisClient()
       .send(
         new PutRecordCommand({
@@ -110,8 +113,16 @@ function send(env: Envelope): void {
           Data: new TextEncoder().encode(JSON.stringify(env) + '\n'),
         }),
       )
-      .catch((err: unknown) => {
-        console.error(`[events] chat.send Kinesis 전송 실패: ${String(err)}`);
+      .then(() => {
+        businessEvent('chat.kinesis', 'success');
+        duration('chat.kinesis.publish', performance.now() - started);
+      })
+      .catch(() => {
+        businessEvent('chat.kinesis', 'failed');
+        failure('chat.kinesis', 'PUBLISH_FAILED');
+        duration('chat.kinesis.publish', performance.now() - started);
+        // SDK 오류 문자열에 요청 본문이 섞일 수 있어 고정 코드만 남긴다.
+        console.error('[events] chat.send Kinesis 전송 실패 code=PUBLISH_FAILED');
       });
     return;
   }

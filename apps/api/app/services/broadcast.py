@@ -22,6 +22,7 @@ from o2events import emit
 from sqlalchemy import select
 
 from app.core.cache import get_or_load
+from app.core.telemetry import telemetry
 from app.db.session import ReaderSessionLocal
 from app.db.valkey import valkey
 from app.models.broadcast import Broadcast
@@ -90,6 +91,7 @@ def _load_meta(broadcast_id: str, origin: dict) -> dict | None:
             return json.loads(cached)
     except Exception:
         logger.exception("방송 메타 캐시 조회 실패, DB 로 우회한다")
+        telemetry.fallback("broadcast.meta", True)
 
     origin["source"] = "DB_REPLICA"
     origin["cache_hit"] = False
@@ -130,6 +132,8 @@ def _stock_display(sku_ids: list[str]) -> dict[str, int]:
         values = valkey.mget([f"stock:{sku}" for sku in sku_ids])
     except Exception:
         logger.exception("재고 조회 실패, 0 으로 표시한다")
+        telemetry.failure("inventory.check", "CACHE_READ_FAILED")
+        telemetry.fallback("inventory.stock", True)
         return {sku: 0 for sku in sku_ids}
 
     # 키가 없으면(미초기화) 0 으로 보여준다. 주문은 어차피 DECR 결과를
@@ -210,6 +214,9 @@ def _emit_inventory_check(meta: dict, stocks: dict[str, int], origin: dict, late
         return
 
     featured = products[0]
+    telemetry.business_event("inventory.check", "success")
+    telemetry.cache_access(origin["cache_hit"])
+    telemetry.operation_duration("inventory.read", latency_ms)
     try:
         emit.inventory_check(
             product_id=featured["sku_id"],

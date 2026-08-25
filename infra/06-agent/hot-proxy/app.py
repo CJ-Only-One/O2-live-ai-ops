@@ -53,9 +53,9 @@ PORT = int(os.getenv("PORT", "8788"))
 PROXY_KEY = os.getenv("O2_HOT_PROXY_KEY", "")
 PROXY_KEY_HEADER = os.getenv("O2_HOT_PROXY_KEY_HEADER", "x-o2-proxy-key").lower()
 
-# 통과시킬 경로. 이 프록시는 서명을 붙여 주는 물건이라, 넘겨받은 경로를
-# 그대로 믿으면 같은 서명으로 다른 Lambda 를 부를 수 있는 통로가 된다.
-ALLOWED_PREFIX = os.getenv("O2_HOT_ALLOWED_PREFIX", "/v1/hot/")
+# Dify가 쓰는 논리 계약만 통과시킨다. raw Datadog query endpoint는 운영자가
+# Lambda를 직접 진단할 때만 쓰며 이 서명 프록시에는 노출하지 않는다.
+ALLOWED_PATHS = {"/v1/hot/health", "/v1/hot/datadog/metric"}
 
 _session = boto3.Session()
 _credentials = _session.get_credentials()  # 갱신을 스스로 하는 객체다
@@ -115,9 +115,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return self._send(401, {"error": "unauthorized"})
 
-        if not path.startswith(ALLOWED_PREFIX):
+        if path not in ALLOWED_PATHS:
             return self._send(
-                403, {"error": "forbidden_path", "detail": f"{ALLOWED_PREFIX} 아래만 허용합니다"}
+                403, {"error": "forbidden_path", "allowed": sorted(ALLOWED_PATHS)}
             )
 
         length = int(self.headers.get("Content-Length") or 0)
