@@ -446,10 +446,21 @@ resource "datadog_monitor" "latency_p95_pod_outlier" {
 
     **조치**: 해당 파드만 재시작하거나 스케줄에서 뺍니다. service 전체를
     건드리기 전에 이 축을 먼저 보는 것이 이 Monitor 의 목적입니다.
-
-    @webhook-o2-dify
   EOT
 
+  # ★ `@webhook-o2-dify` 를 일부러 뺐다. 이 Monitor 는 **2차 재진단의 재료**이지
+  #   진입 알림이 아니다.
+  #
+  #   S2 확정안은 "1차는 넓게 조사하고(파드 평균값 등) 2차에 세부적으로
+  #   (개별 파드 수치)" 를 요구한다. 이것이 에이전트를 직접 깨우면 1차 진단
+  #   컨텍스트에 이미 "파드 하나가 이상치" 라는 답이 실려 들어가고, 재진단이
+  #   필요 없어진다 — 검증하려던 능력(실패한 절차를 반복하지 않고 새 증거로
+  #   결론을 뒤집는 것)이 관측 자체에서 사라진다.
+  #
+  #   에이전트는 이 축을 알림이 아니라 조회로 얻는다 — Warm Path 스냅샷의
+  #   `latency_p95_by_pod`(`o2warm/metrics.py:328`)와 Hot Path 프록시.
+  #
+  #   S2 진입은 `scenario_alerts.tf` 의 `s2_api_tail_latency`(service 단위 p99)다.
   query = "avg(last_10m):outliers(p95:o2.apm.request.duration{service:${var.default_service},env:${local.monitor_env}} by {pod_name}, 'DBSCAN', ${var.pod_latency_outlier_tolerance}) > 0"
 
   notify_no_data      = false
