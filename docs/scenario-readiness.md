@@ -77,8 +77,8 @@
 | 요구 | 현재 | 판정 |
 |---|---|---|
 | 채널 총량 제한 노브 | `main.ts`의 `overChannelLimit()`과 `/ws/admin/channel-limit`, `cfg:channel_limit:*`이 구현되고 테스트됐다(D-061) | **구현됨** |
-| 전파 지연 지표 (서버측) | M-010 의 전파 p95 는 **k6 클라이언트 Trend** 다. `chat.send` 페이로드에 `latency_ms` 가 없어 warm path 가 지연을 만들지 못한다 | **없음** |
-| 정상 사용자 차단률 | `chat.send` 전체 시도 대비 `CHANNEL_LIMITED`를 계산한 `channel_limited_rate` scalar를 warm이 Datadog으로 보낸다. 상한 실측은 남음 | **구현됨** |
+| 전파 지연 지표 (서버측) | `o2.chat.propagation` distribution을 Datadog에 등록하고 S1 p95 Monitor(`[O2][S1] Chat 전파 p95 지연`, 22076983)를 운영 생성했다. 방송별 `broadcast_id` 입력은 아직 필요하다 | **Monitor 구현됨 · Incident 연결 대기** |
+| 정상 사용자 차단률 | `o2.warm.channel_limited_rate`를 S1 차단률 Monitor(`[O2][S1] Chat 정상 사용자 차단률`, 22076982)로 운영 생성했다. 상한 실측과 방송별 `broadcast_id` 입력은 남음 | **Monitor 구현됨 · Incident 연결 대기** |
 | 채팅 전파 계약 기준값 | 없다. `architecture.md` 12.1 의 `p95 < 800ms` 는 읽기 경로용이다 | **없음** |
 | 넓은 발화자 분포 | `broadcast.js`의 `PROFILE=s1`은 `SENDERS`를 필수로 받고 발화자당 분당 한도 이상이면 시작 전에 실패한다 | **구현됨** |
 | 파형 (첫 파동 → 지속 고원) | `SPIKE_RPS`·`SPIKE_S`·`PLATEAU_RPS`를 모두 필수 입력으로 받아 두 구간을 만든다 | **구현됨** |

@@ -257,6 +257,36 @@ variable "chat_rps_ratio_warning" {
   default     = 5
 }
 
+variable "enable_chat_incident_monitors" {
+  description = "S1 채팅 전파 p95·정상 사용자 차단률 Incident 보강 Monitor"
+  type        = bool
+  default     = false
+}
+
+variable "chat_propagation_p95_warning_ms" {
+  description = "S1 전파 p95 경고 임계. M-010 관측값을 기반으로 한 초기 운영 정책값"
+  type        = number
+  default     = 800
+}
+
+variable "chat_propagation_p95_critical_ms" {
+  description = "S1 전파 p95 critical 임계. 운영 표본 후 재조정"
+  type        = number
+  default     = 1500
+}
+
+variable "chat_block_rate_warning" {
+  description = "S1 정상 사용자 차단률 경고 임계. 실제 분포 측정 전 초기 정책값"
+  type        = number
+  default     = 0.05
+}
+
+variable "chat_block_rate_critical" {
+  description = "S1 정상 사용자 차단률 critical 임계. 실제 분포 측정 전 초기 정책값"
+  type        = number
+  default     = 0.1
+}
+
 variable "cache_hit_rate_critical" {
   description = <<-EOT
     시나리오 4(캐시 흡수 실패) 임계. native `o2.app.cache_access` 비율이

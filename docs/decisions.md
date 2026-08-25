@@ -97,6 +97,7 @@
 | D-080 | severity·recovery·strong exception은 결정론적 상태 계약이다 | material change, sustained recovery, integrity allowlist |
 | D-081 | Incident 운영 전환은 Shadow 모드와 승인 gate를 분리한다 | cooldown, reopen, measured window, operational approval |
 | D-082 | 운영 READ_PATH Incident handoff는 composite evidence와 세 승인 window를 사용한다 | COMPOSITE_CONDITION, recovery 300초, cooldown 300초, reopen 1800초 |
+| D-083 | 기존 모니터를 유지하고 S1 채팅 과부하 지표를 별도 Monitor로 추가한다 | `o2.chat.propagation`, `o2.warm.channel_limited_rate`, broadcast scope 선행 조건 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4603,3 +4604,15 @@ Operational mode에서는 합성 cycle/Incident/broadcast allowlist를 비운다
 06 Agent Worker, 08 Chat Adapter 각각의 운영자 승인 플래그와 execution/event-source gate가 함께
 true여야 한다. Datadog Monitor에는 기존 `@webhook-o2-dify`를 보존하고 별도
 `@webhook-o2-incident-entry`를 추가해 cutover 중 기존 알림 경로를 제거하지 않는다.
+
+---
+
+## D-083. 기존 모니터를 유지하고 S1 채팅 과부하 지표를 별도 Monitor로 추가한다
+
+인시던트는 여러 신호를 사후 상관하는 계층이므로 기존 Datadog Monitor와 기존 Dify
+알림 경로를 폐기하지 않는다. 특가 오픈 과부하를 관찰하기 위해 `o2.chat.propagation`
+전파 p95와 `o2.warm.channel_limited_rate` 정상 사용자 차단률을 별도 S1 Monitor로
+추가한다. 초기 임계값은 각각 warning/critical 800/1500ms, 0.05/0.10이며 실제
+반복 측정 후 조정한다. 현재 S1 assessment 계약은 `broadcast_id`를 필수로 하므로
+새 Monitor는 지표 알림만 운영하고, 방송별 scope가 공급될 때 Incident webhook과
+Correlator mapping을 연결한다.

@@ -15,6 +15,7 @@ metric_prefix = "o2.warm."
 # 흐르는 서비스를 기본값으로 둔다. order-api 가 살아나면 그때 바꾼다.
 default_service = "api"
 environment     = "dev"
+enable_chat_incident_monitors = true
 
 # 임계치는 잠정치다. 평시 분포를 보고 고친다.
 # 여기 숫자는 색깔만 바꾸고 알림을 보내지 않는다.
