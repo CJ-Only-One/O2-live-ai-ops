@@ -16,6 +16,16 @@
 # 왕복하고 꺼진 것이 그 사례다. 그래서 생존 신호는 06-datastream 의 카나리가
 # **스스로 만든 트래픽** 위에 세운다.
 ###############################################################################
+#
+# ★ 이 파일의 Monitor 에는 `@webhook-o2-dify` 를 붙이지 않는다(D-088).
+#
+#   여기서 잡는 것은 **에이전트의 판단 근거가 끊긴 상황**이다. 집계가 밀리거나
+#   죽으면 warm snapshot 이 낡은 값을 주고, 그 상태로 에이전트를 깨우면 낡은
+#   데이터로 조치를 판단한다 — 깨우지 않는 편이 안전하다. 파이프라인 결측은
+#   에이전트를 부르는 신호가 아니라 **에이전트를 믿지 않아야 하는 신호**다.
+#
+#   Monitor 자체는 그대로 둔다. 사람이 Datadog 에서 보고, 부하 실험 중이라면
+#   그 구간의 측정을 버릴 근거가 된다.
 
 variable "canary_service" {
   description = <<-EOT
@@ -76,8 +86,6 @@ resource "datadog_monitor" "warm_pipeline_stalled" {
     **집계기는 실패해도 예외를 안 냅니다.** 4번에서 끊기면 DynamoDB 에는
     데이터가 쌓이는데 Datadog 만 비는 모양이 됩니다 — 그때 warm-api 의
     `/metrics` 를 직접 찔러 보면 어느 쪽인지 갈립니다.
-
-    @webhook-o2-dify
   EOT
 
   # 임계는 안 걸리게 둔다. rps 가 존재하는 한 항상 0보다 크다.
@@ -201,8 +209,6 @@ resource "datadog_monitor" "warm_aggregator_lag" {
     - 상시로 밀리면 샤드 수나 `parallelization_factor` 를 올려야 합니다
     - 집계 Lambda 의 `Duration` 이 함께 올랐는지 봅니다 — 그쪽이면 처리
       비용 문제입니다
-
-    @webhook-o2-dify
   EOT
 
   # aws.lambda.iterator_age 의 단위는 밀리초다.
@@ -244,8 +250,6 @@ resource "datadog_monitor" "warm_aggregator_errors" {
     DynamoDB 스로틀, 메모리 부족이 흔한 원인입니다.
 
     로그는 `/aws/lambda/o2-agg` 에 있습니다.
-
-    @webhook-o2-dify
   EOT
 
   query = "sum(last_5m):sum:aws.lambda.errors{functionname:o2-agg}.as_count() > 0"
