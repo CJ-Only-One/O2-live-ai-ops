@@ -9,6 +9,7 @@ const METRICS = new Set([
   'o2.app.websocket.connections',
   'o2.app.message.size',
   'o2.app.fanout.items',
+  'o2.chat.propagation',
 ]);
 
 const TAG_KEYS = new Set([
@@ -102,4 +103,13 @@ export function messageSize(value: number): void {
 
 export function fanoutItems(result: 'delivered' | 'dropped', value: number): void {
   emit('o2.app.fanout.items', value, 'c', { result });
+}
+
+// M-010의 40,000 items/s에서 모든 전달을 UDP로 보내면 계측이 장애를 만듭니다.
+// 우선 무작위 0.1%로 상한을 두고, 표본 충실도와 비용은 재실측해 조정합니다.
+export const PROPAGATION_SAMPLE_RATE = 0.001;
+
+export function chatPropagation(durationMs: number, randomValue = Math.random()): void {
+  if (randomValue >= PROPAGATION_SAMPLE_RATE) return;
+  emit('o2.chat.propagation', durationMs, 'd', {});
 }

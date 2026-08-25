@@ -40,6 +40,23 @@ class ReadPathDegradedOut(BaseModel):
     previously_degraded: bool
 
 
+class ReadPathDegradedStatusOut(BaseModel):
+    broadcast_id: str
+    read_path_degraded_active: bool
+
+
+@router.get("/admin/read-path-degraded", response_model=ReadPathDegradedStatusOut)
+def get_read_path_degraded(
+    broadcast_id: BroadcastId,
+    x_admin_key: str | None = Header(default=None),
+):
+    require_admin_key(settings.READ_PATH_DEGRADED_ADMIN_KEY, x_admin_key)
+    return ReadPathDegradedStatusOut(
+        broadcast_id=broadcast_id,
+        read_path_degraded_active=bool(valkey.get(degraded_key(broadcast_id))),
+    )
+
+
 @router.post("/admin/read-path-degraded", response_model=ReadPathDegradedOut)
 def set_read_path_degraded(
     body: ReadPathDegradedIn,

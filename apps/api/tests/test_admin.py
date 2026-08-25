@@ -84,6 +84,35 @@ def test_set_then_clear(fake_valkey, admin_key):
     assert fake_valkey.get("cfg:read_path_degraded:bc_1042") is None
 
 
+def test_get_reads_authoritative_valkey_state(fake_valkey, admin_key):
+    headers = {"x-admin-key": admin_key}
+    res = client.get(URL, params={"broadcast_id": "bc_1042"}, headers=headers)
+    assert res.status_code == 200
+    assert res.json() == {
+        "broadcast_id": "bc_1042",
+        "read_path_degraded_active": False,
+    }
+
+    fake_valkey.set("cfg:read_path_degraded:bc_1042", "1")
+    res = client.get(URL, params={"broadcast_id": "bc_1042"}, headers=headers)
+    assert res.status_code == 200
+    assert res.json()["read_path_degraded_active"] is True
+
+
+def test_get_requires_admin_key(fake_valkey, admin_key):
+    res = client.get(URL, params={"broadcast_id": "bc_1042"})
+    assert res.status_code == 403
+
+
+def test_get_rejects_malformed_broadcast_id(fake_valkey, admin_key):
+    res = client.get(
+        URL,
+        params={"broadcast_id": "not-a-broadcast"},
+        headers={"x-admin-key": admin_key},
+    )
+    assert res.status_code == 400
+
+
 def test_bad_action_rejected(fake_valkey, admin_key):
     # action 이 Literal["set", "clear"] 이라 Pydantic 이 파싱 단계에서 막는다
     # — 라우트 본문에 수동 검증을 안 둔다. app.core.errors 가 검증 오류를
