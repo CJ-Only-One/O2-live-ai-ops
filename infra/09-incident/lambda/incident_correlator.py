@@ -463,7 +463,19 @@ def normalize_trigger(trigger: dict[str, Any], settings: dict[str, Any]) -> dict
         environment = settings["environment"]
     else:
         mapping = settings["datadog_monitor_map"].get(evidence["monitor_id"])
-        broadcast_ids = []
+        # Datadog evidence 도 방송 축을 가질 수 있다(D-086). S1 Monitor 를
+        # `by {broadcast_id}` multi-alert 로 돌리면 그룹 태그가 webhook payload 를
+        # 거쳐 `assessment_input.scope.broadcast_id` 로 들어온다.
+        #
+        # 여기서 버리면 Chat 과 Datadog 이 같은 장애를 잡았을 때 병합된 Incident 의
+        # 방송 축이 **어느 source 가 먼저 왔느냐에 따라 달라진다.** 그리고 Dify
+        # normalize 가 `LIVE-001` fallback 을 써서 없는 방송에 채널 제한을 걸고도
+        # 200 OK 로 성공 기록된다.
+        #
+        # 필수 여부는 Adapter 와 `_validate_assessment_input` 이 이미 본다 —
+        # S1 evidence type 이면 None 을 거부한다. 여기서는 있는 값을 채택만 한다.
+        scope_broadcast_id = (evidence["assessment_input"]["scope"] or {}).get("broadcast_id")
+        broadcast_ids = [scope_broadcast_id] if scope_broadcast_id else []
         environment = evidence["env"]
         if environment != settings["environment"]:
             return {
