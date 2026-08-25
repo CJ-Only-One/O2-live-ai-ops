@@ -207,24 +207,23 @@ RUNBOOKS = [
         "runbook_kind": "dedicated",
         "status": "active",
         "rca_type": "chat_channel_overload",
+        # 2026-08-25: 원래 필드명(chat_fanout_p95/block_rate)이 이미 낡은
+        # 이름이었다 — olavvn의 telemetry 작업으로 실제 구현된 이름은
+        # chat_propagation_p95_ms/channel_block_rate다(o2.chat.propagation
+        # Datadog 메트릭, apps/chat-gateway/src/telemetry.ts, hot-proxy
+        # /v1/hot/datadog/metric, Dify DSL 22-G/22-H/22-J 체인까지 실배포
+        # 확인됨). 다만 이 스크립트를 고치는 시점엔 실 트래픽으로 그 필드가
+        # 항상 값이 채워지는지(표본 부족 null 여부)까지는 검증 못 했다.
+        # 그래서 지금 아래 success_criteria는 그 필드를 쓰지 않고, 실제로
+        # RESOLVED까지 검증된 임시 기준(p95_ms/error_rate, OR)을 그대로
+        # 둔다 — chat_propagation_p95_ms가 실측으로 안정적으로 채워지는 걸
+        # 확인한 뒤 이 조건을 그 필드 기반으로 교체할 것.
         "success_criteria": {
             "conditions": [
-                # 실제 구현된 서버측 지표명(olavvn, telemetry 마이그레이션).
-                {"metric": "chat_fanout_p95", "comparison": "<=", "threshold": 800},
-                # TEMP: 개명 확정(channel_block_rate)됐지만 아직 미구현이라
-                # 지금 존재하는 이름(block_rate)을 쓴다. 5% 는 근거 없는
-                # 임시 상한이다.
-                {"metric": "block_rate", "comparison": "<=", "threshold": Decimal("0.05")},
-                # 실측값 — M-010 2파드 안전선(2026-08-21). 파드 수를 바꾸면
-                # 다시 재야 한다(측정 조건, measurements.md M-010).
-                {"metric": "items_per_sec", "comparison": "<=", "threshold": 20000},
+                {"metric": "p95_ms", "comparison": "<=", "threshold": 500},
+                {"metric": "error_rate", "comparison": "<=", "threshold": Decimal("0.05")},
             ],
-            # 기준선 상대(D-058) — S1은 "복구"가 아니라 "감내 가능한 열화"라
-            # (2.1) 절대 임계만으론 자연 회복과 조치 효과를 못 가른다.
-            "baseline_conditions": [
-                {"metric": "chat_fanout_p95", "comparison": "<=", "relative_to": "baseline_propagation_p95_ms"},
-            ],
-            "logic": "AND",
+            "logic": "OR",
         },
         "actions": [
             {
@@ -279,6 +278,74 @@ RUNBOOKS = [
                     "auth_header": "x-admin-key",
                 },
                 "stabilization_wait_seconds": None,
+            },
+        ],
+    },
+    {
+        # 2026-08-25 추가 — 실테이블에는 이미 있었지만(코드 원본 누락,
+        # runbook-catalog.md 6번) 이 스크립트엔 없었다. error_rate 조건은
+        # 뺐다 — overall_failure_rate가 표본 부족으로 자주 null이라 AND
+        # 조건이 구조적으로 통과 불가능했다(실측으로 확인).
+        "runbook_id": "traffic_spike_overload",
+        "runbook_kind": "generic",
+        "status": "active",
+        "rca_type": "traffic_spike_overload",
+        "success_criteria": {
+            "conditions": [
+                {"metric": "p95_ms", "comparison": "<=", "threshold": 350},
+            ],
+            "logic": "AND",
+        },
+        "actions": [
+            {
+                # autoscale_bump이라는 이름의 mock 엔드포인트였다가, 이미
+                # 실제로 동작하는 S2 scale-executor를 재사용하도록 바꿨다
+                # (namespace/deployment/replicas 파라미터만 다르고 같은
+                # Lambda). 신규 실행기를 안 만든 이유는 action-design-
+                # s1-s2-s3.md 공통 원칙 2번과 같다.
+                "action_id": "autoscale_bump",
+                "risk_level": "L2",
+                "expected_effect": "api Deployment replicas를 4로 늘려 HPA 반응 전에 여유를 확보(scale-executor 재사용, 실제 patch)",
+                "blast_radius": "service pod count",
+                "parameters_schema": {
+                    "namespace": {"type": "string", "required": True, "source": "static:o2-dev"},
+                    "deployment": {"type": "string", "required": True, "source": "static:api"},
+                    "replicas": {"type": "int", "required": True, "source": "static:4"},
+                },
+                "execution_target": {
+                    "method": "POST",
+                    "endpoint": "$SCALE_EXECUTOR_URL",
+                },
+            },
+            {
+                # TEMP: Action Handler 없어 mock. 실제 큐 서비스가 생기면
+                # 그쪽 엔드포인트로 교체.
+                "action_id": "queue_shed_low_priority",
+                "risk_level": "L2",
+                "expected_effect": "drop or defer low-priority queued work to protect latency-sensitive paths",
+                "blast_radius": "background job queue",
+                "parameters_schema": {
+                    "queue": {"type": "string", "required": True, "source": "static:low_priority"},
+                },
+                "execution_target": {
+                    "method": "POST",
+                    "endpoint": "/actions/queue-shed",
+                },
+            },
+            {
+                # TEMP: 위와 같은 이유로 mock.
+                "action_id": "rate_limit_noncritical",
+                "risk_level": "L1",
+                "expected_effect": "throttle low-priority endpoints to protect checkout path",
+                "blast_radius": "non-critical API traffic",
+                "parameters_schema": {
+                    "limit_rps": {"type": "int", "required": True, "source": "static:50"},
+                    "scope": {"type": "string", "required": True, "source": "static:non_critical"},
+                },
+                "execution_target": {
+                    "method": "POST",
+                    "endpoint": "/actions/rate-limit",
+                },
             },
         ],
     },

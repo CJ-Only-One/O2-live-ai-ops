@@ -36,6 +36,11 @@ cpu_credit_exhausted
 # 채팅 — S1(docs/scenario-experiment.md 0.5). 총량이 채널 감당 선 초과
 chat_channel_overload
 
+# 트래픽 — 서비스 전역 요청량 증가(특정 방송 채널 국한 아님).
+# 진단 프롬프트 enum에는 이미 있었는데 이 통제 어휘엔 빠져 있었다
+# (2026-08-25 발견 — seed_runbook.py에 이 라벨로 항목을 추가하려다 발견함).
+traffic_spike_overload
+
 # 외부 의존 — S3(docs/scenario-experiment.md 0.7)의 결제 PG 지연.
 # PostgreSQL을 뜻하는 `pg`가 아니다. 결제 게이트웨이(Payment Gateway)다.
 pg_external_failure
