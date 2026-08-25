@@ -34,6 +34,7 @@
 | M-019 | 파드 Ready 시간 (사전 확장 리드타임) | `readinessProbe` 설정 변경 · 이미지 크기 변경 · 인스턴스 타입 변경 · 노드 여유 부족으로 Karpenter 개입 시 |
 | M-020 | 실제 Chat·Datadog → 동일 Incident → Dify Shadow E2E | Source Adapter·Correlator·Worker·Dify 계약·monitor 평가 주기 변경 |
 | M-021 | 실제 Chat → Dify → 유사 장애 이력 조회·저장 E2E | Agent Entry Worker·Dify `past_cases` 계약·Bedrock 모델·S3 Vectors 설정 변경 |
+| M-022 | AZ 장애 복구 시간 (RDS·Valkey failover, 노드 drain) | MultiAZ·복제본 구성 변경 · 커넥션 풀 설정 변경 · readiness 판정 대상 변경 |
 
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
@@ -1210,6 +1211,49 @@ KEDA 를 넣으면서(D-051) 그 Helm 차트가 자기 파드에 `limits.cpu` �
 S2 의 "느린 파드" 판정은 서버 값으로 한다 — 인터넷 왕복이 섞이면 파드
 간 차이가 묻힌다.
 
+### S2 실제 부하와 2단계 조치 리허설 (2026-08-25)
+
+**이 절은 자동 Agent E2E가 아니다.** 장애 주입과 부하, 실제
+`o2-dev-dify-scale-executor` Lambda의 조치 효과를 운영자가 단계별로 호출해
+검증했다. Datadog Monitor는 부하 보정 중 mute했고 Agent Signal/Invocation Queue가
+모두 0건이었으므로, "Agent가 판단해서 실행했다"고 주장하지 않는다.
+
+**조건**
+
+- 대상: main API와 같은 이미지·Pod template의 별도 `api-canary` Deployment
+- canary: CPU request/limit `100m`, readiness timeout 5초 · failure threshold 6
+- 부하: ALB 경유 `GET /api/broadcasts/bc_1042`, constant-arrival-rate
+  **200 RPS · 60초**, 총 12,000건
+- 생성기: k6 `preAllocatedVUs=maxVUs=1200`, `noConnectionReuse=true`;
+  모든 유효 실행에서 dropped iteration 0
+
+| 단계 | main | canary | p95 | p99 | HTTP 실패율 | 판정 |
+|---|---:|---:|---:|---:|---:|---|
+| 장애 주입 | 2 | 1 | **21.53s** | **23.87s** | 0 | 꼬리 지연 재현 |
+| 1차 조치 후에도 장애 유지 | 3 | 1 | **6.37s** | **12.62s** | **1.18%** | 증설만으로 실패 |
+| 2차 조치: 느린 canary 격리 | 3 | 0 | **29.25ms** | **99.78ms** | 0 | 복구 |
+| 증설분 최종 원복 | 2 | 0 | **27.81ms** | **99.57ms** | 0 | 복구 유지 |
+
+유효 실행은 모두 목표 200 RPS를 지켜 dropped iteration 0이었다. 첫 장애 주입은
+응답이 누적되며 최대 926 VU까지 사용했지만 1,200 VU 상한 안에서 12,001건을
+완료했다. 따라서 수 초 지연은 생성기 포화가 아니라 서버 endpoint 하나의
+지연이다. 1차 증설은 p95를 낮췄지만 성공 기준 800ms와 실패율 1%를 모두 넘겨
+재분석 대상으로 남았다.
+
+이 결과로 확인된 것은 **"증설 → 고정 조건 재검증 실패 → 느린 Deployment
+격리 → 기준 replicas 원복 후 재검증 성공"**이라는 조치 순서다. 아직 확인하지
+못한 것은 Datadog S2 신호가 Incident로 승격되고, Dify가 active Runbook을 고른 뒤,
+상태 머신의 1회 재분석을 거쳐 같은 두 조치를 자동 호출하는 구간이다.
+
+위 표 전에 한 첫 리허설에서는 **이미지 드리프트가 뒤늦게 확인됐다.** Datadog의
+최근 3시간 `kubernetes.cpu.usage.total by {image_tag}` 이력에서 canary는 `d5f4088...`,
+동시점 main은 APM version `0ab8267...`이었다. 로컬 `O2-live-deploy`가 원격보다
+한 커밋 뒤인 상태에서 기존 하네스가 로컬 YAML을 base로 렌더링한 것이 원인이다.
+그 첫 리허설 값은 **구버전 이미지 + 100m CPU 제한의 복합 장애**라 위 표에서
+제외했다. 하네스를 현재 클러스터의 main Deployment에서 생성하도록 수정하고
+server-side dry-run과 live Deployment의 image/version 일치를 확인한 뒤 위 표를
+다시 측정했다. 따라서 위 표는 CPU limit 차이만 남긴 재실험 결과다.
+
 ### 안 잰 것 (이 절)
 
 - **M-009 재측정.** `replicas` 1 → 2 는 M-009 의 재측정 트리거이고
@@ -1324,6 +1368,38 @@ DynamoDB 상세에만 있었다.
 `O2-live-deploy` 매니페스트 소관이라 이 두 스택 범위 밖이다. F-6(정상 파드에
 `limits.cpu` 부여)과 **같은 곳에 같이 요청해야 하는 항목**이다 — 둘 다
 "파드가 여럿이고 서로 비교 가능해야 한다" 는 같은 전제를 만든다.
+
+### S1·S2·S3 alert 지표 인입 확인 (2026-08-25 09:0x UTC)
+
+`scenario_alerts.tf`(D-085)를 apply 하기 전에, 새 Monitor 가 읽을 지표에 실제로
+series 가 있는지 US5 API 로 직접 조회했다. 7일 구간. **이름이 존재하는지가 아니라
+series 수와 마지막 non-null point 를 봤다.**
+
+| query | series · 마지막 point | 판정 |
+|---|---|---|
+| `sum:o2.app.fanout.items{service:chat-gateway,env:dev,result:delivered}.as_rate()` | 1 · `2026-08-25T09:00:00Z` · **2.166/s** | `COLLECTED_AND_USED` — S1 진입 |
+| `sum:o2.app.fanout.items{env:dev} by {result}.as_rate()` | `result:delivered` 하나뿐 | `dropped` 는 아직 발생한 적 없음 |
+| `p99:trace.fastapi.request{service:api,env:dev}` | 1 · `2026-08-25T09:00:00Z` · **0.008s** | `COLLECTED_AND_USED` — S2 진입 |
+| `p95:o2.app.operation.duration{service:api,env:dev,operation:payment.process}` | **0** | 아래 |
+| `sum:o2.app.business_event{service:api,env:dev,event:payment.process}.as_count()` | **0** | 아래 |
+| `sum:o2.app.business_event{service:chat-gateway,env:dev,event:chat.send}.as_count()` | 1 · 최대 8,000 | 참고 |
+| `GET /api/v2/metrics/o2.app.operation.duration/tags` | **404** | 기존 tag configuration 없음 — apply 시 409 충돌 없음 |
+
+**무부하 서버측 p99 는 8ms 다.** M-016 앞부분의 p95 6ms 와 같은 축의 값이고,
+S2 조기 감지 임계(`s2_tail_latency_p99_*`)가 놓일 바닥이 여기다. 다만 이것은
+**무부하 표본 하나**이지 부하 구간의 p99 분포가 아니다 — 임계 근거로는 여전히 부족하다.
+
+**`payment.process` 는 한 번도 발행된 적이 없다.** percentile 설정 문제가 아니다 —
+counter(`business_event`)조차 series 0 이다. 같은 조회에서 `env:dev` 의
+`business_event` 축은 `inventory.check` · `chat.send` · `chat.kinesis` · `chat.signal` ·
+`websocket.connect` · `websocket.disconnect` 뿐이고, `operation.duration` 축은
+`inventory.read` · `order.batch` · `chat.fanout` · `chat.kinesis.publish` ·
+`chat.message` · `chat.signal.publish` 뿐이었다. **주문·결제 경로가 dev 에서 돈 적이 없다.**
+
+따라서 S3 Monitor 둘은 구조는 맞지만 `loadtest/order-path.js` 로 결제 경로에 트래픽을
+흘리기 전까지 No Data 다. `notify_no_data = false` 라 조용할 뿐 오류는 나지 않는다 —
+**`chat_block_rate` 가 조용했던 것과 겉모습이 같으므로**(D-085) 트래픽을 흘린 뒤
+이 표에 행을 추가해 실제 인입을 확인하기 전에는 "동작한다" 고 적지 않는다.
 
 ### 다시 재야 할 때
 
@@ -1582,6 +1658,30 @@ visible/in-flight/delayed 0, Incident State·ledger·Candidate·window state는 
 대체하지 않는다. 실제 장애의 source 발생 간격과 각 경로 지연을 반복 자동화로 더 측정한 뒤
 운영 correlation window를 결정한다.
 
+### 2026-08-25 결정론적 lifecycle Shadow 반복
+
+새 evidence/state 계약을 배포하되 Worker event source는 계속 disabled로 두고, Correlator에는
+정확한 합성 idempotency key만 허용했다. 기능 확인용 값은 recovery 1초, cooldown 60초,
+reopen 300초였으며 운영값이 아니다. Signal은 SQS에 직접 넣었으므로 이 표는 Datadog monitor
+평가 지연이나 source-to-Queue 시간을 측정하지 않는다.
+
+| 반복 | 같은 Incident의 revision 전이 | 검증 결과 | Invocation |
+|---|---|---|---:|
+| 1 | `1 OPEN` → `2 VERIFIED` → `3 RECOVERING` → `4 RESOLVED` → `5 OPEN` | reopen에서 `COOLDOWN_ACTIVE`, suppressed=true | 1 |
+| 2 | `1 OPEN` → `2 VERIFIED` → `3 RECOVERING` → `4 RESOLVED` → `5 OPEN` | 같은 Incident ID로 전체 전이 재현 | 1 |
+
+CloudWatch에서 관측한 revision 기록 시각의 간격은 1회차가 58.920초, 72.708초, 5.452초,
+3.500초였고 2회차가 25.704초, 38.986초, 21.706초, 16.708초였다. 이 값은 수동 AWS CLI
+호출과 polling 대기를 포함한 **입력 간격**이며 Correlator 처리시간으로 사용하면 안 된다.
+세 번째 반복은 자동 하네스 종료 뒤 수동 reopen 입력이 겹쳐 correlation 순서가 오염됐으므로
+실측 표본에서 제외했다.
+
+첫 Shadow 시도에서는 환경변수 매핑 로딩의 dict/set 타입 오류(T-034)를 발견해 회귀 테스트를
+추가했고, 재시도의 인라인 JSON은 PowerShell quoting으로 손상됐다(T-035). 수정 후 위 두 번의
+전체 lifecycle이 재현됐다. 종료 시 Correlator 실행 gate와 event source를 disabled로 되돌리고
+recovery/cooldown/reopen 값을 0으로 복귀했다. 이 반복만으로 운영 grouping/cooldown/reopen 값을
+확정하지 않는다. 실제 Datadog source 반복 측정과 운영자 승인이 여전히 필요하다.
+
 **다시 재야 할 때** — Source Adapter·Correlator·Worker 코드, Dify workflow 계약, Datadog
 monitor 평가 주기, Queue 설정 또는 environment canonicalization 정책을 바꿀 때.
 
@@ -1620,3 +1720,67 @@ S3 원본·Vector 저장까지 하나의 경로로 연결됐음을 확인했다.
 
 **다시 재야 할 때** — Agent Entry Worker의 검색·저장 코드, Dify `past_cases` 계약,
 Bedrock embedding 모델, S3 Vectors index 또는 거리·top-k 정책을 바꿀 때.
+
+---
+
+## M-022. AZ 장애 복구 시간 (RDS·Valkey failover, 노드 drain)
+
+AZ 이중화를 켠 뒤 **실제로 전환을 일으켜** 앱이 얼마나 끊기는지 쟀다.
+"설정했다" 와 "몇 초 만에 돌아온다" 는 다른 주장이라 후자를 확인해야 했다.
+
+**조건 (2026-08-25)** — 노드 `c6i.large` × 4 (AZ 당 2) / RDS `db.t4g.micro`
+MultiAZ / Valkey `cache.t4g.micro` 2노드 / api replicas 2, AZ 분리 /
+외부 부하 없음.
+
+측정은 `api` 파드 안에서 `http://api/api/readyz` 를 **초당 1회** 폴링했다.
+이 경로가 MySQL 과 Valkey 연결을 둘 다 확인하므로 의존성 단절이 그대로 드러난다.
+Service 를 거치므로 파드가 엔드포인트에서 빠지는 것까지 관측된다.
+
+| 대상 | 트리거 | 앱 중단 | 인프라 전환 |
+|---|---|---|---|
+| RDS | `reboot-db-instance --force-failover` | **15초** | 73초 (status available 까지) |
+| Valkey | `test-failover` | **37초** | 22초 (역할 교체 완료) |
+| 노드 | `kubectl drain` 1대 | **1초** | 42초 (drain 완료) |
+| mediamtx | 파드 삭제 | 2초 | — |
+
+**해석 1 — RDS 15초는 MultiAZ 를 켠 값어치 그 자체다.**
+
+MultiAZ 가 없으면 인스턴스 장애의 유일한 수단이 스냅샷 복원이고 그것은 최소
+30 분이다. 방송 길이가 RTO 상한인 라이브 커머스에서 30 분은 해당 방송을
+포기하는 것과 같다.
+
+중단 뒤에도 09:59:34 와 10:00:02 에 단발 실패가 있었다. `pool_pre_ping` 은
+이미 켜져 있으므로 죽은 커넥션 문제가 아니라, 파드마다 재연결 시점이 달라
+초 단위로 성공과 실패가 섞인 구간이다. 앱 설정으로 줄일 수 있는 값이 아니다.
+
+**해석 2 — Valkey 37초 중 15초는 앱이 자초한 것이다.**
+
+Valkey 는 10:04:54 에 역할 교체를 마쳤는데 앱은 10:05:10 까지 응답하지
+못했다. 에러 종류가 순서대로 바뀐 것이 경로를 보여준다.
+
+| 구간 | 에러 | 의미 |
+|---|---|---|
+| 10:04:33~38 | `HTTPError` | api 가 살아서 503(`valkey=False`)을 반환 |
+| 10:04:39~10:05:01 | `TimeoutError` | Valkey 연결 시도가 매달림 |
+| 10:05:04~09 | `URLError` | **파드 둘 다 NotReady → Service 엔드포인트 0개** |
+
+`readyz` 는 MySQL 과 Valkey 를 동등하게 보고 하나라도 실패하면 503 을 낸다.
+`failureThreshold` 기본 3 · `periodSeconds` 10 이라 30 초 뒤 파드가 엔드포인트에서
+빠졌다. `broadcast.py` 는 Valkey 실패 시 DB 로 우회하도록 구현돼 있는데
+그 경로를 쓸 기회가 사라진 것이다.
+
+**고치지 않기로 했다** — 시나리오 S1·S2·S3 경로가 아니고 데모를 막지도 않는다.
+고친다면 `readyz` 의 503 판정을 MySQL 만으로 좁히고 `order.py` 의 `_reserve`
+호출을 `ApiError("INTERNAL_ERROR")` 로 감싸면 된다. 그 경우 22 초가 된다.
+
+**해석 3 — 노드 drain 1초는 노드를 넷으로 늘린 값어치다.**
+
+`75-27` 에서 api·coredns·metrics-server 세 파드가 쫓겨났는데 실패가 1 건뿐이고,
+이동 뒤에도 api·chat-gateway·frontend·metrics-server 가 AZ 분리를 유지했다.
+노드가 둘이던 때라면 `DoNotSchedule` 이 자리를 찾지 못해 Pending 이 났을 값이다.
+
+**해석 4 — mediamtx 2초는 노드 장애 복구가 아니다.**
+
+파드를 지우고 새 파드가 Ready 될 때까지의 값이다. 이미지가 노드에 캐시돼
+있고 스케줄이 즉시 됐다. 노드가 급사하는 경우는 감지 40 초 + toleration 20 초가
+앞에 붙으므로 약 85 초가 되고, 그 값은 **재지 않았다** — 노드를 실제로 죽여야 나온다.

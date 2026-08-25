@@ -1,6 +1,14 @@
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
+data "aws_sqs_queue" "agent_invocation" {
+  name = "${local.name}-agent-invocation"
+}
+
+data "aws_dynamodb_table" "incident_state" {
+  name = "${local.name}-incident-state"
+}
+
 # 네트워크 스택 출력값을 참조한다. 02-eks, 03-data 와 같은 패턴이다.
 data "terraform_remote_state" "network" {
   backend = "s3"

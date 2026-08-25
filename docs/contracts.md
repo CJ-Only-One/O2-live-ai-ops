@@ -33,7 +33,7 @@
 | 기존 비즈니스 이벤트의 후단 수집·저장·분석 경로 | **아니오** — 백데이터 파트 소관 (D-015) |
 | 채팅 신호 입력·Incident Candidate 생성 경로 | **예** — 이 문서 3.8·5.6·5.7 (D-047) |
 | Datadog·Chat Candidate → Agent 공통 진입 계약 | **예** — 이 문서 5.8 (D-050) |
-| 결제 게이트웨이 연동 | **아니오** — 범위 밖 |
+| 실제 결제 게이트웨이 연동 | **아니오** — 범위 밖. S3는 api 내부 목업 PG만 사용 |
 
 ---
 
@@ -79,6 +79,8 @@ Ingress 규칙은 **구체적인 경로를 먼저** 둔다. `/`를 먼저 두면
 |---|---|---|
 | `SOLD_OUT` | 409 | 재고 부족 |
 | `NOT_STARTED` | 409 | 특가 오픈 전 |
+| `REQUEST_IN_PROGRESS` | 409 | 같은 멱등 주문의 첫 요청이 아직 처리 중 |
+| `PAYMENT_FAILED` | 502 | 목업 외부 결제 PG가 실패·타임아웃 |
 | `RATE_LIMITED` | 429 | 요청 과다 |
 | `INVALID_REQUEST` | 400 | 형식 오류 |
 | `NOT_FOUND` | 404 | 방송·주문을 찾을 수 없음 |
@@ -157,12 +159,16 @@ X-Session-Key: <UUID v4>
 { "order_id": "od_01JB2X…", "state": "ACCEPTED" }
 ```
 
-**202인 이유:** 이 시점에 확정된 것은 재고 차감(Valkey `DECR`)까지다. MySQL 기록은
+**202인 이유:** 이 시점에 확정된 것은 재고 예약과 목업 PG 성공까지다. MySQL 기록은
 SQS를 거쳐 워커가 한다. 200을 주면 클라이언트가 "주문이 저장됐다"로 읽는다.
 
-실패는 1.3의 오류 응답을 쓴다. 재고 부족은 `SOLD_OUT` / 409.
+실패는 1.3의 오류 응답을 쓴다. 재고 부족은 `SOLD_OUT` / 409, 목업 외부 PG
+실패는 `PAYMENT_FAILED` / 502다. PG 실패 시 예약한 재고와 멱등 키를 원복한 뒤
+응답하므로 주문·SQS 메시지는 남지 않는다.
 
-**같은 `Idempotency-Key`로 다시 오면 재고를 다시 깎지 않고 첫 응답을 그대로 준다.**
+**같은 `Idempotency-Key`로 다시 오면 재고를 다시 깎지 않는다.** 첫 요청이 끝났으면
+같은 `order_id`의 202를 반환하고, PG 지연 중이면 성공을 미리 가장하지 않고
+`REQUEST_IN_PROGRESS` / 409를 반환한다.
 방어선은 두 겹이다 — Valkey `idem:{key}`가 1차, MySQL `uk_idem`이 최종이다
 (설계 문서 4.4).
 
@@ -238,6 +244,28 @@ X-Session-Key: <UUID v4>
 `accepted`는 계약 검증을 통과해 발행을 시도한 건수이고 스트림 도착을 보장하지
 않는다. 발행 실패는 요청을 실패시키지 않는다(5.1) — 계측이 구매를 막는 것은
 언제나 손해다.
+
+### 2.6 S3 목업 PG 제어면
+
+실제 PG 관리 API가 아니라 장애 실험 전용이다. `x-admin-key`는 `api-admin`
+Secret의 `PG_STUB_ADMIN_KEY`와 일치해야 하며, 값이 비어 있으면 전부 403이다.
+
+```
+GET  /api/admin/pg-stub
+POST /api/admin/pg-stub
+```
+
+```json
+{ "action": "set", "delay_ms": 0, "fail_rate": 0.0 }
+{ "action": "clear" }
+```
+
+`set`은 두 값을 모두 요구하고 `clear`는 두 `cfg:pg:*` 키를 함께 삭제한다.
+`fail_rate` 범위는 0-1이며, 0보다 크면 `delay_ms`도 0보다 커야 한다. timeout
+실패인데 관측 지연은 0인 불가능한 증거를 만들지 않기 위해서다. `delay_ms`의
+코드 상한은 실측 기준이 아니라 무제한
+sleep을 막는 안전 경계이며, 실제 주입값은 `measurements.md`에서 확정하기 전까지
+문서와 스크립트에 기본값을 두지 않는다.
 
 ---
 
@@ -371,7 +399,10 @@ accepted chat
 | `bcast:{id}:meta` | 로컬 + Valkey | String(JSON) | 1s / 30s | 구현됨. 2.1 메타 응답 |
 | `stock:{sku}` | Valkey 전용 | Integer | **없음** | 구현됨. 캐시가 아니라 원본 |
 | `idem:{key}` | Valkey 전용 | String | 600s | 구현됨. 주문 멱등 1차 방어선 |
+| `idemstate:{key}` | Valkey 전용 | String | 600s | 구현됨. `PROCESSING` / `ACCEPTED`, 지연 중 거짓 202 방지 |
 | `order:{id}` | Valkey 전용 | String(JSON) | 600s | 구현됨. MySQL 기록 전 `ACCEPTED` 표식 |
+| `cfg:pg:delay_ms` | 로컬 + Valkey | Integer | 없음 | 구현됨. S3 목업 PG 동기 지연, 로컬 캐시 1s |
+| `cfg:pg:fail_rate` | 로컬 + Valkey | Number | 없음 | 구현됨. S3 목업 PG 결정론적 실패율, 로컬 캐시 1s |
 | `chat:{bcast}` | Pub/Sub 채널 | - | - | 구현됨. 3.7 |
 | `chat:rate:{bcast}:{user}` | Valkey 전용 | Integer | 60s | 구현됨. 사용자별 채팅 제한 |
 | `sku:{id}:detail` | 로컬 + Valkey | String(JSON) | 1s / 60s | 예정 |
@@ -423,11 +454,14 @@ SDK의 이벤트 이름은 쿠폰 도메인 기준이고 우리는 특가 판매
 | `DECR` 실패 (재고 부족) | `coupon.issue` | `result=FAILED`, `failure_code=SOLD_OUT` |
 | 특가 오픈 전 주문 시도 | `coupon.issue` | `result=FAILED`, `failure_code=NOT_ELIGIBLE` — SDK 열거에 `NOT_STARTED`가 없어 가장 가까운 값을 쓴다 |
 | 주문 접수 | `order.create` | `channel=LIVE` |
+| 목업 PG 호출 | `payment.process` | 성공·실패 모두. `pg_latency_ms`, 실패 시 `PG_TIMEOUT`·`PG_CALL` |
 | 워커 단계 실패 | `order.cancel` | `reason_code=INVENTORY_SHORTAGE` 등 |
 | 방송 진입·이탈 | `client.action` | `LIVE_ENTER` / `LIVE_LEAVE` |
 | 구매 버튼 누름 | `client.action` **2건** | `COUPON_BUTTON_CLICK` + `CHECKOUT_CLICK` |
 
-`payment.process`는 결제 연동이 범위 밖이라 발행하지 않는다.
+`payment.process`는 실제 결제 연동이 아니라 S3 목업 PG 호출 결과다. 같은
+`Idempotency-Key`는 같은 `payment_id`와 성공·실패 결과를 가져 재시도가 관측
+결과를 뒤집지 않는다. 이벤트 발행 실패는 주문 결과를 바꾸지 않는다.
 
 **구매 버튼 한 번이 클릭 둘을 낸다.** 우리는 특가와 주문이 한 요청이라 그 누름
 하나가 서버에서 `coupon.issue`와 `order.create` 둘을 만든다. 클릭을 하나만 내면
@@ -694,6 +728,13 @@ Agent Worker가 Signal Queue를 직접 소비하거나 Chat 데이터를 Datadog
 `agent.incident.v1` snapshot을 Agent Invocation Queue로 보낸다. 기계 판독 원본은
 [`agent-incident-v1.schema.json`](contracts/agent-incident-v1.schema.json)이다(D-055).
 
+snapshot은 `data_quality`, `severity_assessment`, `recovery_assessment`, `notification_policy`를
+필수로 가진다(D-080·D-081). 유효 표본과 freshness를 만족한 evidence만 역할을 채운다.
+severity 등급 상승은 material revision이며, `RESOLVED`는 두 필수 역할의 recovery와 지속 window를
+모두 요구한다. cooldown revision은 State에 남지만 Invocation을 억제하고, reopen window 안의 같은
+grouping key는 기존 Incident ID를 재사용한다. strong exception은 명시 허용된 무결성·보안
+invariant 위반에만 적용한다.
+
 경계별 계약은 다음과 같다.
 
 | 경계 | 허용 계약 | 의미 |
@@ -701,7 +742,7 @@ Agent Worker가 Signal Queue를 직접 소비하거나 Chat 데이터를 Datadog
 | Source Adapter 전 | source별 JSON | Datadog alert와 Chat Candidate는 달라도 됨 |
 | Signal Queue | `agent.trigger.v1` | 상관관계 전의 단일 관측 |
 | Incident State | revisioned Incident | 여러 trigger를 같은 사건에 귀속 |
-| Agent Invocation Queue | `agent.incident.v1` | Agent가 분석할 최신 사건 snapshot |
+| Agent Invocation Queue | 검증된 `agent.incident.v1` | `CORRELATED`인 material revision만 Agent가 분석할 snapshot으로 전달 |
 
 핵심 필드:
 
@@ -712,23 +753,32 @@ Agent Worker가 Signal Queue를 직접 소비하거나 Chat 데이터를 Datadog
 | `idempotency_key` | `incident:<incident_id>:revision:<revision>` |
 | `correlation.state` | `PROVISIONAL`, `CORRELATED`, `AMBIGUOUS` |
 | `correlation.strategy` | 현재는 규칙 기반 `DETERMINISTIC_V1`만 |
-| `normalized_context` | 환경·증상군·대상 surface/service/broadcast를 source와 독립적으로 표현 |
+| `normalized_context` | 환경·Incident family·증상군·대상 surface/service/broadcast를 source와 독립적으로 표현 |
+| `normalized_context.incident_family` | taxonomy의 통제 어휘. source mapping으로만 정하며 alert 본문에서 추론하지 않음 |
 | `normalized_context.environment` | 배포 `var.environment`의 canonical 값; Datadog `env` 불일치는 `SOURCE_ENVIRONMENT_MISMATCH`로 격리 |
+| `evidence_assessment` | Correlator가 trigger ID를 `primary`·`corroborating`·`context`로 분류하고 필수 역할 결측과 검증 상태를 기록 |
 | `signals` | 원문 없이 검증된 `agent.trigger.v1` 1-20개 |
-| `analysis_reason` | 최초 탐지, 첫 cross-source 증거, 심각도 변화, 모호성, 복구 증거 중 하나 |
+| `analysis_reason` | 최초 탐지, cross-source 증거, 새 evidence 역할, 심각도 변화, 모호성, 복구 증거 중 하나 |
 
-`CORRELATED`는 Chat과 Datadog trigger를 각각 하나 이상 포함해야 한다. 같은 환경, 같은
-증상군, 호환되는 대상 범위, correlation window 내 event time을 만족하는 OPEN Incident가
-정확히 하나일 때만 자동 병합한다. 후보가 없으면 새 `PROVISIONAL` Incident를 만들고,
+`CORRELATED`는 source 제품명이 아니라 family별 evidence 역할의 결합을 뜻한다. 현재
+`READ_PATH_DEGRADATION`은 Chat READ_PATH Candidate를 `primary`, 지정 Datadog Monitor를
+`corroborating`으로 mapping한다. 같은 source라도 아직 비어 있는 역할을 채우는 별도 trigger는
+material evidence로 인정하고, 같은 역할의 반복·renotify는 억제한다. `primary`와
+`corroborating`이 모두 있고 correlation 조건을 만족할 때 `verification_state=VERIFIED`다.
+같은 환경, 같은 family·증상군, 호환되는 대상 범위, correlation window 내 event time을
+만족하는 OPEN Incident가 정확히 하나일 때만 자동 병합한다. 후보가 없으면 새 `PROVISIONAL` Incident를 만들고,
 후보가 둘 이상이거나 비교 차원이 부족하면 `AMBIGUOUS`로 기록해 운영자 확인 전까지 강제
 병합하지 않는다. Datadog의 `env`가 Correlator 배포 environment와 다를 때도
 `AMBIGUOUS/SOURCE_ENVIRONMENT_MISMATCH`로 기록하며 namespace 별칭을 추측하지 않는다(D-070).
 
-Chat-first는 revision 1로 즉시 read-only 분석할 수 있다. Datadog이 늦게 도착하면 같은
-`incident_id`의 revision 2가 되고 `analysis_reason=CROSS_SOURCE_EVIDENCE_ADDED`가 된다.
-반대 순서도 같은 규칙이다. 같은 Incident의 Agent 실행은 직렬화하며 새 revision이 실행 중에
-도착하면 완료 후 최신 revision 한 건만 후속 실행한다. 이 규칙으로 사건은 하나로 유지하면서
-오래된 분석의 중복 실행과 이중 조치를 막는다.
+필수 evidence 역할이 덜 찬 revision 1은 `PROVISIONAL` Incident State로만 저장하고 Agent
+Invocation Queue에는 보내지 않는다. 필수 역할을 채우는 trigger가 늦게 도착하면 같은
+`incident_id`의 revision 2가 되고 `correlation.state=CORRELATED`가 된다.
+그중 `evidence_assessment.verification_state=VERIFIED`인 material revision만 처음 전달한다.
+`AMBIGUOUS` revision도 운영자 확인 전에는 전달하지 않는다(D-075, D-077).
+같은 Incident의 Agent 실행은 직렬화하며 새 material revision이 실행 중에 도착하면 완료 후
+최신 revision 한 건만 후속 실행한다. 이 규칙으로 단일 metric·단일 source가 Dify를 깨우지
+않으면서 사건 상태와 불확실성은 잃지 않는다.
 
 Generic Worker는 Incident State의 최신 revision을 확인한 뒤 Invocation snapshot 전체를
 Dify의 `custom_alert_json` 하나로 전달한다. 최신보다 오래된 Queue 메시지는 `SUPERSEDED`로
@@ -756,3 +806,11 @@ correlation window의 운영 숫자는 아직 계약하지 않는다. Phase 3C�
 
 위 넷은 **합의 없이 바꾸지 않는다.** 나머지(필드 추가, 새 엔드포인트)는
 기존 계약을 깨지 않는 한 자유롭게 늘린다.
+Datadog evidence의 `assessment_input`은 Correlator가 문자열을 재해석하지 않도록 수치 evidence의
+기계 판독 경계를 제공한다(D-079). `evidence_type`, `observed_at`, `sample_count`,
+`data_state`, `signal_strength`, `scope`, `measurements`를 정확히 포함한다. S1 propagation/block
+evidence에는 `broadcast_id`, S2 pod evidence에는 `pod`, `POD_VERSION`에는 `version`이 필수다.
+`NO_DATA`와 `STALE`은 0 또는 정상으로 변환하지 않는다.
+수치 하나로 환원할 수 없는 명시 Datadog composite monitor는 `COMPOSITE_CONDITION`을 사용한다.
+이 타입은 `sample_count>=1`, `PRESENT`, 빈 `measurements`를 허용하며, monitor ID mapping에 고정된
+조건 성립 자체만 evidence로 취급한다. 제목·본문을 LLM이나 Correlator가 다시 해석하지 않는다.

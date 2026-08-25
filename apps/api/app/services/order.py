@@ -11,9 +11,9 @@ import time
 from pathlib import Path
 
 import boto3
-from sqlalchemy import select
 from o2events import emit
 from o2events.core import ulid
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.errors import ApiError
@@ -22,6 +22,7 @@ from app.db.session import SessionLocal
 from app.db.valkey import valkey
 from app.models.order import Order
 from app.services import broadcast as broadcast_service
+from app.services import payment as payment_service
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +39,16 @@ _SCRIPT_PATH = Path(__file__).with_name("reserve_stock.lua")
 # 죽어서 시험 수집조차 되지 않는다.
 _reserve = valkey.register_script(_SCRIPT_PATH.read_text(encoding="utf-8"))
 
-_sqs = boto3.client("sqs", region_name=settings.AWS_REGION) if settings.SQS_ORDER_QUEUE_URL else None
+_sqs = (
+    boto3.client("sqs", region_name=settings.AWS_REGION)
+    if settings.SQS_ORDER_QUEUE_URL
+    else None
+)
 
 
-def _publish(order_id: str, req, idem_key: str, user_key: str, unit_price: int, amount: int) -> None:
+def _publish(
+    order_id: str, req, idem_key: str, user_key: str, unit_price: int, amount: int
+) -> None:
     """주문 확정 요청을 큐에 넣는다. 실제 기록은 order-worker 가 한다.
 
     idem_key 를 메시지에 실어 보낸다. SQS Standard 는 최소 1회 전달이라
@@ -50,7 +57,9 @@ def _publish(order_id: str, req, idem_key: str, user_key: str, unit_price: int, 
     """
     if _sqs is None:
         # 로컬에는 큐가 없다. 발행을 건너뛰되 조용히 넘어가지는 않는다.
-        logger.warning("SQS_ORDER_QUEUE_URL 이 비어 있어 발행을 건너뜁니다: %s", order_id)
+        logger.warning(
+            "SQS_ORDER_QUEUE_URL 이 비어 있어 발행을 건너뜁니다: %s", order_id
+        )
         return
 
     _sqs.send_message(
@@ -72,7 +81,11 @@ def _publish(order_id: str, req, idem_key: str, user_key: str, unit_price: int, 
     )
 
 
-def _mark_accepted(order_id: str, req) -> None:
+def _idem_state_key(idem_key: str) -> str:
+    return f"idemstate:{idem_key}"
+
+
+def _mark_accepted(order_id: str, req, idem_key: str) -> None:
     """접수 상태를 조회할 수 있게 표식을 남긴다.
 
     응답 캐시가 아니다. 202 를 받은 직후에는 MySQL 에 아직 행이 없고
@@ -88,6 +101,7 @@ def _mark_accepted(order_id: str, req) -> None:
             json.dumps({"sku_id": req.sku_id, "qty": req.qty, "state": "ACCEPTED"}),
             ex=IDEM_TTL_SECONDS,
         )
+        valkey.set(_idem_state_key(idem_key), "ACCEPTED", ex=IDEM_TTL_SECONDS)
     except Exception:
         # 실패해도 주문 자체는 성사됐다. 조회가 잠깐 404 가 될 뿐이다.
         logger.exception("접수 표식 저장 실패: %s", order_id)
@@ -129,7 +143,7 @@ def get_order(order_id: str) -> dict | None:
 
 
 def _compensate(idem_key: str, sku_id: str, qty: int) -> None:
-    """발행이 실패했을 때 예약을 되돌린다.
+    """결제 또는 SQS 발행이 실패했을 때 예약을 되돌린다.
 
     되돌리지 않으면 재고는 줄었는데 주문이 없는 상태가 남는다. 멱등키까지
     지워야 같은 키의 재시도가 처음부터 다시 시도할 수 있다.
@@ -139,10 +153,12 @@ def _compensate(idem_key: str, sku_id: str, qty: int) -> None:
     영속화 경로와 배치는 미구현이므로 알려진 정합성 구멍이다.
     """
     try:
-        valkey.delete(f"idem:{idem_key}")
+        valkey.delete(f"idem:{idem_key}", _idem_state_key(idem_key))
         valkey.incrby(f"stock:{sku_id}", qty)
     except Exception:
-        logger.exception("예약 복원 실패 — 재고가 묶인 채 남는다: sku=%s qty=%s", sku_id, qty)
+        logger.exception(
+            "예약 복원 실패 — 재고가 묶인 채 남는다: sku=%s qty=%s", sku_id, qty
+        )
 
 
 def create_order(req, idem_key: str, user_key: str) -> dict:
@@ -153,7 +169,9 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
     # 꺼내므로 사용자가 본 것과 서버가 판정한 것이 어긋나지 않는다.
     product = broadcast_service.get_product(req.broadcast_id, req.sku_id)
     if product is None:
-        _emit_issue(req, "FAILED", "NOT_ELIGIBLE", int((time.perf_counter() - started) * 1000))
+        _emit_issue(
+            req, "FAILED", "NOT_ELIGIBLE", int((time.perf_counter() - started) * 1000)
+        )
         raise ApiError("INVALID_REQUEST", "편성에 없는 상품입니다")
 
     # 특가가 열리기 전에는 팔지 않는다 (contracts.md 2.1).
@@ -173,15 +191,29 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
     amount = unit_price * req.qty
 
     code, value = _reserve(
-        keys=[f"idem:{idem_key}", f"stock:{req.sku_id}"],
+        keys=[
+            f"idem:{idem_key}",
+            f"stock:{req.sku_id}",
+            _idem_state_key(idem_key),
+        ],
         args=[order_id, req.qty, IDEM_TTL_SECONDS],
     )
     code = int(code)
     value = value.decode() if isinstance(value, bytes) else value
 
     if code == 1:
-        # 같은 멱등키의 재요청. 재고를 다시 깎지 않고 첫 응답을 그대로 준다.
+        # PG 지연 동안 같은 멱등키가 다시 오면 아직 첫 응답이 확정되지 않았다.
+        # 202를 먼저 주면 원 요청이 결제 실패로 끝나도 성공으로 보이는 거짓 응답이
+        # 된다. 완료 뒤 재시도만 기존 ACCEPTED 응답을 그대로 돌려준다.
         telemetry.retry("order.create", "IDEMPOTENT_REPLAY")
+        state = valkey.get(_idem_state_key(idem_key))
+        # _mark_accepted는 공개 조회 표식을 먼저 쓴다. 그 직후 파드가 죽어 상태만
+        # PROCESSING으로 남은 좁은 창에서는 표식이 완료 증거다.
+        accepted_marker = (
+            valkey.get(f"order:{value}") if state == "PROCESSING" else None
+        )
+        if state == "PROCESSING" and not accepted_marker:
+            raise ApiError("REQUEST_IN_PROGRESS", "같은 주문 요청을 처리하고 있습니다")
         return {"order_id": value, "state": "ACCEPTED"}
 
     latency_ms = int((time.perf_counter() - started) * 1000)
@@ -199,6 +231,31 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
         _emit_issue(req, "FAILED", "INTERNAL_ERROR", latency_ms)
         raise ApiError("INTERNAL_ERROR", "주문을 처리할 수 없습니다")
 
+    # 재고를 원자적으로 예약한 뒤 api 동기 경로에서 목업 PG를 호출한다.
+    # worker에 두면 결제 지연이 SQS backlog로 보여 queue_backlog로 오진한다.
+    try:
+        payment_result = payment_service.process_payment(
+            order_id=order_id,
+            idempotency_key=idem_key,
+            amount=amount,
+        )
+    except Exception:
+        # 목업 코드 자체의 결함이 재고 예약을 남기면 시나리오를 꺼도 주문이 계속
+        # 실패한다. 외부 PG 실패와 내부 스텁 실패를 구분해 로그를 남기고 원복한다.
+        logger.exception("목업 PG 호출 실패: %s", order_id)
+        telemetry.failure("order.create", "PAYMENT_STUB_FAILED")
+        _compensate(idem_key, req.sku_id, req.qty)
+        raise ApiError("INTERNAL_ERROR", "주문을 처리할 수 없습니다")
+    if not payment_result.succeeded:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        telemetry.business_event("order.create", "failed")
+        telemetry.failure("order.create", "PAYMENT_FAILED")
+        # COUPON_FAILURE에는 PAYMENT_FAILED가 없으므로 계약 안의 INTERNAL_ERROR로
+        # 구매 시도 실패를 남기고, 원인 증거는 payment.process가 맡는다.
+        _emit_issue(req, "FAILED", "INTERNAL_ERROR", latency_ms)
+        _compensate(idem_key, req.sku_id, req.qty)
+        raise ApiError("PAYMENT_FAILED", "결제 게이트웨이 응답을 확인할 수 없습니다")
+
     try:
         _publish(order_id, req, idem_key, user_key, unit_price, amount)
     except Exception:
@@ -207,7 +264,7 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
         _compensate(idem_key, req.sku_id, req.qty)
         raise ApiError("INTERNAL_ERROR", "주문을 접수하지 못했습니다")
 
-    _mark_accepted(order_id, req)
+    _mark_accepted(order_id, req, idem_key)
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     _emit_issue(req, "SUCCESS", None, latency_ms, remaining=int(value))
@@ -222,7 +279,14 @@ def create_order(req, idem_key: str, user_key: str) -> dict:
 #
 # 발행 실패가 사용자 요청을 실패시키면 안 되므로 전부 감싼다.
 
-def _emit_issue(req, result: str, failure_code: str | None, latency_ms: int, remaining: int | None = None) -> None:
+
+def _emit_issue(
+    req,
+    result: str,
+    failure_code: str | None,
+    latency_ms: int,
+    remaining: int | None = None,
+) -> None:
     """SDK 의 이벤트 이름은 쿠폰 도메인 기준이고 우리는 특가 판매다.
     대응은 contracts.md 5.2 가 정한다.
     """

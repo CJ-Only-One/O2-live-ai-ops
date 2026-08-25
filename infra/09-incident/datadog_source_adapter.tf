@@ -78,6 +78,7 @@ resource "aws_lambda_function" "datadog_source_adapter" {
       DATADOG_SOURCE_ADAPTER_EXECUTION_ENABLED   = tostring(var.datadog_source_adapter_execution_enabled)
       DATADOG_SOURCE_ADAPTER_ALLOWED_MONITOR_IDS = join(",", sort(tolist(var.datadog_source_adapter_allowed_monitor_ids)))
       DATADOG_SOURCE_ADAPTER_NOT_BEFORE_EPOCH    = tostring(var.datadog_source_adapter_not_before_epoch)
+      INCIDENT_SHADOW_MODE                       = tostring(var.incident_shadow_mode)
       DATADOG_SOURCE_ADAPTER_SECRET_NAME         = var.alert_secret_name_o2
       AGENT_TRIGGER_QUEUE_URL                    = aws_sqs_queue.agent_entry.url
     }
@@ -96,7 +97,8 @@ resource "aws_lambda_function" "datadog_source_adapter" {
           length(var.datadog_source_adapter_allowed_monitor_ids) == 0 &&
         var.datadog_source_adapter_not_before_epoch == 4102444800) ||
         (var.datadog_source_adapter_execution_enabled &&
-          length(var.datadog_source_adapter_allowed_monitor_ids) == 1 &&
+          ((var.incident_shadow_mode && length(var.datadog_source_adapter_allowed_monitor_ids) == 1) ||
+          (!var.incident_shadow_mode && var.incident_operational_handoff_approved && length(var.datadog_source_adapter_allowed_monitor_ids) >= 1)) &&
         var.datadog_source_adapter_not_before_epoch < 4102444800)
       )
       error_message = "Datadog Source Adapter는 disabled+empty+2100 cutoff 또는 enabled+합성 monitor ID 1개+명시 cutoff만 허용한다."
@@ -139,6 +141,6 @@ resource "aws_cloudwatch_metric_alarm" "datadog_source_adapter_failures" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
 
-  alarm_actions = [aws_sns_topic.alert_relay_alarm.arn]
-  ok_actions    = [aws_sns_topic.alert_relay_alarm.arn]
+  alarm_actions = [aws_sns_topic.incident_alarm.arn]
+  ok_actions    = [aws_sns_topic.incident_alarm.arn]
 }

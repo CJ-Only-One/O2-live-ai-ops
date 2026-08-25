@@ -116,7 +116,7 @@ agent_packages:
 
           - deploy_defect — a recent deployment introduced the regression
 
-          - pg_external_failure — external Postgres payment DB is slow or unreachable
+          - pg_external_failure — external payment gateway (PG), not PostgreSQL, is slow or unreachable
 
           - traffic_spike_overload — general rise in request rate across the whole service (NOT one broadcast channel''s chat volume — that''s chat_channel_overload)
 
@@ -1345,6 +1345,45 @@ workflow:
         isInIteration: false
         isInLoop: true
         loop_id: main_loop
+        sourceType: http-request
+        targetType: http-request
+      id: hot_propagation_post-source-hot_block_post-o2hot5
+      source: hot_propagation_post
+      sourceHandle: source
+      target: hot_block_post
+      targetHandle: target
+      type: custom
+      zIndex: 1001
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        sourceType: http-request
+        targetType: http-request
+      id: hot_block_post-source-read_path_status_post-o2hot6
+      source: hot_block_post
+      sourceHandle: source
+      target: read_path_status_post
+      targetHandle: target
+      type: custom
+      zIndex: 1001
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        sourceType: http-request
+        targetType: code
+      id: read_path_status_post-source-verification_inputs_merge-o2hot7
+      source: read_path_status_post
+      sourceHandle: source
+      target: verification_inputs_merge
+      targetHandle: target
+      type: custom
+      zIndex: 1001
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
         sourceType: code
         targetType: if-else
       id: param_resolver-source-verdict_router-port1
@@ -1863,7 +1902,7 @@ workflow:
 
           - deploy_defect — a recent deployment introduced the regression
 
-          - pg_external_failure — external Postgres payment DB is slow or unreachable
+          - pg_external_failure — external payment gateway (PG), not PostgreSQL, is slow or unreachable
 
           - traffic_spike_overload — general rise in request rate across the whole service (NOT one broadcast channel''s chat volume — that''s chat_channel_overload)
 
@@ -2913,8 +2952,8 @@ workflow:
         ssl_verify: true
         timeout:
           max_connect_timeout: 10
-          max_read_timeout: 20
           max_write_timeout: 10
+          max_read_timeout: 70
         title: 19-D. Action Executor (HTTP, x-api-key)
         type: http-request
         url: '{{#resolve_target.resolved_url#}}'
@@ -3157,9 +3196,9 @@ workflow:
       width: 241
       zIndex: 1001
     - data:
-        code: "import json\n\ndef main(action_result_json: str) -> dict:\n    # Mock path deliberately does not sleep inside Dify sandbox. Real Action Handler/verification adapter should enforce stabilization/polling.\n    try:a=json.loads(action_result_json or '{}')\n    except Exception:a={}\n    return {'stabilization_json':json.dumps({'ready':True,'action_id':a.get('action_id',''),'note':'mock/no-blocking-wait'},ensure_ascii=False,separators=(',',':'))}\n"
+        code: "import json\n\ndef main(action_result_json: str) -> dict:\n    # REAL scale 조치는 Action Handler 응답 전에 60초 안정화를 완료한다. 이 노드는\n    # 그 계약을 검증하고, mock 경로는 준비되지 않은 것으로 표시한다.\n    try:a=json.loads(action_result_json or '{}')\n    except Exception:a={}\n    real=a.get('mode') == 'REAL' and a.get('status') == 'SUCCESS'\n    return {'stabilization_json':json.dumps({'ready':real,'action_id':a.get('action_id',''),'owner':'action-handler' if real else 'none'},ensure_ascii=False,separators=(',',':'))}\n"
         code_language: python3
-        desc: draw.io의 ≤30s Wait 의미를 유지하되 Dify Code에서 sleep하지 않음. 실제 운영은 Action Handler/Verification Adapter가 stabilization/polling을 담당.
+        desc: 실제 S2 Scale Executor가 응답 전 60초 안정화를 소유한다. Dify Code에서는 sleep하지 않고 REAL/SUCCESS 계약만 기록한다.
         isInIteration: false
         isInLoop: true
         loop_id: main_loop
@@ -3314,6 +3353,52 @@ workflow:
         y: 250
       positionAbsolute:
         x: 11880
+        y: 410
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 260
+      zIndex: 1001
+    - data:
+        code: "import json\n\ndef _logical_value(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    return d.get('value') if d.get('status') == 'OK' else None\n\ndef _degraded_active(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    v=d.get('read_path_degraded_active')\n    return v if isinstance(v,bool) else None\n\ndef main(warm_body: str, propagation_body: str, block_body: str, degraded_body: str) -> dict:\n    try: warm=json.loads(warm_body or '{}')\n    except Exception: warm={}\n    latest=warm.get('latest')\n    if not isinstance(latest,dict):\n        latest={}\n        warm['latest']=latest\n    latest['chat_propagation_p95_ms']=_logical_value(propagation_body)\n    latest['channel_block_rate']=_logical_value(block_body)\n    latest['read_path_degraded_active']=_degraded_active(degraded_body)\n    return {'merged_post_metrics_body':json.dumps(warm,ensure_ascii=False,separators=(',',':'))}\n"
+        code_language: python3
+        desc: Warm 현재 지표에 Datadog 전파 p95·채널 차단률과 Valkey 원본 degraded 상태를 결합한다. 결측은 0이 아니라 None으로 유지한다.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        outputs:
+          merged_post_metrics_body:
+            children: null
+            type: string
+        selected: false
+        title: 22-J. CODE — Verification Inputs Merge
+        type: code
+        variables:
+        - value_selector:
+          - warm_post_metrics
+          - body
+          variable: warm_body
+        - value_selector:
+          - hot_propagation_post
+          - body
+          variable: propagation_body
+        - value_selector:
+          - hot_block_post
+          - body
+          variable: block_body
+        - value_selector:
+          - read_path_status_post
+          - body
+          variable: degraded_body
+      height: 110
+      id: verification_inputs_merge
+      parentId: main_loop
+      position:
+        x: 12500
+        y: 250
+      positionAbsolute:
+        x: 13800
         y: 410
       selected: false
       sourcePosition: right
@@ -4090,6 +4175,139 @@ workflow:
         y: 250
       positionAbsolute:
         x: 12800
+        y: 410
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 1001
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"metric\": \"chat_propagation_p95_ms\",\n  \"service\": \"chat-gateway\",\n  \"window_seconds\": 300\n}"
+          type: json
+        desc: S1 복구 판정용 서버 측 WebSocket 전파 p95. o2.chat.propagation distribution을 Hot logical metric Adapter로 읽는다.
+        headers: 'Content-Type: application/json
+
+          X-O2-Proxy-Key: {{#env.O2_HOT_PROXY_KEY#}}'
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 500
+        selected: false
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 20
+          max_write_timeout: 10
+        title: 22-G. Hot Path — Chat Propagation p95
+        type: http-request
+        url: '{{#env.HOT_PROXY_URL#}}/v1/hot/datadog/metric'
+        variables: []
+      height: 142
+      id: hot_propagation_post
+      parentId: main_loop
+      position:
+        x: 11750
+        y: 250
+      positionAbsolute:
+        x: 13050
+        y: 410
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 1001
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"metric\": \"block_rate\",\n  \"service\": \"chat-gateway\",\n  \"window_seconds\": 300\n}"
+          type: json
+        desc: S1 정상 사용자 차단률. Datadog이 태그 값을 소문자로 정규화하므로 catalog가 channel_limited를 사용한다.
+        headers: 'Content-Type: application/json
+
+          X-O2-Proxy-Key: {{#env.O2_HOT_PROXY_KEY#}}'
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 500
+        selected: false
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 20
+          max_write_timeout: 10
+        title: 22-H. Hot Path — Channel Block Rate
+        type: http-request
+        url: '{{#env.HOT_PROXY_URL#}}/v1/hot/datadog/metric'
+        variables: []
+      height: 142
+      id: hot_block_post
+      parentId: main_loop
+      position:
+        x: 12000
+        y: 250
+      positionAbsolute:
+        x: 13300
+        y: 410
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 1001
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: []
+          type: none
+        desc: S3 조치 상태를 Datadog에서 추정하지 않고 Valkey 원본을 읽는 인증 GET으로 확인한다.
+        headers: 'x-admin-key: {{#env.READ_PATH_DEGRADED_ADMIN_KEY#}}'
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        method: get
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 500
+        selected: false
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 20
+          max_write_timeout: 10
+        title: 22-I. API — Read Path Degraded State
+        type: http-request
+        url: '{{#env.API_ADMIN_URL#}}?broadcast_id={{#normalize.broadcast_id#}}'
+        variables: []
+      height: 142
+      id: read_path_status_post
+      parentId: main_loop
+      position:
+        x: 12250
+        y: 250
+      positionAbsolute:
+        x: 13550
         y: 410
       selected: false
       sourcePosition: right

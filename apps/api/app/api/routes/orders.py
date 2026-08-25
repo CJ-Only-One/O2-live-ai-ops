@@ -17,7 +17,12 @@ router = APIRouter()
     response_model=OrderAccepted,
     status_code=202,
     responses=openapi_errors(
-        "SOLD_OUT", "NOT_STARTED", "INVALID_REQUEST", "INTERNAL_ERROR"
+        "SOLD_OUT",
+        "NOT_STARTED",
+        "REQUEST_IN_PROGRESS",
+        "PAYMENT_FAILED",
+        "INVALID_REQUEST",
+        "INTERNAL_ERROR",
     ),
 )
 def create_order(

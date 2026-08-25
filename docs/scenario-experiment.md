@@ -1,8 +1,9 @@
 # 장애 시나리오 실험 — 복구 기준과 주입 설정
 
-세 시나리오(채팅 총량 · 느린 파드 · 사람/봇 미확정)의 **흐름과, 재현 가능하게
-돌리고 판정하기 위한 규칙**이다. 0절이 시나리오가 무엇인지, 1~3절이 어떻게
-판정하고 무엇을 주입하는지다.
+세 시나리오(채팅 총량 · 느린 파드 · 외부 결제 PG 장애)의 **흐름과, 재현 가능하게
+돌리고 판정하기 위한 규칙**이다. S3는 한 인시던트 안에서 조치를 반복하는 시나리오가
+아니라, **첫 실행 실패 → 사람의 해결·지식화 → 동일 장애 2차 실행 성공**을 한 세트로
+검증한다. 0절이 시나리오가 무엇인지, 1~3절이 어떻게 판정하고 무엇을 주입하는지다.
 
 > 발표 구성·시연 순서·슬랙 메시지 문안은 저장소 밖 기획 문서에 있다.
 > **여기에는 구현과 실험에 필요한 것만 둔다.**
@@ -25,20 +26,26 @@
 
 ## 0. 시나리오 셋과 게이트 셋
 
-### 0.1 세 갈래 — 상태 머신이 도달하는 종착역
+### 0.1 세 갈래 — 시나리오가 보여주는 세 운영 판단
 
-시나리오 셋은 **상태 머신이 실제로 도달하는 세 종착 상태**에 일대일로 묶인다.
-다른 끝은 없다.
+S1·S2는 한 번의 Agent 실행으로 끝난다. S3만 두 번의 별도 실행을 비교한다.
+S3의 2차 실행은 1차 실행의 내부 재시도나 같은 조치 반복이 아니라, 사람이 검증된
+History와 Runbook을 만든 뒤 **동일 장애를 다시 주입해 새 인시던트로 호출**하는 것이다.
 
 | 경로 | 종착 | 사람이 나오나 | 시나리오 |
 |---|---|---|---|
 | **승인 → 해결** | `RESOLVED` | 실행 **전에** 승인 1회 | S1 |
 | **재진단 → 해결** | `RESOLVED` | **안 나옴** | S2 |
-| **소진 → 실패 보고** | `RETRY_LIMIT_EXCEEDED` | 다 해본 **뒤에** 인계 | S3 |
+| **지식 없음 → 실패 / 지식화 후 재실행 → 해결** | 1차 `ESCALATED`<br>2차 `RESOLVED` | 1차 뒤 수동 해결·검증<br>2차 실행 전 승인 | S3 |
 
-**사람을 부르는 지점은 Guardrail 하나뿐이다.** 카탈로그 등급을 조회해 결정론적으로 정한다 —
+**조치 실행 전에 승인을 받는 지점은 Guardrail 하나뿐이다.** 카탈로그 등급을 조회해 결정론적으로 정한다 —
 `L1`/`L2` 는 `AUTO`, `L3` 는 `APPROVAL`, 카탈로그에 없으면 `DENY`.
-**"물어봐야 하나" 를 LLM 이 판단하지 않는다.**
+**"물어봐야 하나" 를 LLM 이 판단하지 않는다.** 다만 이것은 현재 승인 라우팅
+규칙이고 L1/L2/L3 부여 척도와 KNOB precondition 집행은 아직 없다. 실제 상태는
+`runbook-catalog.md`와 D-079를 본다.
+
+S3 1차의 `ESCALATED`는 승인 요청이 아니라, 실행 가능한 active Runbook이 없어서
+종료한 뒤 사람에게 넘기는 **실패 인계**다.
 
 | 버튼 | 그 다음 | 사람이 기여한 것 |
 |---|---|---|
@@ -107,7 +114,7 @@ S2 가 그 경우다 — 처음 보는 장애인데 증상 기반 런북으로 �
 |---|---|---|---|---|---|
 | **S1** | Datadog | `chat_channel_overload` | 채팅 총량이 채널 감당 선 초과 → 전파 지연 | 채널 총량 제한 (`L3`) | **승인 → 해결** |
 | **S2** | Datadog | `pod_resource_exhaustion`<br>→ `pod_load_skew` | Service 에 붙은 파드 하나만 CPU 조임 → 서비스 꼬리 지연 | 증설 → 미달 → 격리 (둘 다 `L1`/`L2`) | **재진단 → 해결** |
-| **S3** | **채팅** | `pg_external_failure` | 외부 결제 PG 지연 → 주문 타임아웃 | 커넥션 풀 · 타임아웃 조정 (전부 증상 완화) | **소진 → 실패 보고** |
+| **S3** | **채팅** | `pg_external_failure` | 외부 PG-A 지연 → 주문 타임아웃 | 1차: 실행 안 함<br>2차: PG-A → PG-B 전환 (`L3`) | **1차 실패 → 지식화 → 2차 해결** |
 
 **인시던트 단위가 셋 다 다르다.** 이것이 곧 `Deduped` 병합 키다.
 
@@ -123,11 +130,12 @@ S2 가 그 경우다 — 처음 보는 장애인데 증상 기반 런북으로 �
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Detected: 알림 또는 운영자 트리거
+    [*] --> Detected: Datadog 알림 또는 채팅 Candidate
     Detected --> Deduped: 진행 중 사건과 병합 확인
     Deduped --> Analyzing
     Analyzing --> InfoGate: 가설이 상충
     Analyzing --> Planned: 가설 하나
+    Analyzing --> Escalated: 원인 확인 · 실행 가능한 active Runbook 없음
 
     InfoGate --> Analyzing: 실험 결과 · 운영자 답변
     InfoGate --> HoldAction: 모르겠다 → 양쪽에 안전한 조치
@@ -176,9 +184,33 @@ stateDiagram-v2
 
 ### 0.5 S1 흐름 — 승인 → 해결
 
+**Phase 1. 장애 탐지**
+
+- 다수 시청자가 개인 Rate Limit 아래에서 동시에 발화한다.
+- 방송 전체 처리량이 채널 용량을 넘어 Datadog 채팅 전파 p95 알림으로 Agent가 진입한다.
+- `service + broadcast_id` 범위에서 `chat_channel_overload`를 진단한다.
+
+**Phase 2. Runbook 조회와 사전 검사**
+
+- 유사 History와 active 전용 Runbook을 조회한다.
+- 대상 방송·적용할 고정 제한값·정상 사용자 영향·원복 방법을 확인한다.
+- 정상 사용자 메시지도 일부 제한될 수 있으므로 `L3`로 결정론적으로 분류한다.
+
+**Phase 3. 승인과 실행**
+
+- 운영자에게 방치 시 피해와 제한 시 피해를 함께 제시한다.
+- 승인받은 뒤 해당 `broadcast_id`의 채널 총량만 제한한다.
+- 최초 Spike는 이미 지났으므로 이후 지속 Plateau를 완화 대상으로 삼는다.
+
+**Phase 4. 복구 검증과 정리**
+
+- 적용 시각 이후 채팅 전파 p95 회복과 정상 사용자 차단률 상한을 함께 확인한다.
+- 안정화 후 채널 제한을 해제하고, 해제 후 지연이 재발하지 않는지 다시 확인한다.
+- 실행값·승인자·사용자 영향·복구 결과를 History에 기록한다.
+
 ```mermaid
 flowchart TB
-    A["Datadog 채팅 인입 급증 알림"] --> B{"유사 과거 사례"}
+    A["Datadog 채팅 전파 p95 알림"] --> B{"유사 과거 사례"}
     B -->|"있음 · 알려진 장애"| C["전용 런북 조회<br/>조치 = 채널 총량 제한"]
     C --> D{"Precheck<br/>user_effect_reversible"}
     D -->|"아니오 · 예산 밖"| E["대가 게이트<br/>조치 시 피해 · 방치 시 피해"]
@@ -195,6 +227,35 @@ flowchart TB
 끝나 있다. 조치가 낮추는 것은 **지속 고원**이다. 그래서 검증도 적용 시각 이후만 센다.
 
 ### 0.6 S2 흐름 — 재진단 → 해결 (사람 없음)
+
+**Phase 1. 장애 탐지와 1차 진단**
+
+- CPU limit만 낮은 `api-canary`가 정상 API Service에 붙은 상태에서 읽기 부하를 건다.
+- Datadog 서비스 p95 알림으로 Agent가 진입하고, 동일 History가 없어 처음 보는 장애로 분류한다.
+- 서비스 전체 지표만 보고 API 처리 용량 부족을 1차 가설로 세운다.
+
+**Phase 2. 범용 Runbook 1회 실행**
+
+- `RB-API-LATENCY-001`의 가역성·변경 상한·노드 여유를 사전 검사한다.
+- 정상 API Deployment를 한 단계 증설하고 조치 직전 Baseline을 저장한다.
+
+**Phase 3. 검증 실패와 재진단**
+
+- p50은 개선되지만 p95는 미달인 것을 확인한다.
+- 같은 Scale-out을 반복하지 않고, 무해한 증설분은 재진단 동안만 유지한다.
+- 파드별 지연·CPU 사용량·resource 설정을 비교해 `api-canary`만 이상치임을 찾는다.
+- 진단을 전체 용량 부족에서 `pod_load_skew`로 수정한다.
+
+**Phase 4. 격리와 최종 검증**
+
+- Canary를 빼도 정상 Pod 용량이 안전 최소 이상인지 검사한 뒤 `api-canary`를 격리한다.
+- 서비스 p95가 canary 투입 전으로 돌아오는지 확인하고, 1차 증설분을 원복한다.
+- 원복 후에도 p95가 유지돼야 `RESOLVED`로 종료한다.
+
+**Phase 5. 운영 지식화**
+
+- 원인·1차 조치·검증 실패·격리·원복 증거를 해결 사례로 기록한다.
+- `RB-API-POD-RESOURCE-SKEW`는 `draft` 후보로만 만들고 별도 검증·승인 전에는 실행하지 않는다.
 
 ```mermaid
 flowchart TB
@@ -227,44 +288,92 @@ flowchart TB
 전용 런북의 활성화만 별도 검증 완료 후에 가능하다. 다음 재발의 `알려진 장애`
 분류는 전용 런북 유무가 아니라 과거 원인 사례의 사람 검증 결과로 독립 판정한다.
 
-### 0.7 S3 흐름 — 소진 → 실패 보고 (채팅 진입)
+### 0.7 S3 흐름 — 1차 실패 → 지식화 → 동일 장애 2차 실행 성공 (채팅 진입)
+
+**Phase 1. 최초 장애 탐지와 진단**
+
+- 시청자 결제 불만의 파생 신호로 Datadog보다 먼저 Agent가 진입한다.
+- Athena에서 `payment.process` 원시 이벤트를 조회한다.
+- `pg_provider=PG-A`, `failure_code=PG_TIMEOUT`, `failure_stage=PG_CALL`,
+  `pg_latency_ms` 증가와 정상 클러스터 자원을 근거로 `pg_external_failure`를 진단한다.
+
+**Phase 2. 1차 Agent 실행 실패**
+
+- 유사한 verified History와 active PG Failover Runbook이 없다.
+- PG-B 안전성·전환 조건·멱등성·원복 방법을 검증하지 않았으므로 임의 전환하지 않는다.
+- 원인과 필요한 후속 조치를 보고하고 `ESCALATED`로 종료한다.
+- 이것은 조치 실패 후 같은 절차를 반복하는 `재시도`가 아니라 **실행 가능한 지식이 없어 멈춘 것**이다.
+
+**Phase 3. 사람 해결과 운영 지식화**
+
+- 운영자가 PG-A에서 PG-B로 수동 전환하고 결제 정상화를 확인한다.
+- 해결 사례를 verified History로 기록한다.
+- PG 전환·원복·주문 멱등성·정상 상태 오적용·실패 처리를 별도 검증한다.
+- 검증을 통과한 PG Failover Runbook만 운영자 승인 후 `draft → active`로 승격한다.
+
+**Phase 4. 동일 장애 재현과 Agent 2차 실행**
+
+- 환경을 초기화한 뒤 같은 PG-A 장애 조건을 다시 주입해 새 인시던트로 Agent를 호출한다.
+- Dify의 History 유무 분기에서 verified PG-A 장애 사례를 찾는다.
+- 이는 1차 인시던트의 내부 retry가 아니라 **지식 개입 전후를 비교하는 별도 실행**이다.
+
+**Phase 5. 현재 증거 재검증**
+
+- 과거 History를 현재 장애의 사실이나 실행 권한으로 그대로 믿지 않는다.
+- 현재 이벤트에서도 `PG-A + PG_TIMEOUT + PG_CALL + pg_latency_ms 증가`가 일치하는지 다시 확인한다.
+- 증거가 다르면 과거 Runbook을 실행하지 않고 일반 진단으로 돌아간다.
+
+**Phase 6. 승인과 PG Failover 실행**
+
+- History에 연결된 active PG Failover Runbook과 PG-B 상태·전환 조건을 조회한다.
+- 결제 경로 전환은 blast radius가 큰 `L3` 조치이므로 사람 승인을 받는다.
+- Agent가 결제 경로를 PG-A에서 PG-B로 전환한다. PG-A 장애 자체는 유지한다.
+
+**Phase 7. 2차 실행 복구 검증**
+
+- PG-B 결제 성공 이벤트, 주문 실패율 감소, 결제 p95 회복을 확인한다.
+- 채팅 결제 불만 감소까지 확인해 사용자 영향도 함께 회복됐는지 판정한다.
+- 지표와 사용자 영향이 모두 회복되면 2차 실행을 `RESOLVED`로 종료한다.
 
 ```mermaid
 flowchart TB
-    A["시청자 채팅 파생 신호<br/>본문 없음 · 발화량 · 고유 사용자 · 중복"] --> B["Incident Candidate"]
-    B --> C["agent.trigger.v1"]
-    D["Datadog 알림<br/>지속 조건 때문에 늦게 도착"] -.->|"agent.trigger.v1"| E
-    C --> E["Incident Correlator<br/>Deduped 병합"]
-    E --> F["조사 — 주문 실패율 상승<br/>클러스터 자원은 정상"]
-    F --> G["query_athena<br/>payment_process 원시 이벤트"]
-    G --> H["pg_external_failure<br/>failure_code=PG_TIMEOUT<br/>pg_latency_ms 이 지연의 대부분"]
-    H --> I["조치 1 — 커넥션 풀 확대"]
-    I --> J{"success_criteria"}
-    J -->|"미달"| K["조치 2 — 타임아웃 · 재시도 조정"]
-    K --> L{"success_criteria"}
-    L -->|"미달"| M["후보 소진<br/>CANDIDATES_EXHAUSTED"]
-    M --> N["재진단 — 증거가 그대로라 같은 결론"]
-    N --> O["ACTIONS_EXHAUSTED_SAME_RCA<br/>즉시 종료"]
-    O --> P["조치 전부 원복 → 실패 보고"]
+    A["채팅 파생 신호<br/>본문 없음"] --> B["Incident Correlator<br/>Datadog 후속 증거 병합"]
+    B --> C["Dify History 분기"]
+    C -->|"1차 · verified History 없음"| D["Athena 현재 이벤트 조회"]
+    D --> E["PG-A 외부 장애 진단"]
+    E --> F["active Failover Runbook 없음"]
+    F --> G["ESCALATED<br/>진단·필요 조치 보고"]
+    G --> H["운영자 PG-B 수동 전환"]
+    H --> I["History verified<br/>Runbook 검증 · active 승격"]
+    I --> J["환경 초기화<br/>동일 PG-A 장애 재주입"]
+    J --> K["Agent 2차 실행"]
+    K --> L["Dify History 분기<br/>verified 사례 있음"]
+    L --> M["현재 증거 재검증"]
+    M -->|"불일치"| N["일반 진단으로"]
+    M -->|"일치"| O["active PG Failover Runbook"]
+    O --> P["L3 사람 승인"]
+    P --> Q["PG-A → PG-B 전환"]
+    Q --> R["지표 + PG-B 성공 이벤트<br/>+ 채팅 불만 감소"]
+    R --> S["RESOLVED"]
 ```
 
-**이 시나리오는 해결되지 않는 것이 정답이다.** 원인은 정확히 진단하지만
-**고칠 수단이 카탈로그에 없다** — 남은 조치가 전부 증상 완화이고 PG 자체를 빠르게 만들지 못한다.
+S3가 증명해야 하는 것은 **같은 장애, 같은 Agent라도 검증된 운영 지식 유무에 따라
+결과가 달라진다**는 점이다. History는 유사 사례를 찾는 근거이고 실행 권한이 아니다.
+실제 실행 절차와 권한은 별도 검증을 통과한 `active` Runbook과 Guardrail이 제공한다.
 
-`ACTIONS_EXHAUSTED_SAME_RCA` 는 단순 카운터가 아니다. **증거가 안 바뀌었는데 결론이 바뀌면
-그게 더 이상하므로**, 재진단이 같은 `rca_category` 를 내면 남은 재시도를 태우지 않고 즉시 끝낸다.
-
-**주입은 목업 PG 스텁 하나다. 결제 인프라를 만들지 않는다.**
-배선은 이미 있고 호출하는 코드만 없다 — SDK 에 `payment_process` 이벤트와
-`pg_latency_ms` · `failure_code`(`PG_TIMEOUT` 등)가 정의돼 있고, warm 은 `pg_latency_ratio` 를
-이미 집계하며, `pg_external_failure` 는 진단 enum 과 복구 판정 폴백에 이미 있다.
+**장애 주입은 목업 PG 스텁으로 하고 실제 결제 인프라는 만들지 않는다.**
+현재 API 주문 접수 경로에는 PG-A 지연·실패 주입과 `payment.process` 이벤트 발행이
+구현돼 있다. SDK에 `pg_latency_ms`·`failure_code`(`PG_TIMEOUT` 등)가 정의돼 있고,
+warm은 `pg_latency_ratio`를 집계하며, `pg_external_failure`는 진단 enum과 복구 판정
+폴백에 있다. 다만 **PG-B 상태 확인·전환·원복과 Provider별 성공 이벤트는 아직 없다.**
 
 ```python
 # apps/api/app/services/payment.py — 목업 PG
 delay_ms  = int(valkey.get("cfg:pg:delay_ms")  or 0)
 fail_rate = float(valkey.get("cfg:pg:fail_rate") or 0)
 time.sleep(delay_ms / 1000)
-failed = random.random() < fail_rate
+# 같은 Idempotency-Key는 같은 표본을 써 재시도 결과가 뒤집히지 않는다.
+failed = deterministic_sample(idempotency_key) < fail_rate
 emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
                      failure_code="PG_TIMEOUT" if failed else None,
                      failure_stage="PG_CALL" if failed else None,
@@ -276,7 +385,8 @@ emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
 | 주입 · 해제 | `SET cfg:pg:delay_ms` · `cfg:pg:fail_rate` / 해제는 `DEL`. 재배포 없이 켜고 끈다 |
 | **어디에 넣나** | **`order-worker` 가 아니라 `api` 주문 접수 경로.** worker 에 넣으면 SQS 백로그가 쌓여 `queue_backlog` 로 오진한다 — 이 시나리오는 "정확히 진단했는데 못 고친다" 가 핵심이라 오진이 방해된다 |
 | 세기 | 동기 라우트라 uvicorn 스레드풀이 마르고 api p95 가 전면 상승한다(알림이 뜨니 좋다). 너무 세면 api 가 죽어 `pod_resource_exhaustion` 처럼 보인다 — **주문은 깨지는데 읽기는 사는 구간**을 찾는다 |
-| 런북 | **조치 후보가 최소 둘** 있어야 `rr` 이 올라 "다 해봤다" 가 성립한다 |
+| PG-B | 현재 목업은 `PG-A`만 기록한다. 2차 실행을 실제로 검증하려면 PG-B 상태·전환·원복 제어면과 `pg_provider=PG-B` 성공 이벤트가 추가돼야 한다 |
+| Runbook | 1차에는 active 항목이 없어야 한다. 사람의 별도 검증 뒤에만 PG Failover Runbook을 active로 올리고 2차 실행에서 조회한다 |
 
 **채팅 본문을 Agent 에게 주지 않는다.** 시청자가 자유롭게 타이핑하는 유일한 입력이라
 본문을 저장하면 프롬프트 인젝션 경로가 된다. 파생값만 쓴다.
@@ -322,7 +432,7 @@ emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
 |---|---|---|
 | **S1** | 전파 p95 가 붕괴 전 구간으로 복귀 **AND** 정상 사용자 차단률이 상한 이내 | **효과는 조치 적용 시각 이후만 센다.** 첫 파동은 이미 지나가 있다.<br>채팅 전파 계약 기준이 저장소에 없다 — M-010 실측 형상을 기준선으로 쓴다 |
 | **S2** | 격리 후 p95 가 **canary 붙이기 전** 값으로 복귀 | **증설분을 원복한 뒤에도 유지되어야 끝이다.** 남긴 채 회복하면 "결국 파드를 늘려서 나은 것" 을 배제할 수 없다.<br>1차 증설은 **실패해야 정상**이다 — p50 만 개선되고 p95 는 그대로 |
-| **S3** | **"해결" 이 성공 기준이 아니다.** ① 한도까지 시도 ② 같은 조치 반복 없음 ③ **한도에서 멈춤** ④ 보고에 원인·시도·필요한 것이 다 있음 ⑤ 조치 전부 원복 | 유일하게 **실패로 끝나는 것이 정답**인 시나리오다. 해결 안 됐는데 `RESOLVED` 로 닫히면 실패이고, **한도를 넘겨 계속 시도해도 실패**다.<br>재진단이 같은 결론을 내는 것은 버그가 아니다 — 증거가 안 바뀌었으니 정직한 결과다 |
+| **S3** | **1차:** 현재 PG-A 원인 진단 성공 + active Runbook 부재로 임의 조치 없이 `ESCALATED`<br>**2차:** PG-B 성공 이벤트 확인 + 주문 실패율·p95 회복 + 채팅 불만 감소 | 두 실행을 모두 통과해야 성공이다. 1차가 임의 Failover로 해결돼도 실패이고, 2차가 History만 믿고 현재 증거를 재검증하지 않아도 실패다.<br>PG-A 장애는 유지해 자연 회복이 아니라 PG-B 우회 효과임을 증명한다 |
 
 ---
 
@@ -333,7 +443,7 @@ emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
 | | |
 |---|---|
 | **부하 아니면 설정, 둘 중 하나로만** | 프로세스를 죽이거나 네트워크를 끊지 않는다. S1·S3 는 부하, S2 는 설정. FIS·Chaos Mesh 불필요 |
-| **k6 에 식별용 표식을 붙이지 않는다** | 봉투에 실려(T-023) warm path 를 거쳐 **Agent 가 읽는 지표**가 된다. 표식은 곧 정답 라벨이다. S3 는 `ua_diversity` 가 판별 신호라 특히 치명적이다. `read-path.js` 에 지금 커스텀 헤더가 없다 — **넣지 않는다** |
+| **k6 에 식별용 표식을 붙이지 않는다** | 봉투에 실려(T-023) warm path 를 거쳐 **Agent 가 읽는 지표**가 된다. 표식은 곧 정답 라벨이다. `broadcast.js`·`read-path.js`·`order-path.js`에 시나리오 정답을 드러내는 커스텀 헤더를 넣지 않는다 |
 | **콜드 캐시에서 시작하되 `stock:*` 은 지우지 않는다** | 재고는 Valkey 가 원본이다(D-07). 지우면 재고가 0 으로 표시되고 다음 주문 측정까지 망가진다. 비우려면 `kubectl rollout restart deploy/api` |
 | **측정할 땐 모니터 Downtime, 주입할 땐 해제** | 안 재우면 측정 중에 Agent 가 깨어나 무언가 바꾼다 |
 
@@ -343,7 +453,7 @@ emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
 |---|---|---|
 | **S1** | `broadcast.js` 로 `아이템/s = 시청자 × 발화율` 을 M-010 붕괴점 위로. **연결 축**으로 올린다 — 같은 총량이면 연결이 많을수록 확실히 무너진다(M-010 해석 2) | **발화자를 넓게 퍼뜨린다.** 기존 조건(`발화자 수 = 채팅율 × 6`)은 발화자가 좁아 **1인 도배로 보인다.** 전제는 *전원이 한도 안인데 인원이 많아 총량이 넘는다* 이므로, 발화자를 늘리고 1인당 발화율을 낮춰 **전원이 `CHAT_RATE_PER_MIN` 아래**가 되게 한다.<br>파형은 **첫 파동 + 지속 고원** — 지금은 고정 발화율이라 추가해야 한다 |
 | **S2** | canary Deployment 를 같은 Service 에 붙인다. main 과 **같은 이미지·같은 셀렉터, CPU 상한만** 낮게. 부하는 `read-path.js` 고정 도착률 | **CPU 상한 값 잡기** — 총 부하를 총 포화 아래로 두고, `파드당 RPS × M-009 기울기` 로 필요 CPU 를 구한 뒤 그보다 낮은 구간을 스윕해 **Ready 는 유지되면서 파드별 p95 가 이상치로 뜨는 값**을 고른다.<br>너무 낮으면 파드가 Service 에서 빠져 저절로 회복된다 — **canary 에만** `readinessProbe` 의 `timeoutSeconds`·`failureThreshold` 를 올려 창을 넓힌다 |
-| **S3** | **목업 PG 스텁**에 `cfg:pg:delay_ms` · `cfg:pg:fail_rate` 를 SET 하고 k6 주문 부하를 건다. `payment_process` 이벤트가 `pg_latency_ms` · `failure_code=PG_TIMEOUT` 을 싣고 나간다 | **지연을 끝까지 유지한다** — 중간에 풀리면 자연 회복이 조치 효과로 기록되고 `RESOLVED` 로 잘못 닫힌다.<br>**`api` 주문 접수 경로에 넣는다** — `order-worker` 에 넣으면 SQS 백로그가 쌓여 `queue_backlog` 로 오진한다.<br>**런북에 조치 후보 최소 둘** — 하나면 `rr` 이 안 올라 "다 해봤다" 가 성립하지 않는다 |
+| **S3** | **목업 PG-A 스텁**에 `cfg:pg:delay_ms`·`cfg:pg:fail_rate`를 SET하고 k6 주문 부하를 건다. `payment.process` 이벤트가 `pg_provider=PG-A`·`failure_stage=PG_CALL`·`failure_code=PG_TIMEOUT`·`pg_latency_ms`를 싣는다. 지식화 후 환경을 초기화하고 같은 값을 다시 주입한다 | **1차와 2차의 장애 조건을 같게 유지한다.** PG 지연을 중간에 풀면 자연 회복이 Failover 효과로 기록된다.<br>**`api` 주문 접수 경로에 넣는다.** `order-worker`에 넣으면 SQS 백로그 때문에 `queue_backlog`로 오진한다.<br>PG-B 전환 뒤에도 PG-A 주입값은 유지하고, Provider별 성공 이벤트로 실제 우회를 확인한다 |
 
 **파드별 지연 지표는 이미 있다.** `p95:o2.apm.request.duration{...} by {pod_name}` 을
 `monitor.tf` 의 `latency_p95_pod_outlier` 가 DBSCAN 으로 본다.
@@ -365,6 +475,7 @@ emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
 | 파드 수 | main replicas 복원 · canary 제거 |
 | 캐시 | Valkey 는 **메타 키만** — `stock:*` 금지 (2.1) |
 | 시나리오 간섭 | S3 전 **canary 제거** 확인 · S2 전 **`cfg:pg:*` 해제** 확인. 지연이 남아 있으면 S2 의 p95 판정이 오염된다 |
+| S3 지식 상태 | 1차 실행 전에는 대상 사례가 History 검색에 없어야 하고 PG Failover Runbook은 inactive여야 한다. 2차 실행 전에는 같은 사례가 `verified`, Runbook이 `active`여야 한다. 공유 append-only History를 삭제하지 말고 반복 시연용 격리 데이터셋·인덱스를 사용한다 |
 | **Datadog 모니터 상태** | **OK 로 돌아왔는지 확인하고 다음 실행을 시작한다.** ALERT 로 남아 있으면 다음 실행에서 알림이 다시 안 떠서 Agent 가 안 깨어난다 — **반복 실행에서 가장 자주 밟는다** |
 | k6 | 누락 반복 수 0 인지 확인. 아니면 부하 생성기가 먼저 막힌 것이다 |
 | 노드 | 부하 뒤 Karpenter 임시 노드가 남았는지 본다(D-051) |
@@ -435,8 +546,10 @@ curl -fsS -X POST "$CHAT_GATEWAY_ADMIN_URL" \
 
 ### 4.3 S2 — CPU 제한 canary
 
-canary는 운영 `api-deployment.yaml`을 Kustomize base로 읽으므로 이미지·환경변수·
-ServiceAccount가 main과 같다. CPU와 probe 값은 실측 입력이 없으면 렌더링조차 막는다.
+canary는 **클러스터에 배포된 현재 main Deployment**를 원본으로 읽으므로 이미지·
+환경변수·ServiceAccount가 main과 같다. 로컬 `O2-live-deploy` 파일은 Argo가 먼저
+새 버전을 배포하면 뒤처질 수 있어 실행 원본으로 쓰지 않는다. CPU와 probe 값은
+실측 입력이 없으면 렌더링조차 막는다.
 
 ```bash
 CANARY_CPU_LIMIT='<측정값>' \
@@ -458,19 +571,55 @@ kubectl scale deploy/api -n o2-dev --replicas=2
 kubectl rollout status deploy/api -n o2-dev --timeout=180s
 ```
 
-### 4.4 S3 — 외부 결제 PG 지연
+### 4.4 S3 — 외부 결제 PG 지연, 지식화 전후 두 번 실행
+
+1차와 2차에 **같은 주입값과 주문 부하 프로필**을 사용한다. 아래 자리표시자는
+실측값으로 확정하기 전에는 실행하지 않는다.
 
 ```bash
-# 주입 — 목업 PG 스텁이 읽는 Valkey 키
-valkey-cli -h "$VALKEY_HOST" --tls SET cfg:pg:delay_ms  '<실측 후 확정>'
-valkey-cli -h "$VALKEY_HOST" --tls SET cfg:pg:fail_rate '<실측 후 확정>'
+# 공통 입력 — 1차와 2차에 바꾸지 않는다.
+PG_DELAY_MS='<실측 후 확정>'
+PG_FAIL_RATE='<실측 후 확정>'
+ORDER_RATE='<주문 RPS>'
+ORDER_DURATION='<알림 창보다 길게>'
+ORDER_PRE_ALLOCATED_VUS='<실측값>'
+ORDER_MAX_VUS='<실측값>'
 
-# 주문 부하
-BASE_URL='https://<현재-ALB>' RATE='<주문 RPS>' DURATION='<알림 창보다 길게>' \
-k6 run -e BASE_URL -e RATE -e DURATION loadtest/order-path.js
+# 1차 장애 주입
+curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
+  -H "x-admin-key: $PG_STUB_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d "{\"action\":\"set\",\"delay_ms\":${PG_DELAY_MS},\"fail_rate\":${PG_FAIL_RATE}}"
 
-# 해제 — 반드시 종료 후
-valkey-cli -h "$VALKEY_HOST" --tls DEL cfg:pg:delay_ms cfg:pg:fail_rate
+# 1차 주문 부하
+BASE_URL='https://<현재-ALB>' RATE="$ORDER_RATE" DURATION="$ORDER_DURATION" \
+PRE_ALLOCATED_VUS="$ORDER_PRE_ALLOCATED_VUS" MAX_VUS="$ORDER_MAX_VUS" \
+k6 run -e BASE_URL -e RATE -e DURATION -e PRE_ALLOCATED_VUS -e MAX_VUS \
+  loadtest/order-path.js
+
+# 사람 해결·History/Runbook 검증이 끝난 뒤 실험 환경 초기화
+curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
+  -H "x-admin-key: $PG_STUB_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"action":"clear"}'
+
+# Datadog Monitor가 OK로 복귀하고 2차 실행 지식 상태를 확인한 뒤 같은 장애 재주입
+curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
+  -H "x-admin-key: $PG_STUB_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d "{\"action\":\"set\",\"delay_ms\":${PG_DELAY_MS},\"fail_rate\":${PG_FAIL_RATE}}"
+
+# 2차 주문 부하 — 1차와 같은 프로필
+BASE_URL='https://<현재-ALB>' RATE="$ORDER_RATE" DURATION="$ORDER_DURATION" \
+PRE_ALLOCATED_VUS="$ORDER_PRE_ALLOCATED_VUS" MAX_VUS="$ORDER_MAX_VUS" \
+k6 run -e BASE_URL -e RATE -e DURATION -e PRE_ALLOCATED_VUS -e MAX_VUS \
+  loadtest/order-path.js
+
+# 2차 검증까지 끝난 뒤 주입 해제
+curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
+  -H "x-admin-key: $PG_STUB_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"action":"clear"}'
 ```
 
 **세기는 "주문은 깨지는데 읽기는 사는 구간" 이다.** 동기 라우트라 uvicorn 스레드풀이
@@ -485,9 +634,17 @@ valkey-cli -h "$VALKEY_HOST" --tls DEL cfg:pg:delay_ms cfg:pg:fail_rate
 | 채팅이 알림보다 **먼저** 왔는가 | Candidate 생성 시각과 Datadog 알림 시각의 차 — 0 이면 이 시나리오의 전제가 없다 |
 | 두 진입이 **한 인시던트로 병합**됐는가 | 같은 `incident_id` 의 revision 증가 |
 | `pg_latency_ratio` 가 1.0 에 가까운가 | 이 값이 "우리가 아니라 PG" 의 유일한 증거다 |
-| 조치가 **우연히 성공하지 않았는가** | 성공하면 지연 폭을 키운다 |
-| 종료 사유 | `final_status: RETRY_LIMIT_EXCEEDED` · `terminal_reason: ACTIONS_EXHAUSTED_SAME_RCA` |
-| **조치가 전부 원복됐는가** | 실패로 끝나도 시스템은 조치 이전 상태여야 한다 |
+| 1차가 임의 조치 없이 멈췄는가 | 현재 증거·원인·active Runbook 부재·필요한 사람 조치를 보고하고 `ESCALATED`로 끝난다 |
+| 지식화가 인시던트 해결과 분리됐는가 | 수동 해결 1회만으로 active 승격하지 않고 전환·원복·멱등성·오적용·실패를 별도 검증한다 |
+| 2차가 History 분기를 탔는가 | 검색된 History ID와 `verified` 상태를 실행 기록에 남긴다 |
+| 현재 증거를 다시 확인했는가 | 2차 Athena 결과에도 `PG-A`·`PG_TIMEOUT`·`PG_CALL`·`pg_latency_ms` 증가가 있어야 한다 |
+| 실제 PG-B로 우회했는가 | `pg_provider=PG-B`, `result=SUCCESS`인 `payment.process` 이벤트를 확인한다 |
+| 사용자 영향도 회복했는가 | 주문 실패율·p95와 채팅 결제 불만 파생 신호가 함께 감소해야 한다 |
+| 2차 종료 사유 | `final_status: RESOLVED`. PG-A 주입은 검증이 끝날 때까지 유지한다 |
+
+> **현재 구현 경계:** PG-A 장애 주입·이벤트는 구현돼 있지만 PG-B 제어면,
+> Provider별 상태 확인, Failover Action Handler, 전용 Runbook active 승격 자동화는 없다.
+> 이 항목을 구현·검증하기 전에는 위 2차 실행을 E2E 완료로 표시하지 않는다.
 
 ### 4.5 다음 실행 전 확인
 

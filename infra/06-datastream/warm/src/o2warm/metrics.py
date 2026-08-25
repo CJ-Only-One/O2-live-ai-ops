@@ -243,6 +243,15 @@ def derive(
     base_rps = (baseline or {}).get("rps")
     baseline_ready = bool(base_rps) and (baseline or {}).get("samples", 0) >= settings.baseline_min_samples
 
+    def baseline_value(field: str) -> float | None:
+        value = (baseline or {}).get(field)
+        samples = (baseline or {}).get(f"{field}_samples")
+        if samples is None and field == "rps":
+            samples = (baseline or {}).get("samples")
+        if value is None or int(samples or 0) < settings.baseline_min_samples:
+            return None
+        return round(value, 4)
+
     conc = concentration(sk)
     cv, cv_users = sk.intervals.cv_weighted_median()
     cv_plain, _ = sk.intervals.cv_median()
@@ -288,6 +297,9 @@ def derive(
         "rps": rps,
         "rps_ratio": _ratio(rps, base_rps) if baseline_ready else None,
         "baseline_rps": round(base_rps, 3) if base_rps else None,
+        "baseline_p95_ms": baseline_value("p95_ms"),
+        "baseline_inventory_check_rate": baseline_value("inventory_check_rate"),
+        "baseline_overall_failure_rate": baseline_value("overall_failure_rate"),
 
         "top1pct_share": conc["top1pct_share"],
         "top5_share": conc["top5_share"],
@@ -325,6 +337,7 @@ def derive(
         # S1 정확 축. failure_codes 맵은 실패 사유 내부 분포라 차단률이 아니다.
         # 별도 scalar여야 Datadog Monitor와 Agent 검증 쿼리가 직접 읽을 수 있다.
         "channel_limited_rate": failure_code_rate(sk, "chat.send", "CHANNEL_LIMITED"),
+        "channel_block_rate": failure_code_rate(sk, "chat.send", "CHANNEL_LIMITED"),
 
         "pg_latency_ratio": sk.pg_ratio.quantile(0.5),
         "pg_samples": sk.pg_ratio.count,
@@ -339,6 +352,12 @@ def derive(
         "latency_p95": sk.latency.quantile(0.95),
         "latency_p99": sk.latency.quantile(0.99),
         "latency_samples": sk.latency.n,
+
+        # S3 판정이 event_rate 맵을 해석하지 않고 직접 읽는 고정 스칼라.
+        "inventory_check_rate": (
+            round(sk.by_event.get(C.EVENT_INVENTORY, 0) / span, 4)
+            if sk.service == "coupon-api" else None
+        ),
 
         # 파드 하나만 느려도 service p95 는 나머지 파드에 희석돼 임계 안에
         # 머문다(README 시나리오 5의 재분석 근거). cache_hit_rate_by_pod 와

@@ -180,6 +180,39 @@ class ChatSourceAdapterTest(unittest.TestCase):
         )
         self.assertEqual(client.messages, [])
 
+    def test_operational_mode_accepts_candidate_with_empty_allowlist(self):
+        client = FakeSqs()
+        adapter._clients["sqs"] = client
+        with mock.patch.dict(
+            os.environ,
+            {
+                **self.environment,
+                "CHAT_SOURCE_ADAPTER_OPERATIONAL_MODE": "true",
+                "CHAT_SOURCE_ADAPTER_ALLOWED_BROADCAST_IDS": "",
+            },
+            clear=False,
+        ):
+            result = adapter.handler({"Records": [stream_record()]}, None)
+        self.assertEqual(result, {"batchItemFailures": []})
+        self.assertEqual(len(client.messages), 1)
+
+    def test_operational_mode_rejects_nonempty_synthetic_allowlist(self):
+        client = FakeSqs()
+        adapter._clients["sqs"] = client
+        with mock.patch.dict(
+            os.environ,
+            {**self.environment, "CHAT_SOURCE_ADAPTER_OPERATIONAL_MODE": "true"},
+            clear=False,
+        ):
+            result = adapter.handler(
+                {"Records": [stream_record(sequence="operational-nonempty")]}, None
+            )
+        self.assertEqual(
+            result,
+            {"batchItemFailures": [{"itemIdentifier": "operational-nonempty"}]},
+        )
+        self.assertEqual(client.messages, [])
+
     def test_multiple_broadcast_allowlist_fails_closed_without_queue_write(self):
         client = FakeSqs()
         adapter._clients["sqs"] = client

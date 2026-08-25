@@ -43,6 +43,18 @@ test('활성 연결만 gauge이고 메시지 크기는 distribution이다', () =
     'o2.app.fanout.items:12|c|#result:delivered',
   );
   assert.equal(
+    packet('o2.app.fanout.items', 12, 'c', { result: 'delivered', broadcast_id: 'bc_1042' }),
+    'o2.app.fanout.items:12|c|#result:delivered,broadcast_id:bc_1042',
+  );
+  assert.equal(
+    packet('o2.chat.propagation', 275, 'd', { service: 'chat-gateway' }),
+    'o2.chat.propagation:275|d|#service:chat-gateway',
+  );
+  assert.equal(
+    packet('o2.chat.propagation', 275, 'd', { broadcast_id: 'bc_1042' }),
+    'o2.chat.propagation:275|d|#broadcast_id:bc_1042',
+  );
+  assert.equal(
     packet('o2.app.message.size', 128, 'd', { service: 'chat-gateway', operation: 'chat.receive' }),
     'o2.app.message.size:128|d|#service:chat-gateway,operation:chat.receive',
   );

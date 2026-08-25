@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# S2 느린 파드 주입기. 운영 Deployment를 Kustomize base로 읽고, 실측으로 정한
-# CPU/probe 값만 로컬 patch한 뒤 적용한다. 숫자를 주지 않으면 apply하지 않는다.
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OVERLAY_DIR="${ROOT_DIR}/../O2-live-deploy/experiments/s2-api-canary"
+# S2 느린 파드 주입기. 클러스터의 현재 main Deployment를 읽어 canary를 만들고,
+# 실측으로 정한 CPU/probe 값만 로컬 patch한 뒤 적용한다. 로컬 Git base를 쓰면
+# Argo가 먼저 새 이미지를 배포한 순간 서로 다른 버전이 섞이므로 live 상태가
+# 유일한 원본이다. 숫자를 주지 않으면 apply하지 않는다.
 # 실행기 RBAC과 Runbook이 o2-dev로 고정돼 있다. 환경변수로 바꿀 수 있게 하면
 # 검증하지 않은 네임스페이스에 실험 리소스를 만들 수 있으므로 고정한다.
 NAMESPACE="o2-dev"
@@ -31,10 +30,35 @@ require_inputs() {
 
 render() {
   require_inputs
-  # overlay가 운영 Deployment를 상위 디렉터리에서 base로 읽는다. 기본 load
-  # restrictor는 상위 참조를 막으므로 이 한 번만 완화한다. 원격 URL은 없고
-  # 경로도 위에서 고정해 사용자 입력으로 바뀌지 않는다.
-  kubectl kustomize "${OVERLAY_DIR}" --load-restrictor LoadRestrictionsNone |
+  command -v jq >/dev/null || die "jq가 필요합니다. macOS: brew install jq"
+
+  # 현재 main의 이미지·환경변수·Secret·ServiceAccount·probe를 그대로 복제한다.
+  # API 서버가 붙인 identity/status와 Argo tracking annotation은 새 리소스에
+  # 복사하면 안 된다. main ReplicaSet끼리만 쓰는 AZ 제약도 canary 하나에는
+  # 적용하지 않고, part-of 기반 hostname 분산 제약은 유지한다.
+  kubectl get deployment api -n "${NAMESPACE}" -o json |
+    jq '
+      del(
+        .metadata.annotations,
+        .metadata.creationTimestamp,
+        .metadata.generation,
+        .metadata.managedFields,
+        .metadata.resourceVersion,
+        .metadata.selfLink,
+        .metadata.uid,
+        .status
+      )
+      | .metadata.name = "api-canary"
+      | .metadata.namespace = "o2-dev"
+      | .metadata.labels = ((.metadata.labels // {}) + {"app.kubernetes.io/name": "api-canary"})
+      | .spec.replicas = 1
+      | .spec.selector.matchLabels["app.kubernetes.io/name"] = "api-canary"
+      | .spec.template.metadata.labels["app.kubernetes.io/name"] = "api-canary"
+      | .spec.template.spec.topologySpreadConstraints = [
+          (.spec.template.spec.topologySpreadConstraints // [])[]
+          | select((.labelSelector.matchLabels["app.kubernetes.io/name"] // "") != "api")
+        ]
+    ' |
     kubectl patch --local -f - --type=strategic -o yaml -p "{
       \"spec\": {\"template\": {\"spec\": {\"containers\": [{
         \"name\": \"api\",

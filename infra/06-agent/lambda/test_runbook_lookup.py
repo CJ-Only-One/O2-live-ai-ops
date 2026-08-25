@@ -6,8 +6,8 @@
      응답은 200 이라 호출자가 눈치채기 어렵다
   2. 노브가 없는 조치에서 죽지 않는가. 런북에만 있고 카탈로그에 아직
      없는 조치가 진단 전체를 멈추면 안 된다
-  3. rca_type="KNOB" 조회가 카탈로그 전체를 주는가. S3 처럼 런북이 없는
-     시나리오는 이 경로로만 노브를 찾는다
+  3. draft·retired 런북이 자동 실행 후보에서 빠지는가
+  4. rca_type="KNOB" 조회가 카탈로그 전체를 주는가
 
 ★ archive_file 이 runbook_lookup.py 만 zip 에 넣으므로 이 파일은 Lambda 에
   올라가지 않는다.
@@ -22,6 +22,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 os.environ.setdefault("RUNBOOK_TABLE", "dummy")
 os.environ.setdefault("RUNBOOK_SECRET_NAME", "dummy")
+
+
+def _experiment(enabled=False, experiment_id="", expires_at=0):
+    os.environ["S2_EXPERIMENT_RUNBOOK_ENABLED"] = str(enabled).lower()
+    os.environ["S2_EXPERIMENT_ID"] = experiment_id
+    os.environ["S2_EXPERIMENT_EXPIRES_AT_EPOCH"] = str(expires_at)
 
 
 class _FakeTable:
@@ -106,6 +112,12 @@ def test_missing_knob_does_not_break_lookup():
     fake = _FakeTable(
         {
             "query": [
+                {
+                    "rca_type": "pod_load_skew",
+                    "sk": "DEF",
+                    "status": "active",
+                    "success_criteria": {"logic": "AND"},
+                },
                 {"rca_type": "pod_load_skew", "sk": "ACTION#not_in_catalog", "action_id": "not_in_catalog"},
             ],
             "knobs": {},
@@ -114,6 +126,153 @@ def test_missing_knob_does_not_break_lookup():
     body = _call(_load(fake), "pod_load_skew")
     # 200 이되 knob 키가 없다 — 호출자가 "판정 근거 없음" 을 구분할 수 있어야 한다.
     assert "knob" not in body["actions"][0]
+
+
+def test_draft_runbook_is_seeded_but_not_returned_for_execution():
+    _experiment()
+    fake = _FakeTable(
+        {
+            "query": [
+                {
+                    "rca_type": "pod_resource_exhaustion",
+                    "sk": "DEF",
+                    "runbook_id": "RB-API-LATENCY-001",
+                    "status": "draft",
+                    "success_criteria": {"logic": "AND"},
+                },
+                {
+                    "rca_type": "pod_resource_exhaustion",
+                    "sk": "ACTION#scale_api_one_step",
+                    "action_id": "scale_api_one_step",
+                    "status": "draft",
+                },
+            ],
+            "knobs": {},
+        }
+    )
+    body = _call(_load(fake), "pod_resource_exhaustion")
+    assert body["runbook_id"] == "RB-API-LATENCY-001"
+    assert body["runbook_status"] == "draft"
+    assert body["success_criteria"] is None
+    assert body["actions"] == []
+
+
+def test_exact_s2_draft_runbook_is_temporarily_returned_before_expiry():
+    _experiment(True, "s2-20260825T220000", 4_000_000_000)
+    fake = _FakeTable(
+        {
+            "query": [
+                {
+                    "rca_type": "pod_resource_exhaustion",
+                    "sk": "DEF",
+                    "runbook_id": "RB-API-LATENCY-001",
+                    "status": "draft",
+                    "success_criteria": {"logic": "AND"},
+                },
+                {
+                    "rca_type": "pod_resource_exhaustion",
+                    "sk": "ACTION#scale_api_one_step",
+                    "action_id": "scale_api_one_step",
+                    "status": "draft",
+                },
+                {
+                    "rca_type": "pod_resource_exhaustion",
+                    "sk": "ACTION#unexpected",
+                    "action_id": "unexpected",
+                    "status": "draft",
+                },
+            ],
+            "knobs": {},
+        }
+    )
+    body = _call(_load(fake), "pod_resource_exhaustion")
+    assert body["runbook_status"] == "experiment"
+    assert body["experiment_id"] == "s2-20260825T220000"
+    assert [action["action_id"] for action in body["actions"]] == ["scale_api_one_step"]
+
+
+def test_s2_experiment_expiry_fails_closed():
+    _experiment(True, "s2-20260825T220000", 1)
+    fake = _FakeTable(
+        {
+            "query": [
+                {
+                    "rca_type": "pod_load_skew",
+                    "sk": "DEF",
+                    "runbook_id": "RB-API-POD-RESOURCE-SKEW",
+                    "status": "draft",
+                    "success_criteria": {"logic": "AND"},
+                },
+                {
+                    "rca_type": "pod_load_skew",
+                    "sk": "ACTION#isolate_slow_pod",
+                    "action_id": "isolate_slow_pod",
+                    "status": "draft",
+                },
+            ],
+            "knobs": {},
+        }
+    )
+    body = _call(_load(fake), "pod_load_skew")
+    assert body["runbook_status"] == "draft"
+    assert body["actions"] == []
+
+
+def test_experiment_does_not_enable_other_draft_runbooks():
+    _experiment(True, "s2-20260825T220000", 4_000_000_000)
+    fake = _FakeTable(
+        {
+            "query": [
+                {
+                    "rca_type": "pg_external_failure",
+                    "sk": "DEF",
+                    "runbook_id": "RB-PG-FAILURE",
+                    "status": "draft",
+                    "success_criteria": {"logic": "AND"},
+                },
+                {
+                    "rca_type": "pg_external_failure",
+                    "sk": "ACTION#open_circuit",
+                    "action_id": "open_circuit",
+                    "status": "draft",
+                },
+            ],
+            "knobs": {},
+        }
+    )
+    body = _call(_load(fake), "pg_external_failure")
+    assert body["runbook_status"] == "draft"
+    assert body["actions"] == []
+
+
+def test_retired_action_is_filtered_from_active_runbook():
+    fake = _FakeTable(
+        {
+            "query": [
+                {
+                    "rca_type": "chat_channel_overload",
+                    "sk": "DEF",
+                    "status": "active",
+                    "success_criteria": {"logic": "AND"},
+                },
+                {
+                    "rca_type": "chat_channel_overload",
+                    "sk": "ACTION#current",
+                    "action_id": "current",
+                    "status": "active",
+                },
+                {
+                    "rca_type": "chat_channel_overload",
+                    "sk": "ACTION#old",
+                    "action_id": "old",
+                    "status": "retired",
+                },
+            ],
+            "knobs": {},
+        }
+    )
+    body = _call(_load(fake), "chat_channel_overload")
+    assert [action["action_id"] for action in body["actions"]] == ["current"]
 
 
 def test_knob_partition_lists_catalog():

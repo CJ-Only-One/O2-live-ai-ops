@@ -9,8 +9,13 @@ const METRICS = new Set([
   'o2.app.websocket.connections',
   'o2.app.message.size',
   'o2.app.fanout.items',
+  'o2.chat.propagation',
 ]);
 
+// broadcast_id 는 S1 의 인시던트·조치 단위다. 조치(`limit_channel_volume`)가
+// 방송 하나의 채널 총량을 건드리므로, 축이 없으면 Agent 가 어느 방송에 걸지
+// 모른다. 값 종류는 동시 방송 수만큼이고 사용자 입력이 아니다 — `user_key`
+// 처럼 입력이 카디널리티를 정하는 축과는 다르다.
 const TAG_KEYS = new Set([
   'env',
   'service',
@@ -20,6 +25,7 @@ const TAG_KEYS = new Set([
   'failure_code',
   'pod_name',
   'operation',
+  'broadcast_id',
 ]);
 
 export type MetricType = 'c' | 'd' | 'g';
@@ -80,12 +86,24 @@ function emit(metric: string, value: number, type: MetricType, tags: MetricTags)
   if (payload) send(payload);
 }
 
-export function businessEvent(event: string, result: 'success' | 'failed'): void {
-  emit('o2.app.business_event', 1, 'c', { event, result });
+export function businessEvent(
+  event: string,
+  result: 'success' | 'failed',
+  broadcastId?: string,
+): void {
+  emit('o2.app.business_event', 1, 'c', {
+    event,
+    result,
+    ...(broadcastId ? { broadcast_id: broadcastId } : {}),
+  });
 }
 
-export function failure(event: string, failureCode: string): void {
-  emit('o2.app.failure', 1, 'c', { event, failure_code: failureCode });
+export function failure(event: string, failureCode: string, broadcastId?: string): void {
+  emit('o2.app.failure', 1, 'c', {
+    event,
+    failure_code: failureCode,
+    ...(broadcastId ? { broadcast_id: broadcastId } : {}),
+  });
 }
 
 export function duration(operation: string, durationMs: number): void {
@@ -100,6 +118,30 @@ export function messageSize(value: number): void {
   emit('o2.app.message.size', value, 'd', { operation: 'chat.receive' });
 }
 
-export function fanoutItems(result: 'delivered' | 'dropped', value: number): void {
-  emit('o2.app.fanout.items', value, 'c', { result });
+export function fanoutItems(
+  result: 'delivered' | 'dropped',
+  value: number,
+  broadcastId?: string,
+): void {
+  emit('o2.app.fanout.items', value, 'c', {
+    result,
+    ...(broadcastId ? { broadcast_id: broadcastId } : {}),
+  });
+}
+
+// M-010의 40,000 items/s에서 모든 전달을 UDP로 보내면 계측이 장애를 만듭니다.
+// 우선 무작위 0.1%로 상한을 두고, 표본 충실도와 비용은 재실측해 조정합니다.
+//
+// ★ broadcast_id 축을 붙인 뒤에는 표본이 방송 수만큼 나뉜다. 방송당 p95 가
+//   흔들리면 이 값을 먼저 본다 — 창을 늘리는 것보다 표본율을 올리는 편이
+//   붕괴 순간을 놓치지 않는다.
+export const PROPAGATION_SAMPLE_RATE = 0.001;
+
+export function chatPropagation(
+  durationMs: number,
+  broadcastId?: string,
+  randomValue = Math.random(),
+): void {
+  if (randomValue >= PROPAGATION_SAMPLE_RATE) return;
+  emit('o2.chat.propagation', durationMs, 'd', broadcastId ? { broadcast_id: broadcastId } : {});
 }

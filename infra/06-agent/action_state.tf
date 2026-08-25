@@ -46,7 +46,7 @@ data "aws_iam_policy_document" "incident_state_action_rw" {
       "dynamodb:PutItem",
       "dynamodb:DeleteItem",
     ]
-    resources = [aws_dynamodb_table.incident_state.arn]
+    resources = [data.aws_dynamodb_table.incident_state.arn]
   }
 }
 
@@ -111,7 +111,7 @@ resource "aws_lambda_function" "action_state" {
 
   environment {
     variables = {
-      INCIDENT_STATE_TABLE     = aws_dynamodb_table.incident_state.name
+      INCIDENT_STATE_TABLE     = data.aws_dynamodb_table.incident_state.name
       ACTION_STATE_SECRET_NAME = var.action_state_secret_name
     }
   }

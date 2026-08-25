@@ -33,6 +33,7 @@ sed -n '553,607p' docs/decisions.md     # 그 절만 읽는다
 | 테이블·컬럼·인덱스, MySQL/Valkey 경계 | `docs/schema.md` |
 | **시나리오 실험 — 복구 판정 · 주입 설정 · 초기화** | `docs/scenario-experiment.md` (**실험 돌리기 전 필독**) |
 | **시나리오 요구 대비 지금 상태 · 남은 할 일** | `docs/scenario-readiness.md` (판정과 링크만. 규칙·수치는 안 갖는다) |
+| **Runbook 실행 카탈로그 형식 · 위험도 · live drift** | `docs/runbook-catalog.md` (**런북 시딩·위험도 변경 전 필독**) |
 | 저장소 사용법, 배포 흐름 | `README.md` |
 | 특정 인프라 스택 | `infra/<스택>/README.md` |
 

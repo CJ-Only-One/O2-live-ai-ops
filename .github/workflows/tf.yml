@@ -61,7 +61,7 @@ jobs:
           # 쓰이지 않았고 05는 관측 스택이 되었다. 영상 스택은 `07-media`다(D-033).
           # 이름이 틀리면 아래 `ls` 검사에 걸려 조용히 건너뛴다 — 그 스택만
           # fmt·validate를 영영 안 탄다.
-          for s in 00-cicd 01-network 02-eks 03-data 04-platform 05-datadog 06-agent 06-datastream 07-media 08-chat-signal; do
+          for s in 00-cicd 01-network 02-eks 03-data 04-platform 05-datadog 06-agent 06-datastream 07-media 08-chat-signal 09-incident; do
             # 아직 코드가 없는 스택은 건너뛴다.
             if ! ls "infra/$s"/*.tf >/dev/null 2>&1; then
               continue
@@ -119,6 +119,11 @@ jobs:
         run: >-
           python3 -m unittest
           lambda/test_agent_entry_worker.py
+
+      - name: Incident adapter and correlator unit tests (09-incident)
+        if: matrix.stack == '09-incident'
+        run: >-
+          python3 -m unittest
           lambda/test_datadog_source_adapter.py
           lambda/test_incident_correlator.py
 

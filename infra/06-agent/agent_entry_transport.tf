@@ -9,8 +9,6 @@
 # 한 줄 실수로 production source가 Agent를 깨우지 못하게 두 개의 게이트를 둔다.
 
 locals {
-  agent_entry_queue_name       = "${local.name}-agent-trigger"
-  agent_entry_dlq_name         = "${local.name}-agent-trigger-dlq"
   agent_entry_worker_name      = "${local.name}-agent-entry-worker"
   agent_entry_idempotency_name = "${local.name}-agent-entry-idempotency"
 }
@@ -21,39 +19,6 @@ locals {
 
 data "aws_secretsmanager_secret" "agent_entry" {
   name = var.agent_entry_secret_name
-}
-
-# ── Queue / DLQ ──────────────────────────────────────────────────
-
-resource "aws_sqs_queue" "agent_entry_dlq" {
-  name = local.agent_entry_dlq_name
-
-  message_retention_seconds = 1209600 # 14일
-  sqs_managed_sse_enabled   = true
-}
-
-resource "aws_sqs_queue" "agent_entry" {
-  name = local.agent_entry_queue_name
-
-  # Worker timeout 60초의 6배. Lambda/SQS 재전달 중복 가능성을 줄인다.
-  visibility_timeout_seconds = 360
-  message_retention_seconds  = 345600 # 4일
-  receive_wait_time_seconds  = 20
-  sqs_managed_sse_enabled    = true
-
-  redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.agent_entry_dlq.arn
-    maxReceiveCount     = 3
-  })
-}
-
-resource "aws_sqs_queue_redrive_allow_policy" "agent_entry" {
-  queue_url = aws_sqs_queue.agent_entry_dlq.url
-
-  redrive_allow_policy = jsonencode({
-    redrivePermission = "byQueue"
-    sourceQueueArns   = [aws_sqs_queue.agent_entry.arn]
-  })
 }
 
 # ── 멱등성 ledger ────────────────────────────────────────────────
@@ -115,7 +80,7 @@ data "aws_iam_policy_document" "agent_entry_worker" {
       "sqs:DeleteMessage",
       "sqs:GetQueueAttributes",
     ]
-    resources = [aws_sqs_queue.agent_invocation.arn]
+    resources = [data.aws_sqs_queue.agent_invocation.arn]
   }
 
   statement {
@@ -135,7 +100,27 @@ data "aws_iam_policy_document" "agent_entry_worker" {
     sid       = "ReadAuthoritativeIncidentRevision"
     effect    = "Allow"
     actions   = ["dynamodb:GetItem"]
-    resources = [aws_dynamodb_table.incident_state.arn]
+    resources = [data.aws_dynamodb_table.incident_state.arn]
+  }
+
+  statement {
+    sid     = "InvokeMetricReadApis"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:o2-hot-api",
+      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:o2-warm-api",
+    ]
+  }
+
+  statement {
+    sid     = "ReadMetricApiKeys"
+    effect  = "Allow"
+    actions = ["ssm:GetParameter"]
+    resources = [
+      "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/o2/warm/api-key",
+      "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/o2/api/read-path-degraded-admin-key",
+    ]
   }
 
   statement {
@@ -149,9 +134,9 @@ data "aws_iam_policy_document" "agent_entry_worker" {
     sid    = "SearchAndStoreAgentIncidentHistory"
     effect = "Allow"
     actions = [
-      "s3vectors:QueryVectors",
       "s3vectors:GetVectors",
       "s3vectors:PutVectors",
+      "s3vectors:QueryVectors",
     ]
     resources = [aws_s3vectors_index.incidents_o2.index_arn]
   }
@@ -162,6 +147,7 @@ data "aws_iam_policy_document" "agent_entry_worker" {
     actions   = ["s3:PutObject"]
     resources = ["${aws_s3_bucket.history_o2.arn}/incidents/*"]
   }
+
 }
 
 resource "aws_iam_role_policy" "agent_entry_worker" {
@@ -185,6 +171,12 @@ data "archive_file" "agent_entry_worker" {
     content  = file("${path.module}/lambda/agent_entry_worker.py")
     filename = "lambda_function.py"
   }
+
+
+  source {
+    content  = file("${path.module}/lambda/agent_metric_enrichment.py")
+    filename = "agent_metric_enrichment.py"
+  }
 }
 
 resource "aws_lambda_function" "agent_entry_worker" {
@@ -194,8 +186,9 @@ resource "aws_lambda_function" "agent_entry_worker" {
   runtime       = "python3.12"
   architectures = ["x86_64"]
 
-  # Dify blocking 45초 앞에 Bedrock embedding과 S3 Vectors 조회가 추가된다.
-  timeout     = 90
+  # S2는 60초 안정화 조치를 최대 두 번 수행할 수 있다. Dify blocking 호출과
+  # history/enrichment를 포함해도 SQS visibility(360초) 안에서 끝나도록 제한한다.
+  timeout     = 300
   memory_size = 128
 
   filename         = data.archive_file.agent_entry_worker.output_path
@@ -213,21 +206,24 @@ resource "aws_lambda_function" "agent_entry_worker" {
       # 기본값은 false다. 활성화하더라도 합성 Incident 1개 외에는 Dify를 호출하지 않는다.
       AGENT_ENTRY_EXECUTION_ENABLED    = tostring(var.agent_entry_execution_enabled)
       AGENT_ENTRY_ALLOWED_INCIDENT_IDS = join(",", sort(tolist(var.agent_entry_allowed_incident_ids)))
+      AGENT_ENTRY_OPERATIONAL_MODE     = tostring(var.agent_entry_operational_handoff_approved)
 
-      DIFY_URL             = "http://${aws_instance.dify.private_ip}/v1/workflows/run"
-      AGENT_ENTRY_SECRET   = var.agent_entry_secret_name
-      IDEMPOTENCY_TABLE    = aws_dynamodb_table.agent_entry_idempotency.name
-      INCIDENT_STATE_TABLE = aws_dynamodb_table.incident_state.name
-      IDEMPOTENCY_TTL      = tostring(var.agent_entry_idempotency_ttl_seconds)
-      IDEMPOTENCY_LEASE    = "120"
-      DIFY_TIMEOUT_SECONDS = "45"
-
-      # 기존 O2 Datadog 이력과 같은 저장소를 재사용한다. key는 incident_id라
-      # 기존 cycle_key 기반 레코드와 충돌하지 않는다.
-      HISTORY_BUCKET = aws_s3_bucket.history_o2.bucket
-      VECTOR_BUCKET  = aws_s3vectors_vector_bucket.history_o2.vector_bucket_name
-      VECTOR_INDEX   = aws_s3vectors_index.incidents_o2.index_name
-      EMBED_MODEL_ID = local.embed_model_id
+      DIFY_URL                  = "http://${aws_instance.dify.private_ip}/v1/workflows/run"
+      AGENT_ENTRY_SECRET        = var.agent_entry_secret_name
+      IDEMPOTENCY_TABLE         = aws_dynamodb_table.agent_entry_idempotency.name
+      INCIDENT_STATE_TABLE      = data.aws_dynamodb_table.incident_state.name
+      IDEMPOTENCY_TTL           = tostring(var.agent_entry_idempotency_ttl_seconds)
+      IDEMPOTENCY_LEASE         = "330"
+      DIFY_TIMEOUT_SECONDS      = "270"
+      HISTORY_BUCKET            = aws_s3_bucket.history_o2.bucket
+      VECTOR_BUCKET             = aws_s3vectors_vector_bucket.history_o2.vector_bucket_name
+      VECTOR_INDEX              = aws_s3vectors_index.incidents_o2.index_name
+      EMBED_MODEL_ID            = local.embed_model_id
+      HOT_API_FUNCTION          = "o2-hot-api"
+      WARM_API_FUNCTION         = "o2-warm-api"
+      WARM_API_KEY_PARAM        = "/o2/warm/api-key"
+      READ_PATH_ADMIN_KEY_PARAM = "/o2/api/read-path-degraded-admin-key"
+      READ_PATH_STATUS_URL      = var.agent_read_path_status_url
     }
   }
 
@@ -246,30 +242,17 @@ resource "aws_lambda_function" "agent_entry_worker" {
         length(var.agent_entry_allowed_incident_ids) == 0) ||
         (var.agent_entry_execution_enabled &&
           var.agent_entry_event_source_enabled &&
-        length(var.agent_entry_allowed_incident_ids) == 1)
+          ((var.agent_entry_operational_handoff_approved && length(var.agent_entry_allowed_incident_ids) == 0) ||
+        (!var.agent_entry_operational_handoff_approved && length(var.agent_entry_allowed_incident_ids) == 1)))
       )
-      error_message = "Agent Entry는 disabled+empty allowlist 또는 enabled+합성 Incident 1개 조합만 허용한다."
+      error_message = "Agent Entry는 disabled+empty, Shadow enabled+합성 Incident 1개, 또는 운영 승인 enabled+empty 조합만 허용한다."
     }
   }
 }
 
-# Phase 1B의 Signal Queue mapping은 destroy 없이 보존하되 영구 비활성화한다.
-# Worker IAM에서도 Signal Queue 소비 권한을 제거했으므로 mapping만 실수로 켜도
-# source trigger를 가져갈 수 없다. Phase 4 정리 전까지의 migration marker다.
-resource "aws_lambda_event_source_mapping" "agent_entry" {
-  event_source_arn = aws_sqs_queue.agent_entry.arn
-  function_name    = aws_lambda_function.agent_entry_worker.arn
-
-  enabled = false
-
-  batch_size                         = 1
-  maximum_batching_window_in_seconds = 0
-  function_response_types            = ["ReportBatchItemFailures"]
-}
-
 # Agent Invocation Queue의 유일한 Generic Worker consumer. 기본값은 disabled다.
 resource "aws_lambda_event_source_mapping" "agent_invocation_worker" {
-  event_source_arn = aws_sqs_queue.agent_invocation.arn
+  event_source_arn = data.aws_sqs_queue.agent_invocation.arn
   function_name    = aws_lambda_function.agent_entry_worker.arn
 
   enabled = var.agent_entry_event_source_enabled
@@ -280,40 +263,6 @@ resource "aws_lambda_event_source_mapping" "agent_invocation_worker" {
 }
 
 # ── 관측 ─────────────────────────────────────────────────────────
-
-resource "aws_cloudwatch_metric_alarm" "agent_entry_queue_age" {
-  alarm_name          = "${local.name}-agent-entry-queue-age"
-  alarm_description   = "Agent Trigger Queue의 가장 오래된 메시지가 5분을 넘겼다. Phase 1B에서는 메시지가 없어야 한다."
-  namespace           = "AWS/SQS"
-  metric_name         = "ApproximateAgeOfOldestMessage"
-  dimensions          = { QueueName = aws_sqs_queue.agent_entry.name }
-  statistic           = "Maximum"
-  period              = 60
-  evaluation_periods  = 2
-  threshold           = 300
-  comparison_operator = "GreaterThanThreshold"
-  treat_missing_data  = "notBreaching"
-
-  alarm_actions = [aws_sns_topic.alert_relay_alarm.arn]
-  ok_actions    = [aws_sns_topic.alert_relay_alarm.arn]
-}
-
-resource "aws_cloudwatch_metric_alarm" "agent_entry_dlq_not_empty" {
-  alarm_name          = "${local.name}-agent-entry-dlq-not-empty"
-  alarm_description   = "Agent Trigger DLQ에 메시지가 있다. 원인을 확인하기 전 재투입하지 않는다."
-  namespace           = "AWS/SQS"
-  metric_name         = "ApproximateNumberOfMessagesVisible"
-  dimensions          = { QueueName = aws_sqs_queue.agent_entry_dlq.name }
-  statistic           = "Maximum"
-  period              = 60
-  evaluation_periods  = 1
-  threshold           = 0
-  comparison_operator = "GreaterThanThreshold"
-  treat_missing_data  = "notBreaching"
-
-  alarm_actions = [aws_sns_topic.alert_relay_alarm.arn]
-  ok_actions    = [aws_sns_topic.alert_relay_alarm.arn]
-}
 
 resource "aws_cloudwatch_metric_alarm" "agent_entry_worker_errors" {
   alarm_name          = "${local.name}-agent-entry-worker-errors"

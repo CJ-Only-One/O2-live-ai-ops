@@ -89,8 +89,18 @@
 | D-072 | READ_PATH 상관관계에는 시나리오 4 page composite monitor 하나만 매핑한다 | role:page, role:sub, cache absorption, order path, duplicate signal |
 | D-073 | READ_PATH 초기 correlation window는 운영 5분 창과 Datadog tail 상한을 합친 420초다 | event time, full window, 420초, Shadow, false merge |
 | D-074 | 원복에 쓸 값은 응답이 아니라 조치 기록에 남긴다 | `record_restore`, 먼저 쓴 값이 이긴다, Argo replica 예외, 실행기 권한 경계 |
-| D-075 | 공통 Agent 진입점도 Dify 전에 이력을 조회한다 | `agent.incident.v1`, Bedrock, S3 Vectors, `past_cases`, fail-open, 원문 채팅 제외 |
-| D-076 | S3 를 외부 결제 PG 장애로 바꾼다 — 실패로 끝나는 것이 정답인 시나리오 | 종착 경로 3분할, `pg_external_failure`, 목업 PG 스텁, 병합 키에서 broadcast_id 제외 |
+| D-075 | 검증된 Incident revision만 Agent를 호출한다 | provisional 저장, correlated gate, 단일 metric 억제, Dify 호출 0 |
+| D-076 | Incident family는 명시 mapping의 통제 어휘다 | taxonomy, correlation key, UNKNOWN fail-safe, 텍스트 추론 금지 |
+| D-077 | Correlator는 evidence 역할과 결측을 snapshot에 남긴다 | primary, corroborating, context, VERIFIED, source 비종속 |
+| D-078 | Incident 생성 runtime은 `09-incident`가 소유한다 | 모니터링 팀 경계, 06-agent 소비자, state migration, apply 순서 |
+| D-079 | 수치 evidence는 구조화된 assessment input으로 전달한다 | sample count, freshness, NO_DATA, pod scope, 문자열 파싱 금지 |
+| D-080 | severity·recovery·strong exception은 결정론적 상태 계약이다 | material change, sustained recovery, integrity allowlist |
+| D-081 | Incident 운영 전환은 Shadow 모드와 승인 gate를 분리한다 | cooldown, reopen, measured window, operational approval |
+| D-082 | 운영 READ_PATH Incident handoff는 composite evidence와 세 승인 window를 사용한다 | COMPOSITE_CONDITION, recovery 300초, cooldown 300초, reopen 1800초 |
+| D-083 | 기존 모니터를 유지하고 S1 채팅 과부하 지표를 별도 Monitor로 추가한다 | `o2.chat.propagation`, `o2.warm.channel_limited_rate`, broadcast scope 선행 조건 |
+| D-084 | Dify가 아니라 Agent Worker가 승인된 복구 지표를 수집한다 | incident family catalog, Dify-only enrichment, 결측 보존, Lambda 직접 호출 |
+| D-085 | AZ 이중화는 하고 리전 DR 은 하지 않는다 | 방송 길이가 RTO 상한, mediamtx·Dify 단일점 유지 근거 |
+| D-086 | 방송 축은 Chat 전용이 아니다 — Datadog evidence 의 broadcast_id 도 채택한다 | TAG_KEYS, tag configuration 허용목록, multi-alert, LIVE-001 fallback, 팬아웃은 합계 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4458,102 +4468,296 @@ Git 에는 정상 기준값(2)이 남는다. 그래서 "되돌릴 값이 아예 
 한다. 되돌리는 실행은 기존 실행기를 replicas 값만 바꿔 다시 부르는 것이고,
 그것을 부르는 것은 워크플로의 몫이다.
 
-## D-075. 공통 Agent 진입점도 Dify 전에 이력을 조회한다
+---
 
-D-044의 Datadog 전용 Worker는 Dify 호출 전에 Bedrock으로 알림을 임베딩하고
-S3 Vectors에서 유사 장애를 찾아 `past_cases`로 넘긴다. 채팅과 Datadog을
-`agent.incident.v1`로 합친 공통 Agent Entry Worker에는 이 단계가 없어서, 같은
-장애라도 신규 경로로 들어오면 과거 사례를 쓰지 못했다.
+## D-075. 검증된 Incident revision만 Agent를 호출한다
 
-### 정한 것
+D-055에서는 Chat-first `PROVISIONAL` revision도 read-only 분석을 시작할 수 있게 했다.
+하지만 단일 metric 또는 단일 source 신호가 곧바로 Dify를 호출하면, 여러 독립 증거와 실제
+사용자 영향을 먼저 확인한다는 Incident 경계가 무너진다. 예정된 트래픽 파동과 Monitor
+renotify도 Agent Queue를 점유할 수 있다.
 
-공통 Worker도 동일한 순서를 사용한다.
+따라서 Correlator는 `PROVISIONAL`과 `AMBIGUOUS` revision을 Incident State에 기록하되
+Agent Invocation Queue에는 보내지 않는다. 서로 다른 source의 증거가 같은 environment,
+symptom family, affected scope, correlation window에서 결합된 `CORRELATED` material revision만
+전달한다. signal claim은 전달 대상이면 `PENDING`에서 `EMITTED`로, 아니면 처음부터
+`NOT_REQUIRED`로 기록한다.
 
-```text
-agent.incident.v1 검증·락
-  → 구조화된 Incident 문맥 임베딩
-  → O2 전용 S3 Vectors 유사검색
-  → past_cases + custom_alert_json 으로 Dify 호출
-  → ledger 성공 확정
-  → S3 원본 + S3 Vectors 저장
-```
+이 결정은 상태를 버리는 suppression이 아니다. 먼저 온 신호는 같은 `incident_id`의 revision
+1로 남고, 반대 source가 도착하면 revision 2로 승격되어 처음 호출된다. 환경 불일치나 복수
+후보인 `AMBIGUOUS`는 운영자 확인 전 자동 병합·Agent 호출·자동 조치를 모두 막는다.
 
-Dify가 S3 Vectors를 직접 조회하지 않는다. D-044와 같이 Worker가 준비한 텍스트만
-받는다. 별도 저장소도 만들지 않고 `history_o2.tf`의 O2 전용 버킷과 인덱스를
-재사용한다. 기존 Datadog 레코드는 `cycle_key`, 공통 경로는 `incident_id`를 벡터
-key로 쓰므로 서로 덮어쓰지 않는다.
+대가는 단일 source만 관측 가능한 장애의 Agent 분석이 보류된다는 점이다. 데이터 무결성·보안
+같은 단일 강신호 예외는 현재 trigger 계약에 별도 증거 품질 필드가 없으므로 추측해 열지 않고,
+taxonomy와 계약에 명시적인 strong exception을 추가한 뒤 별도 결정으로 다룬다.
 
-### 채팅 원문은 임베딩에도 넣지 않는다
+---
 
-공통 Incident에는 원문 채팅이 없다. 임베딩에는 `normalized_context`, source 종류,
-Datadog 제목·쿼리, Chat의 규칙 ID와 집계 수치만 쓴다. `candidate_id`,
-`broadcast_id`, 사용자 식별자, `root_cause=UNDETERMINED`는 제외한다. Dify 판단문도
-검색 벡터에 넣지 않는다. 검증 전 추측이 다음 장애의 검색 근거로 승격되는 것을
-막기 위해서다.
+## D-076. Incident family는 명시 mapping의 통제 어휘다
 
-### 실패 경계
+기존 `normalized_context`는 `symptom_family=LATENCY`와 surface/service만 가졌다. 이 조합만으로는
+read-path degradation, 한 파드의 capacity 문제, deployment regression처럼 증상은 같아도
+evidence와 조치가 다른 Incident를 구분할 수 없다.
 
-이력 조회 실패는 `past_cases=""`로 축소하고 Dify 분석을 계속한다. Dify 성공 뒤
-이력 저장이 실패해도 ledger를 실패로 되돌리거나 Dify를 재호출하지 않는다.
-`past_cases`는 Dify Start의 optional paragraph로 명시하고, Code 노드가 실제 수신
-여부를 응답에 넣는다. 모르는 입력을 조용히 무시하는 Dify 동작에는 기대지 않는다.
+따라서 `agent.incident.v1.normalized_context.incident_family`를 필수 통제 어휘로 추가하고
+correlation key에도 포함한다. Source Adapter의 원문이나 alert 제목을 Correlator가 해석하지
+않으며, Terraform의 Chat surface·Datadog monitor mapping이 family를 명시해야 한다. mapping에
+없는 값은 plan 또는 Lambda 설정 로드에서 거부한다.
 
-### 안 한 것
+`UNKNOWN`은 mapping 값으로 허용하지 않는다. 환경 불일치나 필수 차원 누락처럼 정상적으로
+분류할 수 없는 신호를 `AMBIGUOUS`로 격리할 때만 Correlator가 만든다. 이로써 새 Monitor를
+추가해 놓고 taxonomy 등록을 빠뜨린 경우 조용히 기존 Incident에 잘못 병합되지 않는다.
 
-이 변경은 유사 이력 조회와 저장만 연결한다. 검색된 이력을 자동으로 사실 또는
-원인으로 확정하지 않고, 자동 조치 권한도 추가하지 않는다. 거리 임계값 0.35와
-top-k 3은 기존 경로의 보수적 초기값을 그대로 사용하며 운영 사례로 재보정한다.
+이번 단계는 family 이름과 전달 경계만 고정한다. severity 숫자, 지속 window, 즉시 승격 예외는
+실측과 별도 evidence 계약 없이 만들지 않는다.
 
-## D-076. S3 를 외부 결제 PG 장애로 바꾼다 — 실패로 끝나는 것이 정답인 시나리오
+---
 
-시나리오 셋을 게이트(대가·정보·자기 교정)가 아니라 **상태 머신이 실제로 도달하는
-종착 상태**로 나누기로 했다. 게이트는 사람이 개입하는 이유의 분류이지 시나리오의
-축이 아니었고, 실제로 Guardrail 하나에서 전부 판정되기 때문에 셋으로 나눌 근거가 약했다.
+## D-077. Correlator는 evidence 역할과 결측을 snapshot에 남긴다
 
-| 경로 | 종착 | 시나리오 |
+Dify가 원시 signal을 다시 읽어 Incident 성립 여부를 판단하게 두지 않는다. Correlator가
+명시 mapping으로 각 trigger를 `primary`, `corroborating`, `context` 중 하나에 귀속하고,
+`missing_required_roles`와 `verification_state`를 `agent.incident.v1.evidence_assessment`에 남긴다.
+
+현재 검증 상태는 `INSUFFICIENT_EVIDENCE`, `VERIFIED`, `AMBIGUOUS`다. `VERIFIED`는 primary와
+corroborating이 모두 있고 correlation ambiguity가 없을 때만 가능하다. 배열은 원본 trigger ID를
+참조하며 한 trigger가 두 역할에 속하거나 snapshot에 없는 ID를 참조하면 Worker도 거부한다.
+
+독립 evidence를 Chat과 Datadog이라는 제품명 조합으로 정의하지 않는다. 같은 Datadog source라도
+서로 다른 Monitor가 아직 비어 있는 역할을 채우면 material revision이 될 수 있다. 반대로 같은
+Monitor의 반복, renotify, 이미 채워진 역할의 same-source update는 revision을 만들지 않는다.
+
+---
+
+## D-078. Incident 생성 runtime은 `09-incident`가 소유한다
+
+Incident taxonomy, evidence policy, correlation, suppression은 모니터링 시스템의 책임이다.
+기존 구현은 Dify와 Agent Worker가 있는 `06-agent`에 함께 있었지만 팀 소유권과 변경 주기가
+다르다. 신규 `infra/09-incident` 스택이 Signal Queue, Datadog Adapter, Correlator, Incident
+State, Invocation Queue producer를 소유한다.
+
+`06-agent`는 Invocation Queue consumer, authoritative revision read, 실행 ledger·lock, Dify
+진단·복구만 소유한다. 따라서 Agent 팀은 Incident 생성 정책을 배포하지 않고, 모니터링 팀은
+Dify 실행 권한을 갖지 않는다.
+
+기존 dev 물리 리소스는 `dify/terraform.tfstate`에 있으므로 코드 이동만으로 apply하지 않는다.
+`incident/terraform.tfstate`로 state를 이동한 뒤 양쪽 plan에서 create/destroy 0을 확인해야 한다.
+구체 절차와 이전 대상은 `infra/09-incident/README.md`가 원본이다.
+
+---
+
+## D-079. 수치 evidence는 구조화된 assessment input으로 전달한다
+
+S1의 propagation p95·정상 사용자 차단률과 S2의 service/pod 지연·CPU·version을 alert 제목,
+본문, query, tags에서 다시 파싱하지 않는다. Datadog Adapter가 `agent.trigger.v1`의
+`assessment_input`으로 evidence type, 관측 시각, 표본 수, `PRESENT|NO_DATA|STALE`, scope와
+측정값을 전달한다.
+
+Monitor mapping은 요구 evidence type, 최소 표본, freshness, evidence role을 함께 선언한다.
+Correlator는 type·scope·표본·freshness를 모두 통과한 신호만 역할 배열에 넣는다. `NO_DATA`는
+0이나 정상으로 바꾸지 않고 data quality 상태로 보존하며 primary/corroborating을 채우지 않는다.
+S1 evidence에는 broadcast scope가, S2 pod evidence에는 pod가, version evidence에는 version이
+필수다.
+
+---
+
+## D-080. severity·recovery·strong exception은 결정론적 상태 계약이다
+
+Severity 숫자 임계값은 Correlator에 복제하지 않는다. 해당 임계값을 소유하는 Monitor mapping이
+`INFORMATIONAL|WARNING|HIGH|CRITICAL` 등급을 선언하고, 유효 evidence 중 가장 높은 등급을
+Incident severity로 사용한다. 등급 상승만 `MATERIAL_SEVERITY_CHANGE` revision이 된다.
+
+`Recovered` 한 건은 `RECOVERING`일 뿐이다. primary와 corroborating 역할의 recovery evidence가
+모두 모이고 설정된 recovery window가 지난 revision만 `RESOLVED`가 된다. window가 0이면
+Shadow 계약 시험은 가능하지만 운영 전환 gate는 열리지 않는다.
+
+단일 강신호 예외는 `DATA_INTEGRITY_SECURITY_RISK` family의 `INTEGRITY_VIOLATION` mapping이
+`strong_exception_allowed=true`를 선언하고 trigger도 `signal_strength=STRONG`이며 data quality가
+유효할 때만 허용한다. 다른 family와 evidence type에서는 설정 로드 단계부터 거부한다.
+
+---
+
+## D-081. Incident 운영 전환은 Shadow 모드와 승인 gate를 분리한다
+
+Shadow 모드는 한 lifecycle trial(active 2·recovery 2·reopen 1)을 담도록 합성 idempotency key
+1~8개와 Datadog monitor 하나만 허용한다. Operational
+모드는 exact cycle key allowlist를 사용하지 않고 명시 monitor mapping을 allowlist로 사용한다.
+대신 운영자 승인 플래그, 0보다 큰 recovery/cooldown/reopen window, 활성 source와 consumer gate가
+모두 있어야 Terraform precondition을 통과한다.
+
+같은 Incident의 material revision이 cooldown 안에 오면 authoritative State에는 저장하되 Agent
+Invocation을 억제한다. `RESOLVED` 이후 reopen window 안에 같은 grouping key 신호가 오면 기존
+Incident ID의 다음 revision으로 `OPEN`한다. 측정 전 tfvars는 Shadow·비활성·window 0을 유지하며,
+이 코드 변경 자체는 운영 Monitor/Webhook 연결 승인이 아니다.
+
+---
+
+## D-082. 운영 READ_PATH Incident handoff는 composite evidence와 세 승인 window를 사용한다
+
+2026-08-25 운영자가 Incident 운영 전환을 승인하고 window를 하나씩 확정했다. recovery는
+300초, material revision cooldown은 300초, resolved Incident reopen은 1800초다. 이 값은
+성능 실측치가 아니라 운영자가 승인한 상태 정책값이며, 실제 source 반복 측정 후 변경할 수 있다.
+
+운영 Datadog source는 D-072의 monitor `21940250` 하나다. 이 monitor는 cache hit 저하와 API
+p95 상승을 함께 요구하는 composite라 단일 p95 값을 Webhook에서 수치 evidence처럼 만들지 않는다.
+`COMPOSITE_CONDITION`, sample count 1, 빈 measurements로 조건 성립 자체를 corroborating evidence로
+기록한다. Chat READ_PATH Candidate가 primary 역할을 채워야 `VERIFIED`와 Agent Invocation이 된다.
+
+Operational mode에서는 합성 cycle/Incident/broadcast allowlist를 비운다. 대신 09 Incident,
+06 Agent Worker, 08 Chat Adapter 각각의 운영자 승인 플래그와 execution/event-source gate가 함께
+true여야 한다. Datadog Monitor에는 기존 `@webhook-o2-dify`를 보존하고 별도
+`@webhook-o2-incident-entry`를 추가해 cutover 중 기존 알림 경로를 제거하지 않는다.
+
+---
+
+## D-083. 기존 모니터를 유지하고 S1 채팅 과부하 지표를 별도 Monitor로 추가한다
+
+인시던트는 여러 신호를 사후 상관하는 계층이므로 기존 Datadog Monitor와 기존 Dify
+알림 경로를 폐기하지 않는다. 특가 오픈 과부하를 관찰하기 위해 `o2.chat.propagation`
+전파 p95와 `o2.warm.channel_limited_rate` 정상 사용자 차단률을 별도 S1 Monitor로
+추가한다. 초기 임계값은 각각 warning/critical 800/1500ms, 0.05/0.10이며 실제
+반복 측정 후 조정한다. 현재 S1 assessment 계약은 `broadcast_id`를 필수로 하므로
+새 Monitor는 지표 알림만 운영하고, 방송별 scope가 공급될 때 Incident webhook과
+Correlator mapping을 연결한다.
+
+---
+
+## D-084. Dify가 아니라 Agent Worker가 승인된 복구 지표를 수집한다
+
+Dify 워크플로에 메트릭별 HTTP 노드와 비밀값을 계속 추가하지 않는다. Generic Agent Worker가
+검증된 `agent.incident.v1`의 `normalized_context.incident_family`를 보고 승인된 catalog에서
+Hot/Warm 조회 목록을 선택한다. Worker는 AWS SDK로 `o2-hot-api`와 `o2-warm-api`를 직접
+호출하고, Valkey 권위 상태는 인증된 API GET으로 읽는다.
+
+Invocation Queue의 원본 snapshot과 revision은 바꾸지 않는다. 수집값은 Dify에 직렬화하는
+복사본의 기존 `assessment_input.measurements` 확장점에만 숫자로 추가한다. 조회 실패나
+`NO_DATA`는 0으로 바꾸지 않고 해당 key를 생략하며 sanitized source 이름만 로그에 남긴다.
+따라서 Dify는 판단만 담당하고, 메트릭 추가·인증·수집 정책은 백엔드 코드와 IAM에서 관리한다.
+
+---
+
+## D-085. AZ 이중화는 하고 리전 DR 은 하지 않는다
+
+가용성 작업의 범위를 **가용영역 단위**로 끊는다. 다른 리전에 대기 인프라를
+두지 않고, 리전 장애는 다음 방송을 지키는 백업 수준으로만 대비한다.
+
+기준은 비용이 아니라 **시간**이다. 라이브 커머스는 방송이 90 분이고 특가
+구간은 그중 몇 분이다. 끊기면 나중에 복구해도 그 매출은 돌아오지 않으므로
+**방송 길이가 RTO 상한**이 된다. 리전 장애에서 다른 리전을 올리는 데는 아무리
+빨라도 수십 분이 걸려 그 방송은 이미 실패한 것이고, 상시 대기 인프라를 띄워도
+얻는 것은 "다음 방송" 뿐이다. 그것은 크로스리전 백업으로 충분하다.
+
+반대로 AZ 단위는 시간이 맞는다. 실측에서 RDS 전환 15 초, 노드 이동 1 초였다
+(M-022). 방송 한 편 안에서 회복되는 값이라 실제로 그 방송을 살린다.
+
+넣은 것은 여섯이다 — 노드를 AZ 당 둘로, api·chat-gateway·frontend 를 AZ 로
+분리, RDS MultiAZ, Valkey 복제본, coredns·metrics-server 분리, KEDA 세 컴포넌트
+이중화, NAT 를 AZ 마다. 노드 증설이 나머지 전부의 전제였다 — AZ 하나를 잃었을 때
+옮겨갈 요청량(1030m·2128Mi)이 남은 노드 여유(230m·416Mi)를 넘어, 데이터 계층만
+살아남고 그것을 쓸 파드가 Pending 으로 남는 상태였다.
+
+**mediamtx 는 단일점으로 남긴다.** RTMP 는 송출자가 파드 하나에만 붙고 HLS
+세그먼트도 메모리에만 있어(`hlsDirectory` 비어 있음) 파드끼리 공유되지 않는다.
+replicas 를 둘로 늘리면 스트림이 들어오지 않은 쪽으로 간 시청자가 404 를 받는다.
+origin/edge 로 나누면 시청 측은 이중화되지만 origin 이 여전히 하나라 단일점이
+없어지는 것이 아니라 옮겨간다. 자체 호스팅 RTMP 수신의 이중화는 원래 어렵고,
+실무에서 IVS 같은 관리형을 쓰는 이유가 그것이다. 대신 노드 장애에서 파드가
+옮겨지기까지의 대기를 기본값 300 초에서 20 초로 낮춰 약 6 분을 약 85 초로 줄였다.
+목업 재생이라 이 단일점은 감수하며, 오히려 진단 대상이 하나 늘어난다.
+
+**Dify 도 이번 범위에서 뺀다.** 가장 위험한 문제인 이중 조치는 이미 막혀 있다 —
+Agent Entry Worker 가 DynamoDB 로 인시던트당 실행을 직렬화하므로(`single_incident_action_lock_required`)
+Dify 를 둘로 늘려도 조치가 두 번 나가지 않는다. 막는 것은 상태의 위치다. Dify 의
+Postgres·Redis·벡터DB 가 EC2 의 EBS 볼륨(2a, 60GB)에 있고 EBS 는 AZ 에 묶이므로,
+반대 AZ 에 인스턴스를 띄워도 같은 볼륨을 붙일 수 없다. 그냥 둘을 띄우면 워크플로
+DSL·실행 이력·API 키가 각자 갈린다. 제대로 하려면 RDS·ElastiCache 로 상태를
+외부화하는 것이 선행돼야 하고 그 과정에서 Lambda 의 호출 주소까지 바꿔야 한다.
+Dify 가 죽었을 때 멈추는 것은 AI 진단뿐이고 방송·주문·채팅은 계속 도는 반면,
+이 작업은 지금 동작하는 AI 파이프라인을 뜯는다. 잃을 것이 얻을 것보다 크다.
+
+**Durable Functions 도 같은 이유로 미룬다.** 현 구조의 약점은 분명하다 —
+`alert_worker_o2` 의 timeout 이 850 초로 Lambda 상한 900 초에 50 초를 남기고 붙어
+있고, Slack 승인 노드가 최대 600 초를 기다린다. 게다가 더 큰 것은 검증 대기다.
+조치마다 지표 창이 차기를 기다려야 하고(모니터가 `last_5m`·`last_10m`) S2 는
+조치·재분석·원복 최종 재검증으로 그것이 세 번 돈다. 한 인시던트를 끝까지 처리하는
+데 필요한 시간이 이미 Lambda 상한을 넘는다. 그러나 그 기다림은 Lambda 가 아니라
+**Dify 워크플로 안에** 있다(`o2-aiops-workflow.yml`, `response_mode: blocking`).
+Lambda 쪽만 Durable 로 바꾸면 껍데기만 바뀌고 대기는 그대로다. 효과를 보려면
+Dify 를 오케스트레이터 자리에서 내려야 하는데, 그것은 이중화가 아니라 역할 교체다.
+그리고 그 교체를 하면 위의 Dify 이중화 작업 상당수가 무효가 되므로 순서상으로도
+Durable 이 먼저다.
+
+관련 실측은 M-022, 롤링 중 배치가 무력해지는 함정은 T-037 이다.
+
+---
+
+## D-086. 방송 축은 Chat 전용이 아니다 — Datadog evidence 의 `broadcast_id` 도 채택한다
+
+S1 의 인시던트 단위는 `service + broadcast_id` 인데 **Datadog 진입 경로에서 방송 축이
+다섯 군데에서 끊겼다.** 부하테스트 팀이 셋을 짚었고 확인하면서 둘이 더 나왔다.
+
+| # | 어디 | 무엇 |
 |---|---|---|
-| 승인 → 해결 | `RESOLVED` | S1 채팅 총량 |
-| 재진단 → 해결 | `RESOLVED` | S2 느린 파드 |
-| **소진 → 실패 보고** | `RETRY_LIMIT_EXCEEDED` | **S3 외부 결제 PG** |
+| 1 | `apps/chat-gateway/src/telemetry.ts` | `TAG_KEYS` 에 `broadcast_id` 가 없고 `chatPropagation()`·`fanoutItems()` 가 태그 없이 emit |
+| 2 | `infra/05-datadog/chat_propagation_metric.tf` | `datadog_metric_tag_configuration.tags` 가 조회 축을 **제한**한다. 앱이 보내도 여기 없으면 Datadog 이 버린다 |
+| 3 | `infra/05-datadog/chat_incident_monitors.tf` | Monitor 가 합계라 알림이 어느 방송인지 말하지 못한다 |
+| 4 | `infra/09-incident/lambda/datadog_source_adapter.py` | S1 evidence 는 `scope.broadcast_id` 가 필수다(`ASSESSMENT_S1_SCOPE`) |
+| 5 | `infra/09-incident/lambda/incident_correlator.py` | 실어 보내도 `DATADOG_MONITOR` source 면 `broadcast_ids = []` 로 버렸다 |
 
-세 번째 자리에는 **에이전트가 고칠 수 없는 원인**이 필요하다. 옛 S3(읽기 급증·사람/봇
-미확정)는 버티기 조치로 증상이 완화되므로 "다 해봤는데 안 된다" 가 성립하지 않았다.
+### 왜 그냥 두면 안 되나
 
-**성공하는 데모는 흔하지만 "못 고치겠습니다" 라고 말하고 멈추는 에이전트는 드물다.**
-실패를 인정하지 못하는 에이전트는 같은 조치를 무한히 반복하며 상황을 악화시킨다.
-자율 조치를 운영에 올릴 수 있는 조건은 성공률이 아니라 **한도가 있고 그 한도에 닿으면
-사람을 부른다** 는 것이므로, 그 경로를 실제로 밟는 시나리오가 하나는 있어야 한다.
+Dify normalize 노드가 `_tag_value(tags,'broadcast_id') or 'LIVE-001'` 이다. 축이 없으면
+**존재하지 않는 방송에 채널 제한이 걸리고 200 OK 로 성공 기록된다.** S1 조치
+(`limit_channel_volume`)는 비가역이고 사람 승인을 받으므로, 대상이 틀리면 조치를
+안 하느니만 못하다. 운영자는 "이 방송의 채팅을 제한합니다" 를 보고 승인한다.
 
-### 결제 인프라를 만들지 않는다
+`o2warm` 의 `rundown()`·정책·토폴로지 조회가 전부 `broadcast_id` 를 키로 쓰므로,
+틀린 값이면 그 조회가 빈 결과이거나 남의 방송 것이다.
 
-배선은 이미 있고 호출하는 코드만 없다.
+### 명세를 바꾸는 부분
 
-| 이미 있는 것 | 어디 |
-|---|---|
-| `payment_process` 이벤트 · `pg_latency_ms` · `failure_code` enum | `o2events/emit.py`, `schemas.py` |
-| `pg_latency_ratio` 집계 | `o2warm/sketch.py`, `metrics.py` |
-| `pg_external_failure` 진단 카테고리 · 복구 판정 폴백 | Dify 진단 프롬프트, `recovery_judge` |
-| "PG·DB 장애 감별 불가" 경고 | `o2warm/confidence.py` |
+명세 §4 는 `broadcast_ids` 를 *"Chat Candidate가 제공하는 방송 식별자 집합"* 으로
+적었다. **이 결정이 그 범위를 넓힌다** — Datadog evidence 의
+`assessment_input.scope.broadcast_id` 도 같은 집합에 들어간다.
 
-SDK 주석이 이 시나리오를 그대로 예고한다 — *"`pg_latency_ms` 이 값이 없으면 PG 장애와
-DB 장애를 구분할 수 없습니다."* **지금은 아무도 안 보내서 그 판정을 못 할 뿐이다.**
+버리면 Chat 과 Datadog 이 같은 장애를 잡았을 때 병합된 Incident 의 방송 축이
+**어느 source 가 먼저 왔느냐에 따라 달라진다.** 두 source 를 같은 Incident 로 본다는
+D-055 의 전제와 어긋난다.
 
-그래서 주입은 **목업 PG 스텁 하나**다. `cfg:pg:delay_ms` · `cfg:pg:fail_rate` 를 Valkey 키로
-읽어 지연과 실패를 만들고 `payment_process` 를 발행한다. 재배포 없이 켜고 끄며,
-기존 `cfg:*` 초기화 절차에 그대로 흡수된다.
+### 축마다 그룹화를 다르게 한다
 
-**`api` 주문 접수 경로에 넣는다.** `order-worker` 에 넣으면 SQS 백로그가 쌓여
-`queue_backlog` 로 오진하는데, 이 시나리오는 "정확히 진단했는데도 못 고친다" 가 핵심이라
-오진이 방해가 된다.
+| 지표 | 태그 | Monitor 그룹화 | 근거 |
+|---|---|---|---|
+| `o2.chat.propagation` | 추가 | **`by {broadcast_id}` multi-alert** | 사용자 영향은 방송별로 갈리고 조치 대상을 지목해야 한다 |
+| `o2.app.business_event{event:chat.send}` · `o2.app.failure` | 추가 | 차단률 계산의 분자·분모 | `CHAT_NORMAL_USER_BLOCK_RATE` 도 `scope.broadcast_id` 가 필수다 |
+| `o2.app.fanout.items` | 추가 | **합계 유지** | 아래 |
 
-### 인시던트 단위에서 broadcast_id 를 뺀다
+**팬아웃 총량은 쪼개면 안 된다.** M-010 의 붕괴점(2파드 20,000 아이템/s)은
+chat-gateway **파드 용량**이고 파드는 방송들이 공유한다. 방송 A 15,000 + 방송 B 15,000
+이면 각각은 안전선 아래인데 파드는 이미 무너진다. 방송별 임계로 바꾸면 그 상황을
+놓친다. 태그는 진단·evidence scope 용으로 붙이되 **판정은 합계로** 한다.
 
-S1 은 방송 단위(채널 총량은 방송마다 별개), S2 는 Deployment 단위다. **S3 만 service 전역**이다 —
-외부 의존이라 모든 방송에 동시에 영향하므로, 병합 키에 `broadcast_id` 를 남기면 같은 사건이
-방송 수만큼 늘어난다.
+### 카디널리티
 
-### 옛 S3 자산은 지우지 않는다
+목업 방송 수준이라 지금은 부담이 없다. 늘면 먼저 뺄 후보는 `o2.chat.propagation` 의
+`pod_name` 이다 — 전파 지연을 파드별로 보는 소비처가 아직 없다.
 
-`read-path-degraded` 노브(D-062), `read-path.js` 의 `human`/`ambiguous` 패턴,
-감별 지표(`ua_diversity` · `interval_cv` · 집중도)는 그대로 둔다. 시연 시나리오에서
-빠질 뿐 기능으로는 유효하고, 읽기 경로 보호는 다른 인시던트에서 여전히 쓸 수 있다.
+**표본율도 같이 본다.** `PROPAGATION_SAMPLE_RATE = 0.001` 이라 `by {broadcast_id}` 로
+쪼개면 표본이 방송 수만큼 나뉜다. 방송당 p95 가 흔들리면 창을 늘리기 전에 표본율을
+올린다 — 창을 늘리면 붕괴 순간을 놓친다.
+
+### 이 결정이 안 바꾸는 것
+
+**correlation key 에 방송을 넣지 않는다.** 지금도 `environment + incident_family +
+symptom_family + service + suspected_surface` 다. 즉 두 방송이 동시에 나빠지면
+`broadcast_ids` 가 둘인 Incident 하나가 된다. S1 조치가 방송 단위이므로 그때 대상이
+모호해지지만, 병합 key 변경은 D-055·명세 §4 의 합의 대상이라 여기서 바꾸지 않는다.
+**반복 표본으로 실제로 겹치는지 먼저 본다.**
+
+### Terraform 이 못 고치는 것
+
+Datadog webhook payload 템플릿은 이 저장소에 없다(콘솔 설정). Adapter 는
+`assessment_input` 을 **만들지 않고 검증만 한다** — payload 에
+`assessment_input.scope.broadcast_id` 를 실어 보내도록 콘솔에서 고쳐야 한다.
+multi-alert 의 그룹 태그는 `$ALERT_SCOPE` 로 꺼낸다. 이걸 빼먹으면 Adapter 가
+`ASSESSMENT_S1_SCOPE` 로 거부하고, 증상은 "S1 만 Incident 가 안 생긴다" 하나다.

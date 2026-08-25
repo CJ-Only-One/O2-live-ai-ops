@@ -42,15 +42,15 @@ export function createChatIngressHandler(deps: Dependencies) {
     // failure_rate 가 항상 1.0 으로 나오는 사고를 피한다.
     if (message.length > deps.maxMessageLength) {
       deps.emitChatSend({ ...base, result: 'FAILED', failure_code: 'TOO_LONG' }, ctx);
-      businessEvent('chat.send', 'failed');
-      failure('chat.send', 'TOO_LONG');
+      businessEvent('chat.send', 'failed', conn.broadcastId);
+      failure('chat.send', 'TOO_LONG', conn.broadcastId);
       duration('chat.message', performance.now() - started);
       return;
     }
     if (await deps.overRateLimit(conn)) {
       deps.emitChatSend({ ...base, result: 'FAILED', failure_code: 'RATE_LIMITED' }, ctx);
-      businessEvent('chat.send', 'failed');
-      failure('chat.send', 'RATE_LIMITED');
+      businessEvent('chat.send', 'failed', conn.broadcastId);
+      failure('chat.send', 'RATE_LIMITED', conn.broadcastId);
       duration('chat.message', performance.now() - started);
       return;
     }
@@ -58,14 +58,14 @@ export function createChatIngressHandler(deps: Dependencies) {
     // 한도 안에 있는데 인원이 많아서 넘친다"는 S1 전제를 재현하는 조치다.
     if (await deps.overChannelLimit(conn)) {
       deps.emitChatSend({ ...base, result: 'FAILED', failure_code: 'CHANNEL_LIMITED' }, ctx);
-      businessEvent('chat.send', 'failed');
-      failure('chat.send', 'CHANNEL_LIMITED');
+      businessEvent('chat.send', 'failed', conn.broadcastId);
+      failure('chat.send', 'CHANNEL_LIMITED', conn.broadcastId);
       duration('chat.message', performance.now() - started);
       return;
     }
 
     deps.emitChatSend({ ...base, result: 'SUCCESS' }, ctx);
-    businessEvent('chat.send', 'success');
+    businessEvent('chat.send', 'success', conn.broadcastId);
 
     // SQS 분기는 await하지 않는다. 내부 Promise 거부와 동기 예외를 모두 흡수해
     // Publisher 구현이 퇴행해도 Valkey 팬아웃이 계속되게 한다.

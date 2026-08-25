@@ -48,6 +48,12 @@
 | T-030 | 앱은 정상인데 `o2.app.*`가 전부 No Data다 | DogStatsD, `useHostPort`, `DD_AGENT_HOST`, UDP 8125 |
 | T-031 | distribution 값은 보이는데 p95 위젯만 No Data다 | `include_percentiles`, metric tag configuration, custom metric 비용, `avg` |
 | T-032 | APM span에는 pod_name이 있는데 trace metric에서 by pod_name이 안 된다 | APM primary tag 후보, span-based metric, `@duration`, 나노초 |
+| T-033 | 로컬 state 파일이 JSON인데 Terraform이 파싱하지 못한다 | Windows PowerShell, UTF-8 BOM, `Set-Content` |
+| T-034 | Correlator가 Shadow 메시지를 받자마자 모두 실패한다 | 환경변수 JSON 매핑 로딩, dict와 set의 차집합 |
+| T-035 | AWS CLI로 보낸 JSON이 Lambda에서 `SQS_BODY` 거부된다 | Windows PowerShell 네이티브 인자 quoting, `file://` |
+| T-036 | validate는 통과하지만 IAM policy plan이 duplicate Sid로 실패한다 | `aws_iam_policy_document`, merge 중복, provider 렌더링 |
+| T-037 | topologySpreadConstraints 를 걸었는데 파드가 안 갈린다 | merge key 중복, `matchLabelKeys`, 롤링 중 구 ReplicaSet 계산 |
+| T-038 | 조치 실행기가 증설했는데 10초 뒤 원래 replicas로 돌아간다 | cue-warmer, 조치 소유권 충돌, 실험 잠금, RoleBinding 원복 |
 
 
 ---
@@ -1549,3 +1555,141 @@ APM additional primary tag 설정 화면에도 `pod_name`이 후보로 나오지
 **왜 늦게 찾았나** — Trace Explorer에서 보이는 모든 span tag가 표준 trace metric에도
 자동으로 붙는다고 생각하기 쉽고, additional primary tag UI는 선택 불가능한 이유를
 설명하지 않는다. 실제 span payload와 metric tag set을 따로 확인해야 경계가 드러난다.
+
+---
+
+## T-033. 로컬 state 파일이 JSON인데 Terraform이 파싱하지 못한다
+
+**증상** — `terraform state pull` 출력을 Windows PowerShell의
+`Set-Content -Encoding utf8`로 저장한 뒤 `terraform state mv -state=...`를 실행하면,
+첫 바이트에서 JSON 구문 오류가 나고 `version` 속성도 없다고 보고한다.
+
+**원인** — Windows PowerShell 5.1의 `utf8` 인코딩은 파일 앞에 UTF-8 BOM을 쓴다.
+Terraform state 파서는 BOM이 붙은 로컬 state 파일을 JSON으로 읽지 못한다. 원격 backend나
+state 내용이 손상된 것이 아니라 로컬 복사 과정에서 바이트가 추가된 것이다.
+
+**조치** — 원격 state를 다시 pull하고 `System.Text.UTF8Encoding($false)`를 사용해 BOM 없이
+저장한다. 교차-state 이동은 원격에 push하기 전에 로컬 복사본에서 먼저 수행하고, 대상 주소의
+누락·원본 잔존·목적지 초과가 모두 0인지 확인한다. 검증된 목적지 state를 먼저 push한 뒤 원본
+state를 push해, 두 번째 push 실패 시에도 리소스 소유권을 복구할 수 있는 상태를 유지한다.
+
+**왜 늦게 찾았나** — 파일 확장자와 화면에 보이는 내용은 정상 JSON이고 BOM은 일반 텍스트
+출력에서 보이지 않는다. 또한 오류가 state lock 획득 단계에 함께 표시되어 backend 잠금 문제로
+오해하기 쉽다.
+
+---
+
+## T-034. Correlator가 Shadow 메시지를 받자마자 모두 실패한다
+
+**증상** — 비활성 배포 검증 뒤 Correlator 이벤트 소스를 Shadow allowlist로 열자, 합성 Signal 세 건이 Incident 상태를 만들지 못하고 모두 재시도 상태에 들어갔다. Lambda 로그에는 `_mapping`에서 `TypeError: unsupported operand type(s) for -: 'dict' and 'set'`가 기록됐다.
+
+**원인** — `SEVERITY_LEVELS`는 심각도 순위를 담은 dict인데 환경변수 JSON 매핑을 검증하는 경로에서 `SEVERITY_LEVELS - {"UNKNOWN"}`처럼 set 차집합 연산을 직접 수행했다. 테스트 대부분은 파싱을 마친 설정 객체를 직접 주입해서 전체 환경변수 로딩 경로를 거치지 않았다.
+
+**조치** — 허용 심각도 검증을 `set(SEVERITY_LEVELS) - {"UNKNOWN"}`로 바꾸고, 실제 Terraform 환경변수와 같은 완전한 JSON을 넣어 `_mapping()` 전체를 호출하는 회귀 테스트를 추가했다. 재시도 전에는 이벤트 소스를 비활성화하고 실패한 합성 메시지를 정확한 idempotency key로 회수한다.
+
+**왜 늦게 찾았나** — 타입 오류는 JSON 환경변수가 존재할 때만 실행되는 초기화 분기 안에 있었고, 기존 단위 테스트가 계산 규칙 중심으로 설정 객체를 직접 전달해 배포 형태의 설정 로딩 경계를 건너뛰었다.
+
+---
+
+## T-035. AWS CLI로 보낸 JSON이 Lambda에서 `SQS_BODY` 거부된다
+
+**증상** — 계약 예제 객체를 PowerShell에서 `ConvertTo-Json -Compress`한 뒤 `aws sqs send-message --message-body $json`으로 보내면, Correlator가 `CONTRACT_REJECTED:SQS_BODY`로 거부한다. 같은 객체를 로컬 JSON 파서로 읽으면 정상이다.
+
+**원인** — Windows PowerShell이 네이티브 실행 파일에 문자열 인자를 전달하는 과정에서 JSON의 큰따옴표를 보존하지 않았다. SQS에는 JSON 객체 문자열이 아니라 따옴표가 손실된 본문이 저장됐다.
+
+**조치** — JSON을 BOM 없는 UTF-8 임시 파일로 직렬화하고 AWS CLI에는 `--message-body file://<path>`로 전달했다. 전송 직후 임시 파일을 삭제하고, 실패 메시지는 이벤트 소스를 닫은 뒤 MessageId로 한정해 회수했다.
+
+**왜 늦게 찾았나** — 전송 명령은 성공 MessageId를 반환하고 SQS도 본문 형식을 검증하지 않는다. 손상은 CLI 프로세스 경계에서 생기므로 송신 측 객체와 Lambda의 JSON 파싱을 따로 보면 모두 정상처럼 보인다.
+
+---
+
+## T-036. validate는 통과하지만 IAM policy plan이 duplicate Sid로 실패한다
+
+**증상** — `terraform validate`는 성공하지만 `terraform plan`에서
+`writing IAM Policy Document: duplicate Sid`로 중단된다.
+
+**원인** — 브랜치 병합 과정에서 `aws_iam_policy_document` 안의 history 권한 statement 세 개가
+내용과 `sid`까지 동일하게 두 번 들어갔다. HCL 구문은 유효하므로 validate는 이를 잡지 않고,
+AWS 정책 JSON을 렌더링하는 plan 단계에서 provider가 중복 Sid를 거부했다.
+
+**조치** — 동일한 statement 한 벌만 제거하고 target plan으로 IAM JSON과 Lambda 코드 변경 범위를
+다시 확인한다. 정책을 병합한 뒤에는 validate뿐 아니라 자격증명이 있는 plan도 실행한다.
+
+**왜 늦게 찾았나** — 충돌 표식 없이 정상 병합됐고 두 블록의 action 순서만 달라 육안 diff에서
+별개 권한처럼 보였다. Terraform core의 validate와 provider의 정책 렌더링 검증 시점도 다르다.
+
+---
+
+## T-037. topologySpreadConstraints 를 걸었는데 파드가 안 갈린다
+
+**증상** — 매니페스트에 `DoNotSchedule` 로 AZ 분산을 걸었는데 복제본 두 개가
+같은 AZ 에 올라간다. 이벤트도 경고도 없고 Argo 는 `Synced` 로 보고한다.
+
+**원인 A — 같은 `topologyKey` 로 항목을 둘 적으면 하나로 합쳐진다.**
+이 배열의 merge key 가 `topologyKey` 다. `kubernetes.io/hostname` 으로 두 항목을
+적으면 서버가 병합하면서 뒤엣것의 `whenUnsatisfiable` 을 버리고 `labelSelector` 는
+합친다. 매니페스트에는 제약이 둘로 보이지만 클러스터에는 `ScheduleAnyway` 하나만
+남는다. 게다가 `last-applied-configuration` 애노테이션에 그 중복 리스트가 남아
+있으면 고친 매니페스트를 넣어도 3-way 병합 결과가 `maxSkew: 0` ·
+`whenUnsatisfiable: ""` 이 되어 검증에서 apply 자체가 거부된다 — 애노테이션이
+갱신되지 않으므로 다음 시도도 같은 자리에서 실패한다.
+
+**원인 B — 롤링 중에는 구 ReplicaSet 파드까지 센다.**
+제약은 파드가 스케줄되는 **순간에만** 판정한다. 구 파드가 양쪽 AZ 에 하나씩 남은
+상태에서는 새 파드를 어느 쪽에 놓아도 skew 가 1 이라 둘 다 통과한다. 그렇게 새
+파드 둘이 같은 AZ 로 간 뒤 구 파드가 빠지면 결과만 쏠린다. **각 단계는 제약을
+지켰으므로 아무 신호도 남지 않는다.**
+
+**조치**
+
+- A: 두 번째 항목의 `topologyKey` 를 다르게 한다. AZ 분산이라면
+  `topology.kubernetes.io/zone` 이 원래 의도에도 맞다. 이미 오염된 애노테이션
+  때문에 apply 가 막히면 해당 리소스에
+  `argocd.argoproj.io/sync-options: ServerSideApply=true` 를 붙인다 — SSA 는
+  필드 소유권으로 병합해 이 이력을 타지 않고, 리소스 단위라 Argo 설정을 건드리지
+  않는다.
+- B: `matchLabelKeys: ["pod-template-hash"]` 를 넣는다. 같은 ReplicaSet 파드끼리만
+  비교하므로 새 파드 둘이 서로를 보고 갈라진다. EKS 애드온(coredns·metrics-server)도
+  스키마의 `topologySpreadConstraints` 가 `type: array` 로 열려 있어 그대로 전달된다.
+- 고친 뒤 **롤링을 두 번 연속 돌려 확인한다.** 한 번만 보면 우연히 갈린 것과
+  구분되지 않는다.
+- 애노테이션을 추가할 때 `metadata` 아래에 `annotations:` 블록이 이미 있는지 본다.
+  두 벌이 되면 YAML 중복 키라 뒤엣것만 남아 새로 넣은 값이 통째로 사라진다.
+
+**왜 늦게 찾았나** — 세 겹으로 가려져 있다. 첫째, 병합된 결과가 patch 적용 후
+상태와 일치하므로 Argo 가 드리프트로 잡지 않는다. 둘째, 원인 B 는 매 단계가
+제약을 만족해 이벤트가 남지 않는다. 셋째, `rollout restart` 직후에는 우연히
+갈리는 경우가 많아 그때만 확인하면 통과한다 — 실제로는 다음 배포에서 깨졌다.
+서버 dry-run 결과가 맞게 나오는 것도 함정이다. 그 입력이 이미 애노테이션이
+빠진 상태였는데 제약 두 개는 맞게 렌더링되어 통과로 보였다.
+
+---
+
+## T-038. 조치 실행기가 증설했는데 10초 뒤 원래 replicas로 돌아간다
+
+**증상** — `o2-dev-dify-scale-executor`가 API를 2 → 3으로 바꿨고 새 파드도
+Ready가 됐지만 약 10초 뒤 다시 2로 줄었다. Lambda 응답은 성공이고 Argo CD도
+`Synced/Healthy`라 실패 주체가 보이지 않는다.
+
+**원인** — Argo CD가 아니라 cue-warmer가 방송 큐시트의 기준값 2를 10초마다
+재적용했다. API Deployment의 `/spec/replicas`는 Argo ignoreDifferences와
+`RespectIgnoreDifferences=true`가 이미 적용돼 있었다. 반면 cue-warmer에는
+Agent 실험 중 조치 소유권을 넘겨받는 잠금이 없어서, 정상적인 사전 확장 원복과
+Agent의 임시 증설이 서로를 덮었다.
+
+**조치**
+
+- 실험 전 cue-warmer 로그와 `SCALE_ENABLED`를 확인한다. 두 번 이상의 reconcile
+  주기 동안 목표 replicas가 유지돼야 증설 성공으로 판정한다.
+- 2026-08-25 리허설에서는 별도 runtime gate가 없어 RoleBinding의 subject를
+  임시로 비워 scale GET/PATCH를 403으로 막았다. 종료 직후 원래
+  `ServiceAccount/o2-dev/cue-warmer`를 복원하고 로그가 다시 200으로 바뀌는 것까지
+  확인했다. 이것은 긴급한 실험 격리 수단이지 최종 Runbook은 아니다.
+- 반복 시연 전에는 `action_state`의 incident/action lock을 cue-warmer도 읽게 하거나,
+  별도 experiment lock을 두어 한 시점의 replicas 소유자를 하나로 만든다. TTL과
+  종료 시 기준값 복원도 같은 잠금 계약에 포함한다.
+
+**왜 늦게 찾았나** — 실행 Lambda와 rollout은 모두 성공했고, replicas를 되돌리는
+대표 주체인 Argo CD부터 확인하게 된다. 실제 원복 주체는 10초 주기의 다른
+컨트롤러였고, Kubernetes 이벤트에는 "누가 scale을 바꿨는지"가 직접 남지 않아
+cue-warmer 애플리케이션 로그를 보기 전까지 구분되지 않았다.

@@ -13,8 +13,9 @@ metric_prefix = "o2.warm."
 # order-api 가 아니라 coupon-api 다 — order-api 는 아직 이벤트를 보낸 적이 없어
 # 기본 화면이 통째로 빈다. 빈 화면은 "정상"과 구분되지 않으므로, 데이터가
 # 흐르는 서비스를 기본값으로 둔다. order-api 가 살아나면 그때 바꾼다.
-default_service = "api"
-environment     = "dev"
+default_service               = "api"
+environment                   = "dev"
+enable_chat_incident_monitors = true
 
 # 임계치는 잠정치다. 평시 분포를 보고 고친다.
 # 여기 숫자는 색깔만 바꾸고 알림을 보내지 않는다.
@@ -87,3 +88,30 @@ pod_latency_outlier_tolerance      = 2.5
 # 2026-08-24 에 확인해(M-015) 기본값이 true 로 바뀌었다 — 여기서 명시적으로
 # 한 번 더 적어 둔다. 끌 일이 생기면 그 사유를 이 줄에 같이 남긴다.
 enable_aggregator_lag_monitor = true
+
+###############################################################################
+# S1·S2·S3 조기 감지 Alert (`scenario_alerts.tf`)
+#
+# 진입 Monitor 셋에 `@webhook-o2-dify` 가 붙는다. 켜기 전에 두 가지를 본다:
+#   - 실험 중이 아닌 부하가 이걸 깨우면 측정 중 에이전트가 무언가 바꾼다(T-017)
+#   - `alert_relay_max_concurrency`(06-agent, 기본 5)가 두 파이프라인 합산 상한이다
+#
+# 임계값은 변수 설명에 출처를 적어 뒀다. `M-0NN` 이면 실측, "안 쟀다" 면 정책값이다.
+# 정책값은 첫 실험에서 실제 분포를 재고 measurements.md 에 행을 추가한 뒤 갱신한다.
+###############################################################################
+enable_scenario_alerts = true
+
+# `p95:o2.app.operation.duration` 이 series 0 이 되지 않게 한다(T-031).
+# S3 Monitor 가 이것 없이는 조용히 죽는다.
+enable_operation_duration_percentiles = true
+
+# S1 — M-010 실측. 20,000 = 2파드 안전선, 40,000 = 붕괴. 30,000 은 그 사이 보간이다.
+s1_fanout_items_warning  = 20000
+s1_fanout_items_critical = 30000
+
+# S2·S3 — 안 쟀다. 평시(M-016 서버측 p95 6ms)와 계약 상한(p95 800ms · p99 2,000ms,
+# architecture.md 12.1) 사이에서 고른 값이다. 첫 실험에서 갱신한다.
+s2_tail_latency_p99_warning_ms  = 300
+s2_tail_latency_p99_critical_ms = 800
+s3_pg_latency_p95_warning_ms    = 300
+s3_pg_latency_p95_critical_ms   = 800

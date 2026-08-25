@@ -47,12 +47,21 @@ const BASE_URL = __ENV.BASE_URL || 'http://localhost:8000';
 const BROADCAST_ID = __ENV.BROADCAST_ID || 'bc_1042'; // LIVE + ON_SALE 상품이 있는 것
 const RATE = Number(__ENV.RATE || 50);
 const DURATION = __ENV.DURATION || '60s';
+const PRE_ALLOCATED_VUS = Number(__ENV.PRE_ALLOCATED_VUS || Math.max(20, RATE));
+const MAX_VUS = Number(__ENV.MAX_VUS || Math.max(100, RATE * 5));
+const NO_CONNECTION_REUSE = __ENV.NO_CONNECTION_REUSE === 'true';
 const PATTERN = __ENV.PATTERN || 'plain';
 const JITTER_MS = Number(__ENV.JITTER_MS || 0);
 const EMIT_CLIENT_EVENTS = __ENV.EMIT_CLIENT_EVENTS === 'true';
 
 if (!['plain', 'human', 'ambiguous'].includes(PATTERN)) {
   throw new Error(`지원하지 않는 PATTERN=${PATTERN}`);
+}
+if (!Number.isInteger(PRE_ALLOCATED_VUS) || PRE_ALLOCATED_VUS <= 0) {
+  throw new Error(`PRE_ALLOCATED_VUS는 양의 정수여야 합니다: ${PRE_ALLOCATED_VUS}`);
+}
+if (!Number.isInteger(MAX_VUS) || MAX_VUS < PRE_ALLOCATED_VUS) {
+  throw new Error(`MAX_VUS는 PRE_ALLOCATED_VUS 이상인 정수여야 합니다: ${MAX_VUS}`);
 }
 if (PATTERN !== 'plain') {
   if (!__ENV.JITTER_MS || JITTER_MS <= 0) {
@@ -98,6 +107,10 @@ function requestContext() {
 }
 
 export const options = {
+  // S2는 Service endpoint 하나가 느린 실험이다. 소수 keep-alive 연결이
+  // 우연히 정상 endpoint에만 고정되면 canary가 있어도 실행마다 결과가
+  // 달라진다. 그 실험만 true로 지정해 요청 분배 표본을 늘린다.
+  noConnectionReuse: NO_CONNECTION_REUSE,
   scenarios: {
     read: {
       // 도착률 기준. VU 기준으로 하면 서버가 느려질 때 요청이 같이 줄어들어
@@ -113,8 +126,12 @@ export const options = {
       // (250ms 가정)로 잡았더니 300 RPS·p95 267ms 에서 80개가 필요한데
       // 75개뿐이라 64건이 밀렸다. VU 는 싸다 — 400 RPS 에서도 k6 메모리가
       // 295MB 였다. 넉넉히 잡는 편이 맞다.
-      preAllocatedVUs: Math.max(20, RATE),
-      maxVUs: Math.max(100, RATE * 5),
+      // 정상 구간은 RATE 기반 기본값으로 충분하지만, S2처럼 의도적으로
+      // tail latency를 수 초까지 늘리면 동적 VU 할당 중 요청을 놓칠 수 있다.
+      // 그 실행만 PRE_ALLOCATED_VUS/MAX_VUS를 명시해 서버 지연과 생성기
+      // 포화를 분리한다. 생략하면 기존 동작을 그대로 유지한다.
+      preAllocatedVUs: PRE_ALLOCATED_VUS,
+      maxVUs: MAX_VUS,
     },
   },
   thresholds: {

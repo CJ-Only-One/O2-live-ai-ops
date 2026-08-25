@@ -58,10 +58,19 @@ resource "aws_elasticache_replication_group" "main" {
   # 단 워크로드만 닿을 수 있다.
   # 멀티테넌시가 생기면 그때 Valkey RBAC(user group)으로 간다.
 
-  # 스냅샷을 남기지 않는다. 이 안의 데이터는 세션과 재고 카운터인데,
-  # 세션은 복구할 가치가 없고 재고는 방송 종료 배치가 MySQL 에 반영한다
-  # (설계 문서 3.9). 복구 원본은 언제나 MySQL 이다.
-  snapshot_retention_limit = 0
+  # 이 안의 데이터는 세션과 재고 카운터다. 세션은 복구할 가치가 없지만
+  # **재고는 여기가 원본이고 MySQL 에 사본이 없다** — products 테이블에
+  # 재고 컬럼 자체가 없다(D-07, app/models/product.py). 종료 재고를
+  # 영속화하는 스키마와 배치는 아직 미구현이다(architecture.md 3.9).
+  #
+  # 이 자리에 "재고는 방송 종료 배치가 MySQL 에 반영하므로 복구 원본은
+  # 언제나 MySQL" 이라고 적혀 있었으나 그런 배치가 없다. 없는 복구 경로를
+  # 근거로 백업을 끄고 있었다.
+  #
+  # 지금 복구 수단은 `python -m app.seed` 로 코드 상수의 초기값을 다시
+  # 넣는 것뿐이라, 방송 중에 잃으면 그 시점의 잔량은 못 되돌린다. 목업
+  # 데이터라 치명적이지 않지만 백업이 공짜에 가까우므로 하루치는 남긴다.
+  snapshot_retention_limit = var.cache_snapshot_retention_days
 
   auto_minor_version_upgrade = true
   apply_immediately          = true # 개발 환경

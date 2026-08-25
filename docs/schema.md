@@ -217,7 +217,7 @@ stock:88213 → "47"        String, TTL 없음
 
 | 반환 | 뜻 | API 응답 |
 |---|---|---|
-| `{1, order_id}` | 이미 처리된 멱등 키 | 202 (같은 `order_id`) |
+| `{1, order_id}` | 이미 처리 중이거나 완료된 멱등 키 | `idemstate`가 `PROCESSING`이면 409, 아니면 202 |
 | `{0, 남은수량}` | 차감 성공 | 202 |
 | `{-1, ""}` | 재고 부족 | 409 `SOLD_OUT` |
 | `{-2, ""}` | **키 자체가 없음** | 500 `INTERNAL_ERROR` |
@@ -234,6 +234,17 @@ idem:9f8e...  → "od_01J..."     String, TTL 600s
 Lua 안에서 재고 차감과 **같은 원자 단위로** 기록된다. 발행 실패 시
 `_compensate()` 가 이 키를 지우고 재고를 되돌린다.
 
+### `idemstate:{key}` — 지연 중 거짓 성공 방지
+
+```
+idemstate:9f8e... → "PROCESSING" | "ACCEPTED"    String, TTL 600s
+```
+
+`reserve_stock.lua`가 재고 차감·`idem:{key}`와 같은 원자 단위에서
+`PROCESSING`을 쓴다. 목업 PG 지연 중 같은 키의 요청은 첫 요청의 결과가 아직
+없으므로 202를 미리 반환하지 않고 `REQUEST_IN_PROGRESS`로 응답한다. SQS 발행 뒤
+`ACCEPTED`로 바꾸며, PG·발행 실패 보상은 이 키도 함께 삭제한다.
+
 ### `order:{order_id}` — 접수 기록
 
 ```
@@ -243,8 +254,8 @@ order:od_01J... → {"sku_id":"88213","qty":1,"state":"ACCEPTED"}   TTL 600s
 워커가 MySQL 에 쓰기 전까지 `GET /api/orders/{id}` 가 읽을 값. MySQL 을 먼저
 보고 없으면 여기를 본다.
 
-> **알려진 구멍.** 이 키는 Lua 밖, SQS 발행 **뒤에** 기록된다
-> (`order.py` 181 → 187). 그 사이에 파드가 죽으면 재고는 줄었는데 조회는
+> **알려진 구멍.** 이 키는 Lua 밖, SQS 발행 **뒤에** 기록된다.
+> 그 사이에 파드가 죽으면 재고는 줄었는데 조회는
 > 404 가 된다. Lua 안으로 옮기는 것이 예정돼 있다.
 
 ### 그 밖
@@ -254,6 +265,8 @@ order:od_01J... → {"sku_id":"88213","qty":1,"state":"ACCEPTED"}   TTL 600s
 | `bcast:{id}:meta` | String(JSON) | 구현됨. 스냅샷 메타 캐시 30s |
 | `chat:{bcast}` | Pub/Sub | 구현됨. 채팅 팬아웃 |
 | `chat:rate:{bcast}:{user}` | Integer | 구현됨. 채팅 제한 60s |
+| `cfg:pg:delay_ms` | Integer | 구현됨. S3 목업 PG 지연, TTL 없음 |
+| `cfg:pg:fail_rate` | Number | 구현됨. S3 목업 PG 실패율, TTL 없음 |
 | `sku:{id}:detail` | String(JSON) | 예정. 상품 상세 캐시 60s |
 | `sess:{token}` | Hash | 예정. 세션 1800s |
 | `room:{bcast}:pods` | Set | 예정. 파드 목록 60s |

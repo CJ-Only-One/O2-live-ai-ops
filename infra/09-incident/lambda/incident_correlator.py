@@ -29,6 +29,20 @@ CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 MAX_INCIDENT_INPUT_CHARS = 30000
 MAX_SIGNALS = 20
 
+INCIDENT_FAMILIES = {
+    "READ_PATH_DEGRADATION",
+    "CHECKOUT_ORDER_DEGRADATION",
+    "PAYMENT_DEGRADATION",
+    "INVENTORY_DEGRADATION",
+    "CHAT_DEGRADATION",
+    "PLAYBACK_DEGRADATION",
+    "CAPACITY_SATURATION",
+    "DEPLOYMENT_REGRESSION",
+    "TELEMETRY_PIPELINE_FAILURE",
+    "DATA_INTEGRITY_SECURITY_RISK",
+    "UNKNOWN",
+}
+
 TOP_LEVEL_FIELDS = {
     "schema_version",
     "trigger_id",
@@ -68,7 +82,16 @@ DATADOG_EVIDENCE_FIELDS = {
     "host",
     "tags",
     "link",
+    "assessment_input",
 }
+
+ASSESSMENT_EVIDENCE_TYPES = {
+    "CHAT_PROPAGATION_P95", "CHAT_NORMAL_USER_BLOCK_RATE",
+    "SERVICE_TAIL_LATENCY", "POD_TAIL_LATENCY", "POD_CPU_UTILIZATION",
+    "POD_VERSION", "POD_AGE", "TELEMETRY_FRESHNESS", "INTEGRITY_VIOLATION",
+    "COMPOSITE_CONDITION",
+}
+SEVERITY_LEVELS = {"UNKNOWN": 0, "INFORMATIONAL": 1, "WARNING": 2, "HIGH": 3, "CRITICAL": 4}
 
 CHAT_EVIDENCE_FIELDS = {
     "candidate_id",
@@ -259,6 +282,49 @@ def _validate_datadog(evidence: dict[str, Any]) -> None:
         "Renotify",
     }:
         _fail("DATADOG_TRANSITION")
+    value = evidence["assessment_input"]
+    if not isinstance(value, dict) or set(value) != {
+        "evidence_type", "observed_at", "sample_count", "data_state",
+        "signal_strength", "scope", "measurements",
+    }:
+        _fail("ASSESSMENT_INPUT_FIELDS")
+    if value["evidence_type"] not in ASSESSMENT_EVIDENCE_TYPES:
+        _fail("ASSESSMENT_EVIDENCE_TYPE")
+    _parse_datetime(value["observed_at"], "ASSESSMENT_OBSERVED_AT")
+    if not isinstance(value["sample_count"], int) or isinstance(value["sample_count"], bool) or value["sample_count"] < 0:
+        _fail("ASSESSMENT_SAMPLE_COUNT")
+    if value["data_state"] not in {"PRESENT", "NO_DATA", "STALE"}:
+        _fail("ASSESSMENT_DATA_STATE")
+    if value["signal_strength"] not in {"STANDARD", "STRONG"}:
+        _fail("ASSESSMENT_SIGNAL_STRENGTH")
+    scope = value["scope"]
+    if not isinstance(scope, dict) or set(scope) != {"environment", "service", "pod", "version", "broadcast_id"}:
+        _fail("ASSESSMENT_SCOPE_FIELDS")
+    if scope["environment"] != evidence["env"] or scope["service"] != evidence["service"]:
+        _fail("ASSESSMENT_SCOPE_MISMATCH")
+    if any(scope[field] is not None and not isinstance(scope[field], str) for field in ("pod", "version", "broadcast_id")):
+        _fail("ASSESSMENT_SCOPE")
+    measurements = value["measurements"]
+    if not isinstance(measurements, dict) or len(measurements) > 16 or any(
+        not isinstance(key, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key)
+        or not isinstance(measurement, (int, float)) or isinstance(measurement, bool)
+        for key, measurement in measurements.items()
+    ):
+        _fail("ASSESSMENT_MEASUREMENTS")
+    evidence_type = value["evidence_type"]
+    if evidence_type in {"CHAT_PROPAGATION_P95", "CHAT_NORMAL_USER_BLOCK_RATE"} and scope["broadcast_id"] is None:
+        _fail("ASSESSMENT_S1_SCOPE")
+    if evidence_type in {"POD_TAIL_LATENCY", "POD_CPU_UTILIZATION", "POD_VERSION", "POD_AGE"} and scope["pod"] is None:
+        _fail("ASSESSMENT_S2_POD_SCOPE")
+    if evidence_type == "POD_VERSION" and scope["version"] is None:
+        _fail("ASSESSMENT_S2_VERSION_SCOPE")
+    required_measurement = {
+        "CHAT_PROPAGATION_P95": "p95_ms", "CHAT_NORMAL_USER_BLOCK_RATE": "block_rate_ratio",
+        "SERVICE_TAIL_LATENCY": "p95_ms", "POD_TAIL_LATENCY": "p95_ms",
+        "POD_CPU_UTILIZATION": "cpu_utilization_ratio", "POD_AGE": "pod_age_seconds",
+    }.get(evidence_type)
+    if value["data_state"] == "PRESENT" and required_measurement and required_measurement not in measurements:
+        _fail("ASSESSMENT_REQUIRED_MEASUREMENT")
 
 
 def _encode_crockford(value: int, length: int) -> str:
@@ -292,7 +358,37 @@ def _mapping(raw: str, code: str) -> dict[str, dict[str, str]]:
     for key, item in value.items():
         if not isinstance(key, str) or not isinstance(item, dict):
             raise CorrelatorError(code)
-        if set(item) != {"symptom_family", "suspected_surface", "service"}:
+        if set(item) != {
+            "evidence_role",
+            "evidence_type",
+            "incident_family",
+            "symptom_family",
+            "suspected_surface",
+            "service",
+            "minimum_samples",
+            "freshness_seconds",
+            "severity_level",
+            "strong_exception_allowed",
+        }:
+            raise CorrelatorError(code)
+        if item["incident_family"] not in INCIDENT_FAMILIES - {"UNKNOWN"}:
+            raise CorrelatorError(code)
+        if item["evidence_role"] not in {"PRIMARY", "CORROBORATING", "CONTEXT"}:
+            raise CorrelatorError(code)
+        if item["evidence_type"] not in ASSESSMENT_EVIDENCE_TYPES | {"USER_SYMPTOM_CLUSTER"}:
+            raise CorrelatorError(code)
+        if not isinstance(item["minimum_samples"], int) or item["minimum_samples"] < 1:
+            raise CorrelatorError(code)
+        if not isinstance(item["freshness_seconds"], int) or item["freshness_seconds"] < 1:
+            raise CorrelatorError(code)
+        if item["severity_level"] not in set(SEVERITY_LEVELS) - {"UNKNOWN"}:
+            raise CorrelatorError(code)
+        if not isinstance(item["strong_exception_allowed"], bool):
+            raise CorrelatorError(code)
+        if item["strong_exception_allowed"] and (
+            item["incident_family"] != "DATA_INTEGRITY_SECURITY_RISK"
+            or item["evidence_type"] != "INTEGRITY_VIOLATION"
+        ):
             raise CorrelatorError(code)
         if item["symptom_family"] not in {
             "LATENCY",
@@ -323,17 +419,30 @@ def settings_from_environment() -> dict[str, Any]:
 
     raw_allowlist = os.environ.get("INCIDENT_CORRELATOR_ALLOWED_IDEMPOTENCY_KEYS", "")
     allowlist = set(raw_allowlist.split(",")) if raw_allowlist else set()
-    if not 1 <= len(allowlist) <= 3 or any(not value for value in allowlist):
+    shadow_mode = os.environ.get("INCIDENT_SHADOW_MODE", "true").lower() == "true"
+    if (shadow_mode and not 1 <= len(allowlist) <= 8) or (not shadow_mode and allowlist) or any(not value for value in allowlist):
         raise CorrelatorError("SYNTHETIC_ALLOWLIST_INVALID")
 
     environment = os.environ.get("DEPLOYMENT_ENVIRONMENT", "")
     if not environment:
         raise CorrelatorError("DEPLOYMENT_ENVIRONMENT_MISSING")
 
+    try:
+        recovery_window = int(os.environ.get("INCIDENT_RECOVERY_WINDOW_SECONDS", "0"))
+        cooldown = int(os.environ.get("INCIDENT_COOLDOWN_SECONDS", "0"))
+        reopen_window = int(os.environ.get("INCIDENT_REOPEN_WINDOW_SECONDS", "0"))
+    except ValueError:
+        raise CorrelatorError("INCIDENT_WINDOW_POLICY_INVALID") from None
+    if min(recovery_window, cooldown, reopen_window) < 0:
+        raise CorrelatorError("INCIDENT_WINDOW_POLICY_INVALID")
     return {
         "window_seconds": window,
         "allowed_idempotency_keys": allowlist,
+        "shadow_mode": shadow_mode,
         "environment": environment,
+        "recovery_window_seconds": recovery_window,
+        "cooldown_seconds": cooldown,
+        "reopen_window_seconds": reopen_window,
         "chat_surface_map": _mapping(
             os.environ.get("INCIDENT_CHAT_SURFACE_MAP_JSON", "{}"),
             "CHAT_SURFACE_MAP_INVALID",
@@ -354,15 +463,29 @@ def normalize_trigger(trigger: dict[str, Any], settings: dict[str, Any]) -> dict
         environment = settings["environment"]
     else:
         mapping = settings["datadog_monitor_map"].get(evidence["monitor_id"])
-        broadcast_ids = []
+        # Datadog evidence 도 방송 축을 가질 수 있다(D-086). S1 Monitor 를
+        # `by {broadcast_id}` multi-alert 로 돌리면 그룹 태그가 webhook payload 를
+        # 거쳐 `assessment_input.scope.broadcast_id` 로 들어온다.
+        #
+        # 여기서 버리면 Chat 과 Datadog 이 같은 장애를 잡았을 때 병합된 Incident 의
+        # 방송 축이 **어느 source 가 먼저 왔느냐에 따라 달라진다.** 그리고 Dify
+        # normalize 가 `LIVE-001` fallback 을 써서 없는 방송에 채널 제한을 걸고도
+        # 200 OK 로 성공 기록된다.
+        #
+        # 필수 여부는 Adapter 와 `_validate_assessment_input` 이 이미 본다 —
+        # S1 evidence type 이면 None 을 거부한다. 여기서는 있는 값을 채택만 한다.
+        scope_broadcast_id = (evidence["assessment_input"]["scope"] or {}).get("broadcast_id")
+        broadcast_ids = [scope_broadcast_id] if scope_broadcast_id else []
         environment = evidence["env"]
         if environment != settings["environment"]:
             return {
                 "complete": False,
                 "ambiguity_reason": "SOURCE_ENVIRONMENT_MISMATCH",
+                "evidence_role": None,
                 "event_epoch": occurred_at_epoch,
                 "context": {
                     "environment": settings["environment"],
+                    "incident_family": "UNKNOWN",
                     "symptom_family": "UNKNOWN",
                     "suspected_surfaces": ["UNKNOWN"],
                     "services": [],
@@ -377,9 +500,11 @@ def normalize_trigger(trigger: dict[str, Any], settings: dict[str, Any]) -> dict
         return {
             "complete": False,
             "ambiguity_reason": "INSUFFICIENT_DIMENSIONS",
+            "evidence_role": None,
             "event_epoch": occurred_at_epoch,
             "context": {
                 "environment": environment or settings["environment"],
+                "incident_family": "UNKNOWN",
                 "symptom_family": "UNKNOWN",
                 "suspected_surfaces": ["UNKNOWN"],
                 "services": [],
@@ -390,6 +515,7 @@ def normalize_trigger(trigger: dict[str, Any], settings: dict[str, Any]) -> dict
 
     context = {
         "environment": environment,
+        "incident_family": mapping["incident_family"],
         "symptom_family": mapping["symptom_family"],
         "suspected_surfaces": [mapping["suspected_surface"]],
         "services": [mapping["service"]],
@@ -398,14 +524,65 @@ def normalize_trigger(trigger: dict[str, Any], settings: dict[str, Any]) -> dict
     correlation_key = "#".join(
         [
             environment,
+            mapping["incident_family"],
             mapping["symptom_family"],
             mapping["service"],
             mapping["suspected_surface"],
         ]
     )
+    if trigger["source"] == "CHAT_INCIDENT_CANDIDATE":
+        sample_count = evidence["unique_users"]
+        observed_at = evidence["window_end"]
+        data_state = "PRESENT"
+        signal_strength = "STANDARD"
+        evidence_type = mapping.get("evidence_type", "USER_SYMPTOM_CLUSTER")
+        scope = {
+            "environment": environment, "service": mapping["service"],
+            "pod": None, "version": None, "broadcast_id": evidence["broadcast_id"],
+        }
+    else:
+        assessment_input = evidence["assessment_input"]
+        sample_count = assessment_input["sample_count"]
+        observed_at = assessment_input["observed_at"]
+        data_state = "NO_DATA" if evidence["transition"] == "No Data" else assessment_input["data_state"]
+        signal_strength = assessment_input["signal_strength"]
+        evidence_type = assessment_input["evidence_type"]
+        scope = assessment_input["scope"]
+    expected_type = mapping.get("evidence_type", evidence_type)
+    minimum_samples = mapping.get("minimum_samples", 1)
+    freshness_seconds = mapping.get("freshness_seconds", 300)
+    age_seconds = abs(occurred_at_epoch - _epoch(observed_at))
+    if evidence_type != expected_type:
+        quality_state = "TYPE_MISMATCH"
+    elif data_state == "NO_DATA":
+        quality_state = "NO_DATA"
+    elif data_state == "STALE" or age_seconds > freshness_seconds:
+        quality_state = "STALE"
+    elif sample_count < minimum_samples:
+        quality_state = "INSUFFICIENT_SAMPLES"
+    else:
+        quality_state = "VALID"
     return {
         "complete": True,
         "ambiguity_reason": None,
+        "evidence_role": mapping["evidence_role"] if quality_state == "VALID" else None,
+        "configured_role": mapping["evidence_role"],
+        "evidence_type": evidence_type,
+        "quality_state": quality_state,
+        "sample_count": sample_count,
+        "minimum_samples": minimum_samples,
+        "observed_at": observed_at,
+        "freshness_seconds": freshness_seconds,
+        "age_seconds": age_seconds,
+        "scope": scope,
+        "severity_level": mapping.get("severity_level", "WARNING"),
+        "strong_exception": (
+            quality_state == "VALID"
+            and signal_strength == "STRONG"
+            and mapping.get("strong_exception_allowed", False)
+            and mapping["incident_family"] == "DATA_INTEGRITY_SECURITY_RISK"
+            and evidence_type == "INTEGRITY_VIOLATION"
+        ),
         "event_epoch": occurred_at_epoch,
         "context": context,
         "correlation_key": correlation_key,
@@ -415,10 +592,119 @@ def normalize_trigger(trigger: dict[str, Any], settings: dict[str, Any]) -> dict
 def _merge_context(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     result = {
         "environment": current["environment"],
+        "incident_family": current["incident_family"],
         "symptom_family": current["symptom_family"],
     }
     for field in ("suspected_surfaces", "services", "broadcast_ids"):
         result[field] = sorted(set(current[field]) | set(incoming[field]))
+    return result
+
+
+def _requires_invocation(snapshot: dict[str, Any]) -> bool:
+    """Only independently corroborated material revisions may wake the Agent."""
+
+    return (
+        snapshot["evidence_assessment"]["verification_state"] == "VERIFIED"
+        and snapshot["lifecycle"] != "RECOVERING"
+        and not snapshot["notification_policy"]["suppressed"]
+    )
+
+
+def _assess_evidence(
+    trigger: dict[str, Any],
+    normalized: dict[str, Any],
+    correlation_state: str,
+    current: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    assessment = {
+        "primary": list((current or {}).get("primary", [])),
+        "corroborating": list((current or {}).get("corroborating", [])),
+        "context": list((current or {}).get("context", [])),
+    }
+    role = normalized["evidence_role"]
+    if role is not None:
+        field = role.lower()
+        if trigger["trigger_id"] not in assessment[field]:
+            assessment[field].append(trigger["trigger_id"])
+            assessment[field].sort()
+
+    strong_exception = normalized.get("strong_exception", False) or (current or {}).get("strong_exception_applied", False)
+    missing = []
+    if not assessment["primary"]:
+        missing.append("PRIMARY")
+    if not assessment["corroborating"]:
+        missing.append("CORROBORATING")
+    if strong_exception:
+        missing = []
+    assessment["missing_required_roles"] = missing
+    assessment["strong_exception_applied"] = strong_exception
+    if correlation_state == "AMBIGUOUS":
+        assessment["verification_state"] = "AMBIGUOUS"
+    elif not missing and (correlation_state == "CORRELATED" or strong_exception):
+        assessment["verification_state"] = "VERIFIED"
+    else:
+        assessment["verification_state"] = "INSUFFICIENT_EVIDENCE"
+    return assessment
+
+
+def _data_quality(trigger: dict[str, Any], normalized: dict[str, Any], current: dict[str, Any] | None) -> dict[str, Any]:
+    assessments = list((current or {}).get("assessments", []))
+    assessments.append({
+        "trigger_id": trigger["trigger_id"],
+        "evidence_type": normalized.get("evidence_type", "UNMAPPED"),
+        "configured_role": normalized.get("configured_role"),
+        "state": normalized.get("quality_state", "UNMAPPED"),
+        "sample_count": normalized.get("sample_count", 0),
+        "minimum_samples": normalized.get("minimum_samples", 0),
+        "observed_at": normalized.get("observed_at", trigger["occurred_at"]),
+        "freshness_seconds": normalized.get("freshness_seconds", 0),
+        "age_seconds": normalized.get("age_seconds", 0),
+    })
+    states = {item["state"] for item in assessments}
+    if states == {"VALID"}:
+        state = "SUFFICIENT"
+    elif "VALID" in states:
+        state = "MIXED"
+    elif "NO_DATA" in states:
+        state = "NO_DATA"
+    elif "STALE" in states:
+        state = "STALE"
+    elif "INSUFFICIENT_SAMPLES" in states:
+        state = "INSUFFICIENT_SAMPLES"
+    else:
+        state = "INVALID"
+    return {"state": state, "assessments": assessments}
+
+
+def _severity(trigger: dict[str, Any], normalized: dict[str, Any], current: dict[str, Any] | None) -> dict[str, Any]:
+    previous = (current or {}).get("level", "UNKNOWN")
+    incoming = normalized.get("severity_level", "UNKNOWN") if normalized.get("quality_state") == "VALID" else "UNKNOWN"
+    level = incoming if SEVERITY_LEVELS[incoming] > SEVERITY_LEVELS[previous] else previous
+    basis = list((current or {}).get("basis_trigger_ids", []))
+    if incoming != "UNKNOWN" and trigger["trigger_id"] not in basis:
+        basis.append(trigger["trigger_id"])
+    return {
+        "level": level,
+        "previous_level": previous,
+        "material_change": level != previous,
+        "basis_trigger_ids": sorted(basis),
+    }
+
+
+def _recovery_assessment(trigger: dict[str, Any], normalized: dict[str, Any], current: dict[str, Any] | None, now_iso: str, recovery_window: int) -> dict[str, Any]:
+    result = dict(current or {"state": "NOT_STARTED", "started_at": None, "required_until": None, "recovered_roles": []})
+    recovered = trigger["source"] == "DATADOG_MONITOR" and trigger["evidence"]["transition"] == "Recovered" and normalized.get("quality_state") == "VALID"
+    if not recovered:
+        return result
+    role = normalized.get("configured_role")
+    roles = sorted(set(result.get("recovered_roles", [])) | ({role} if role in {"PRIMARY", "CORROBORATING"} else set()))
+    if result.get("started_at") is None:
+        result["started_at"] = now_iso
+        start_epoch = _epoch(now_iso)
+        result["required_until"] = datetime.fromtimestamp(start_epoch + recovery_window, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    result["recovered_roles"] = roles
+    elapsed = _epoch(now_iso) >= _epoch(result["required_until"])
+    result["state"] = "SATISFIED" if set(roles) >= {"PRIMARY", "CORROBORATING"} and elapsed else "OBSERVING"
     return result
 
 
@@ -428,7 +714,17 @@ def _snapshot(
     matches: list[dict[str, Any]],
     now_iso: str,
     incident_id_factory: Any,
+    recovery_window_seconds: int = 0,
+    cooldown_seconds: int = 0,
+    reopen_window_seconds: int = 0,
+    shadow_mode: bool = True,
 ) -> tuple[dict[str, Any] | None, int | None, str]:
+    matches = [
+        item for item in matches
+        if item["lifecycle"] != "RESOLVED"
+        or (reopen_window_seconds > 0 and abs(_epoch(trigger["occurred_at"]) - _epoch(item["updated_at"])) <= reopen_window_seconds)
+    ]
+    previous_assessment = None
     if not normalized["complete"]:
         incident_id = incident_id_factory()
         correlation = {
@@ -453,11 +749,12 @@ def _snapshot(
             if trigger["source"] == "CHAT_INCIDENT_CANDIDATE"
             else "DATADOG_FIRST_NO_CHAT"
         )
+        strong_exception = normalized.get("strong_exception", False)
         correlation = {
-            "state": "PROVISIONAL",
+            "state": "CORRELATED" if strong_exception else "PROVISIONAL",
             "strategy": "DETERMINISTIC_V1",
-            "confidence": "MEDIUM",
-            "reason_code": reason,
+            "confidence": "HIGH" if strong_exception else "MEDIUM",
+            "reason_code": "STRONG_EXCEPTION" if strong_exception else reason,
             "matched_on": [],
             "operator_confirmation_required": False,
         }
@@ -466,7 +763,7 @@ def _snapshot(
         signals = [trigger]
         opened_at = trigger["occurred_at"]
         lifecycle = "OPEN"
-        analysis_reason = "INITIAL_DETECTION"
+        analysis_reason = "STRONG_EXCEPTION_APPLIED" if strong_exception else "INITIAL_DETECTION"
         context = normalized["context"]
     elif len(matches) > 1:
         incident_id = incident_id_factory()
@@ -492,40 +789,92 @@ def _snapshot(
         context = normalized["context"]
     else:
         current = matches[0]
-        sources = {signal["source"] for signal in current["signals"]}
-        if trigger["source"] in sources:
-            if not (
-                trigger["source"] == "DATADOG_MONITOR"
-                and trigger["evidence"]["transition"] == "Recovered"
-            ):
-                return None, current["revision"], "NON_MATERIAL_SOURCE_UPDATE"
-            analysis_reason = "RECOVERY_EVIDENCE_ADDED"
-            lifecycle = "RECOVERING"
+        previous_assessment = current["evidence_assessment"]
+        if current["lifecycle"] == "RESOLVED":
+            analysis_reason = "INCIDENT_REOPENED"
+            lifecycle = "OPEN"
+            signals = [*current["signals"], trigger]
+            incident_id = current["incident_id"]
+            expected_revision = current["revision"]
+            revision = expected_revision + 1
+            opened_at = current["opened_at"]
+            correlation = dict(current["correlation"])
+            correlation["reason_code"] = "REOPEN_WINDOW_MATCH"
+            context = _merge_context(current["normalized_context"], normalized["context"])
         else:
-            analysis_reason = "CROSS_SOURCE_EVIDENCE_ADDED"
-            lifecycle = current["lifecycle"]
+            sources = {signal["source"] for signal in current["signals"]}
+            current_severity = current.get("severity_assessment", {"level": "UNKNOWN"})
+            incoming_level = normalized.get("severity_level", "UNKNOWN") if normalized.get("quality_state") == "VALID" else "UNKNOWN"
+            severity_increased = SEVERITY_LEVELS[incoming_level] > SEVERITY_LEVELS[current_severity.get("level", "UNKNOWN")]
+            quality_material = normalized.get("quality_state") in {"NO_DATA", "STALE", "INSUFFICIENT_SAMPLES", "TYPE_MISMATCH"}
+            if trigger["source"] in sources:
+                incoming_role = normalized["evidence_role"]
+                role_field = incoming_role.lower() if incoming_role else None
+                role_is_new = role_field is not None and not previous_assessment[role_field]
+                if (
+                    trigger["source"] == "DATADOG_MONITOR"
+                    and trigger["evidence"]["transition"] == "Recovered"
+                ):
+                    analysis_reason = "RECOVERY_EVIDENCE_ADDED"
+                    lifecycle = "RECOVERING"
+                elif role_is_new:
+                    analysis_reason = "EVIDENCE_ROLE_ADDED"
+                    lifecycle = current["lifecycle"]
+                elif severity_increased:
+                    analysis_reason = "MATERIAL_SEVERITY_CHANGE"
+                    lifecycle = current["lifecycle"]
+                elif quality_material:
+                    analysis_reason = "EVIDENCE_QUALITY_CHANGED"
+                    lifecycle = current["lifecycle"]
+                else:
+                    return None, current["revision"], "NON_MATERIAL_SOURCE_UPDATE"
+            else:
+                analysis_reason = "CROSS_SOURCE_EVIDENCE_ADDED"
+                lifecycle = current["lifecycle"]
 
-        signals = [*current["signals"], trigger]
+            signals = [*current["signals"], trigger]
+            incident_id = current["incident_id"]
+            expected_revision = current["revision"]
+            revision = expected_revision + 1
+            opened_at = current["opened_at"]
+            correlation = {
+                "state": "CORRELATED", "strategy": "DETERMINISTIC_V1", "confidence": "HIGH",
+                "reason_code": "UNIQUE_ACTIVE_MATCH",
+                "matched_on": ["ENVIRONMENT", "SYMPTOM_FAMILY", "AFFECTED_SCOPE", "EVENT_TIME"],
+                "operator_confirmation_required": False,
+            }
+            context = _merge_context(current["normalized_context"], normalized["context"])
         if len(signals) > MAX_SIGNALS:
             raise CorrelatorError("INCIDENT_SIGNAL_LIMIT")
-        incident_id = current["incident_id"]
-        expected_revision = current["revision"]
-        revision = expected_revision + 1
-        opened_at = current["opened_at"]
-        correlation = {
-            "state": "CORRELATED" if len(sources | {trigger["source"]}) > 1 else current["correlation"]["state"],
-            "strategy": "DETERMINISTIC_V1",
-            "confidence": "HIGH" if len(sources | {trigger["source"]}) > 1 else current["correlation"]["confidence"],
-            "reason_code": "UNIQUE_ACTIVE_MATCH",
-            "matched_on": [
-                "ENVIRONMENT",
-                "SYMPTOM_FAMILY",
-                "AFFECTED_SCOPE",
-                "EVENT_TIME",
-            ],
-            "operator_confirmation_required": False,
-        }
-        context = _merge_context(current["normalized_context"], normalized["context"])
+
+    evidence_assessment = _assess_evidence(
+        trigger,
+        normalized,
+        correlation["state"],
+        previous_assessment,
+    )
+    current_snapshot = matches[0] if len(matches) == 1 else None
+    data_quality = _data_quality(trigger, normalized, (current_snapshot or {}).get("data_quality"))
+    severity_assessment = _severity(trigger, normalized, (current_snapshot or {}).get("severity_assessment"))
+    recovery_assessment = _recovery_assessment(
+        trigger, normalized,
+        None if analysis_reason == "INCIDENT_REOPENED" else (current_snapshot or {}).get("recovery_assessment"),
+        now_iso, recovery_window_seconds
+    )
+    if recovery_assessment["state"] == "SATISFIED":
+        lifecycle = "RESOLVED"
+        analysis_reason = "RECOVERY_SUSTAINED"
+    suppressed = False
+    suppression_reason = "NONE"
+    if current_snapshot and cooldown_seconds > 0 and current_snapshot["evidence_assessment"]["verification_state"] == "VERIFIED":
+        suppressed = _epoch(now_iso) - _epoch(current_snapshot["updated_at"]) < cooldown_seconds
+        suppression_reason = "COOLDOWN_ACTIVE" if suppressed else "NONE"
+    notification_policy = {
+        "mode": "SHADOW" if shadow_mode else "OPERATIONAL",
+        "cooldown_seconds": cooldown_seconds,
+        "suppressed": suppressed,
+        "reason": suppression_reason,
+    }
 
     payload = {
         "schema_version": "1.0",
@@ -539,6 +888,11 @@ def _snapshot(
         "updated_at": now_iso,
         "correlation": correlation,
         "normalized_context": context,
+        "evidence_assessment": evidence_assessment,
+        "data_quality": data_quality,
+        "severity_assessment": severity_assessment,
+        "recovery_assessment": recovery_assessment,
+        "notification_policy": notification_policy,
         "signals": signals,
         "guardrails": INCIDENT_GUARDRAILS,
     }
@@ -618,7 +972,7 @@ class AwsIncidentRepository:
             TableName=self.table,
             IndexName=self.index,
             KeyConditionExpression="#key = :key AND #last BETWEEN :lower AND :upper",
-            FilterExpression="#lifecycle = :open AND #state <> :ambiguous",
+            FilterExpression="(#lifecycle = :open OR #lifecycle = :recovering OR #lifecycle = :resolved) AND #state <> :ambiguous",
             ExpressionAttributeNames={
                 "#key": "correlation_key",
                 "#last": "last_signal_at_epoch",
@@ -630,6 +984,8 @@ class AwsIncidentRepository:
                 ":lower": {"N": str(event_epoch - window)},
                 ":upper": {"N": str(event_epoch + window)},
                 ":open": {"S": "OPEN"},
+                ":recovering": {"S": "RECOVERING"},
+                ":resolved": {"S": "RESOLVED"},
                 ":ambiguous": {"S": "AMBIGUOUS"},
             },
         )
@@ -643,12 +999,13 @@ class AwsIncidentRepository:
         expected_revision: int | None,
         now_epoch: int,
         window_seconds: int,
+        invocation_required: bool,
     ) -> str:
         claim = {
             "pk": self.claim_key(trigger["idempotency_key"]),
             "record_type": "SIGNAL_CLAIM",
             "source_idempotency_key": trigger["idempotency_key"],
-            "status": "PENDING",
+            "status": "PENDING" if invocation_required else "NOT_REQUIRED",
             "snapshot": snapshot,
             "expires_at": now_epoch + self.claim_ttl,
         }
@@ -693,6 +1050,8 @@ class AwsIncidentRepository:
                 ":last": normalized["event_epoch"],
                 ":lifecycle": snapshot["lifecycle"],
                 ":open": "OPEN",
+                ":recovering": "RECOVERING",
+                ":resolved": "RESOLVED",
             }
             transact_items.append(
                 {
@@ -704,7 +1063,7 @@ class AwsIncidentRepository:
                             "#last = :last, #lifecycle = :lifecycle, #state = :state"
                         ),
                         "ConditionExpression": (
-                            "#revision = :expected AND #lifecycle = :open"
+                            "#revision = :expected AND (#lifecycle = :open OR #lifecycle = :recovering OR #lifecycle = :resolved)"
                         ),
                         "ExpressionAttributeNames": {
                             "#snapshot": "snapshot",
@@ -858,7 +1217,7 @@ def process_trigger(
     now_epoch: int | None = None,
 ) -> dict[str, Any]:
     trigger = validate_trigger(trigger)
-    if trigger["idempotency_key"] not in settings["allowed_idempotency_keys"]:
+    if settings.get("shadow_mode", True) and trigger["idempotency_key"] not in settings["allowed_idempotency_keys"]:
         raise CorrelatorError("SYNTHETIC_IDEMPOTENCY_KEY_NOT_ALLOWED")
 
     existing_claim = repository.get_claim(trigger["idempotency_key"])
@@ -882,7 +1241,7 @@ def process_trigger(
             repository.find_open(
                 normalized["correlation_key"],
                 normalized["event_epoch"],
-                settings["window_seconds"],
+                max(settings["window_seconds"], settings.get("reopen_window_seconds", 0)),
             )
             if normalized["complete"]
             else []
@@ -893,6 +1252,10 @@ def process_trigger(
             matches,
             now_iso,
             incident_id_factory,
+            settings.get("recovery_window_seconds", 0),
+            settings.get("cooldown_seconds", 0),
+            settings.get("reopen_window_seconds", 0),
+            settings.get("shadow_mode", True),
         )
         if snapshot is None:
             state = repository.commit_ignored(trigger, now_epoch)
@@ -907,6 +1270,7 @@ def process_trigger(
             expected_revision,
             now_epoch,
             settings["window_seconds"],
+            _requires_invocation(snapshot),
         )
         if state == "CONFLICT":
             continue
@@ -918,9 +1282,11 @@ def process_trigger(
                 return {"status": "PENDING_REPLAYED", "snapshot": claim["snapshot"]}
             return {"status": "DUPLICATE", "snapshot": claim.get("snapshot") if claim else None}
 
-        sender(snapshot)
-        repository.mark_emitted(trigger["idempotency_key"])
-        return {"status": result, "snapshot": snapshot}
+        if _requires_invocation(snapshot):
+            sender(snapshot)
+            repository.mark_emitted(trigger["idempotency_key"])
+            return {"status": result, "snapshot": snapshot}
+        return {"status": "STORED_WITHOUT_INVOCATION", "snapshot": snapshot}
 
     raise CorrelatorError("INCIDENT_CONCURRENT_UPDATE")
 

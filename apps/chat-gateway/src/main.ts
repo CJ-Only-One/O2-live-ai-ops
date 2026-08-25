@@ -23,7 +23,7 @@ import { config } from './config.js';
 import { createChatIngressHandler, type ChatIngressConnection } from './chat-ingress.js';
 import { emitChatSend, hashUserKey } from './events.js';
 import { emitChatSignal } from './chat-signal.js';
-import { activeConnections, businessEvent, fanoutItems } from './telemetry.js';
+import { activeConnections, businessEvent, chatPropagation, fanoutItems } from './telemetry.js';
 
 // ── Valkey ────────────────────────────────────────────────────
 // 구독 전용 연결과 명령용 연결을 나눈다. 구독 모드에 들어간 연결은 다른
@@ -86,7 +86,7 @@ setInterval(() => {
     const batch = conn.pending.splice(0, config.maxPerTick);
     const dropped = conn.pending.length;
     conn.pending.length = 0;
-    if (dropped > 0) fanoutItems('dropped', dropped);
+    if (dropped > 0) fanoutItems('dropped', dropped, conn.broadcastId);
 
     const byType = new Map<string, unknown[]>();
     for (const { t, item } of batch) {
@@ -96,9 +96,21 @@ setInterval(() => {
     }
 
     if (conn.socket.readyState !== WebSocket.OPEN) continue;
+
+    // publishFanout가 넣은 ts부터 실제 WebSocket send 직전까지의 서버 측 전파
+    // 지연이다. 연결×메시지 전부 발행하면 계측 자체가 병목이 되므로
+    // chatPropagation() 안에서 저율 무작위 표본만 DogStatsD로 보낸다.
+    const sendStartedAt = Date.now();
+    for (const { item } of batch) {
+      const ts = (item as { ts?: unknown } | null)?.ts;
+      if (typeof ts === 'number' && Number.isFinite(ts)) {
+        chatPropagation(Math.max(0, sendStartedAt - ts), conn.broadcastId);
+      }
+    }
+
     for (const [t, items] of byType) {
       conn.socket.send(JSON.stringify({ t, items }));
-      fanoutItems('delivered', items.length);
+      fanoutItems('delivered', items.length, conn.broadcastId);
     }
   }
 }, config.tickMs);

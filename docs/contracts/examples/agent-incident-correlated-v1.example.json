@@ -23,6 +23,7 @@
   },
   "normalized_context": {
     "environment": "dev",
+    "incident_family": "READ_PATH_DEGRADATION",
     "symptom_family": "LATENCY",
     "suspected_surfaces": [
       "READ_PATH"
@@ -34,6 +35,28 @@
       "bc_1042"
     ]
   },
+  "evidence_assessment": {
+    "primary": [
+      "trg_01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    ],
+    "corroborating": [
+      "trg_01ARZ3NDEKTSV4RRFFQ69G5FAX"
+    ],
+    "context": [],
+    "missing_required_roles": [],
+    "verification_state": "VERIFIED",
+    "strong_exception_applied": false
+  },
+  "data_quality": {
+    "state": "SUFFICIENT",
+    "assessments": [
+      {"trigger_id":"trg_01ARZ3NDEKTSV4RRFFQ69G5FAW","evidence_type":"USER_SYMPTOM_CLUSTER","configured_role":"PRIMARY","state":"VALID","sample_count":4,"minimum_samples":1,"observed_at":"2026-08-23T00:00:15.000Z","freshness_seconds":300,"age_seconds":1},
+      {"trigger_id":"trg_01ARZ3NDEKTSV4RRFFQ69G5FAX","evidence_type":"SERVICE_TAIL_LATENCY","configured_role":"CORROBORATING","state":"VALID","sample_count":12,"minimum_samples":1,"observed_at":"2026-08-23T00:00:46.000Z","freshness_seconds":300,"age_seconds":0}
+    ]
+  },
+  "severity_assessment": {"level":"WARNING","previous_level":"WARNING","material_change":false,"basis_trigger_ids":["trg_01ARZ3NDEKTSV4RRFFQ69G5FAW","trg_01ARZ3NDEKTSV4RRFFQ69G5FAX"]},
+  "recovery_assessment": {"state":"NOT_STARTED","started_at":null,"required_until":null,"recovered_roles":[]},
+  "notification_policy": {"mode":"SHADOW","cooldown_seconds":0,"suppressed":false,"reason":"NONE"},
   "signals": [
     {
       "schema_version": "1.0",
@@ -93,7 +116,12 @@
         "alert_query": "example_metric > example_threshold",
         "host": "",
         "tags": "env:dev,service:api",
-        "link": ""
+        "link": "",
+        "assessment_input": {
+          "evidence_type":"SERVICE_TAIL_LATENCY","observed_at":"2026-08-23T00:00:46.000Z","sample_count":12,"data_state":"PRESENT","signal_strength":"STANDARD",
+          "scope":{"environment":"dev","service":"api","pod":null,"version":null,"broadcast_id":null},
+          "measurements":{"p95_ms":900}
+        }
       },
       "guardrails": {
         "analysis_mode": "READ_ONLY",

@@ -17,6 +17,11 @@
     "updated_at",
     "correlation",
     "normalized_context",
+    "evidence_assessment",
+    "data_quality",
+    "severity_assessment",
+    "recovery_assessment",
+    "notification_policy",
     "signals",
     "guardrails"
   ],
@@ -51,9 +56,14 @@
       "enum": [
         "INITIAL_DETECTION",
         "CROSS_SOURCE_EVIDENCE_ADDED",
+        "EVIDENCE_ROLE_ADDED",
         "MATERIAL_SEVERITY_CHANGE",
         "AMBIGUITY_RECORDED",
         "RECOVERY_EVIDENCE_ADDED"
+        ,"EVIDENCE_QUALITY_CHANGED"
+        ,"RECOVERY_SUSTAINED"
+        ,"STRONG_EXCEPTION_APPLIED"
+        ,"INCIDENT_REOPENED"
       ]
     },
     "opened_at": {
@@ -70,6 +80,13 @@
     "normalized_context": {
       "$ref": "#/$defs/normalized_context"
     },
+    "evidence_assessment": {
+      "$ref": "#/$defs/evidence_assessment"
+    },
+    "data_quality": { "$ref": "#/$defs/data_quality" },
+    "severity_assessment": { "$ref": "#/$defs/severity_assessment" },
+    "recovery_assessment": { "$ref": "#/$defs/recovery_assessment" },
+    "notification_policy": { "$ref": "#/$defs/notification_policy" },
     "signals": {
       "type": "array",
       "minItems": 1,
@@ -104,35 +121,7 @@
       "then": {
         "properties": {
           "signals": {
-            "minItems": 2,
-            "allOf": [
-              {
-                "contains": {
-                  "properties": {
-                    "source": {
-                      "const": "CHAT_INCIDENT_CANDIDATE"
-                    }
-                  },
-                  "required": [
-                    "source"
-                  ]
-                },
-                "minContains": 1
-              },
-              {
-                "contains": {
-                  "properties": {
-                    "source": {
-                      "const": "DATADOG_MONITOR"
-                    }
-                  },
-                  "required": [
-                    "source"
-                  ]
-                },
-                "minContains": 1
-              }
-            ]
+            "minItems": 2
           }
         }
       }
@@ -209,6 +198,8 @@
             "MULTIPLE_ACTIVE_MATCHES",
             "INSUFFICIENT_DIMENSIONS",
             "SOURCE_ENVIRONMENT_MISMATCH"
+            ,"STRONG_EXCEPTION"
+            ,"REOPEN_WINDOW_MATCH"
           ]
         },
         "matched_on": {
@@ -233,6 +224,7 @@
       "additionalProperties": false,
       "required": [
         "environment",
+        "incident_family",
         "symptom_family",
         "suspected_surfaces",
         "services",
@@ -243,6 +235,21 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "incident_family": {
+          "enum": [
+            "READ_PATH_DEGRADATION",
+            "CHECKOUT_ORDER_DEGRADATION",
+            "PAYMENT_DEGRADATION",
+            "INVENTORY_DEGRADATION",
+            "CHAT_DEGRADATION",
+            "PLAYBACK_DEGRADATION",
+            "CAPACITY_SATURATION",
+            "DEPLOYMENT_REGRESSION",
+            "TELEMETRY_PIPELINE_FAILURE",
+            "DATA_INTEGRITY_SECURITY_RISK",
+            "UNKNOWN"
+          ]
         },
         "symptom_family": {
           "enum": [
@@ -281,6 +288,113 @@
             "pattern": "^bc_[0-9]+$"
           }
         }
+      }
+    },
+    "evidence_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary",
+        "corroborating",
+        "context",
+        "missing_required_roles",
+        "verification_state"
+        ,"strong_exception_applied"
+      ],
+      "properties": {
+        "primary": {
+          "$ref": "#/$defs/trigger_id_set"
+        },
+        "corroborating": {
+          "$ref": "#/$defs/trigger_id_set"
+        },
+        "context": {
+          "$ref": "#/$defs/trigger_id_set"
+        },
+        "missing_required_roles": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "PRIMARY",
+              "CORROBORATING"
+            ]
+          }
+        },
+        "verification_state": {
+          "enum": [
+            "INSUFFICIENT_EVIDENCE",
+            "VERIFIED",
+            "AMBIGUOUS"
+          ]
+        },
+        "strong_exception_applied": {
+          "type": "boolean"
+        }
+      }
+    },
+    "data_quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "assessments"],
+      "properties": {
+        "state": { "enum": ["SUFFICIENT", "MIXED", "NO_DATA", "STALE", "INSUFFICIENT_SAMPLES", "INVALID"] },
+        "assessments": {
+          "type": "array", "minItems": 1, "maxItems": 20,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["trigger_id", "evidence_type", "configured_role", "state", "sample_count", "minimum_samples", "observed_at", "freshness_seconds", "age_seconds"],
+            "properties": {
+              "trigger_id": { "type": "string", "pattern": "^trg_[0-9A-HJKMNP-TV-Z]{26}$" },
+              "evidence_type": { "type": "string", "minLength": 1 },
+              "configured_role": { "type": ["string", "null"], "enum": ["PRIMARY", "CORROBORATING", "CONTEXT", null] },
+              "state": { "enum": ["VALID", "NO_DATA", "STALE", "INSUFFICIENT_SAMPLES", "TYPE_MISMATCH", "UNMAPPED"] },
+              "sample_count": { "type": "integer", "minimum": 0 },
+              "minimum_samples": { "type": "integer", "minimum": 0 },
+              "observed_at": { "type": "string", "format": "date-time" },
+              "freshness_seconds": { "type": "integer", "minimum": 0 },
+              "age_seconds": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "severity_assessment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["level", "previous_level", "material_change", "basis_trigger_ids"],
+      "properties": {
+        "level": { "enum": ["UNKNOWN", "INFORMATIONAL", "WARNING", "HIGH", "CRITICAL"] },
+        "previous_level": { "enum": ["UNKNOWN", "INFORMATIONAL", "WARNING", "HIGH", "CRITICAL"] },
+        "material_change": { "type": "boolean" },
+        "basis_trigger_ids": { "$ref": "#/$defs/trigger_id_set" }
+      }
+    },
+    "recovery_assessment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "started_at", "required_until", "recovered_roles"],
+      "properties": {
+        "state": { "enum": ["NOT_STARTED", "OBSERVING", "SATISFIED"] },
+        "started_at": { "type": ["string", "null"], "format": "date-time" },
+        "required_until": { "type": ["string", "null"], "format": "date-time" },
+        "recovered_roles": { "type": "array", "uniqueItems": true, "items": { "enum": ["PRIMARY", "CORROBORATING"] } }
+      }
+    },
+    "notification_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "cooldown_seconds", "suppressed", "reason"],
+      "properties": {
+        "mode": { "enum": ["SHADOW", "OPERATIONAL"] },
+        "cooldown_seconds": { "type": "integer", "minimum": 0 },
+        "suppressed": { "type": "boolean" },
+        "reason": { "enum": ["NONE", "COOLDOWN_ACTIVE"] }
+      }
+    },
+    "trigger_id_set": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^trg_[0-9A-HJKMNP-TV-Z]{26}$"
       }
     },
     "guardrails": {

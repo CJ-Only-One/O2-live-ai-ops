@@ -18,13 +18,16 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+from agent_metric_enrichment import enrich as enrich_metrics
+
 LOGGER = logging.getLogger()
 LOGGER.setLevel(logging.INFO)
 
 INCIDENT_FIELDS = {
     "schema_version", "event_type", "incident_id", "revision",
     "idempotency_key", "lifecycle", "analysis_reason", "opened_at",
-    "updated_at", "correlation", "normalized_context", "signals", "guardrails",
+    "updated_at", "correlation", "normalized_context", "evidence_assessment",
+    "data_quality", "severity_assessment", "recovery_assessment", "notification_policy", "signals", "guardrails",
 }
 TRIGGER_FIELDS = {
     "schema_version", "trigger_id", "source", "source_schema", "trigger_type",
@@ -42,7 +45,7 @@ INCIDENT_GUARDRAILS = {
 }
 DATADOG_EVIDENCE_FIELDS = {
     "event_id", "cycle_key", "monitor_id", "transition", "priority", "env",
-    "service", "alert_title", "alert_body", "alert_query", "host", "tags", "link",
+    "service", "alert_title", "alert_body", "alert_query", "host", "tags", "link", "assessment_input",
 }
 CHAT_EVIDENCE_FIELDS = {
     "candidate_id", "candidate_type", "broadcast_id", "suspected_surface",
@@ -61,7 +64,18 @@ CORRELATION_FIELDS = {
     "operator_confirmation_required",
 }
 CONTEXT_FIELDS = {
-    "environment", "symptom_family", "suspected_surfaces", "services", "broadcast_ids",
+    "environment", "incident_family", "symptom_family", "suspected_surfaces",
+    "services", "broadcast_ids",
+}
+INCIDENT_FAMILIES = {
+    "READ_PATH_DEGRADATION", "CHECKOUT_ORDER_DEGRADATION", "PAYMENT_DEGRADATION",
+    "INVENTORY_DEGRADATION", "CHAT_DEGRADATION", "PLAYBACK_DEGRADATION",
+    "CAPACITY_SATURATION", "DEPLOYMENT_REGRESSION", "TELEMETRY_PIPELINE_FAILURE",
+    "DATA_INTEGRITY_SECURITY_RISK", "UNKNOWN",
+}
+EVIDENCE_ASSESSMENT_FIELDS = {
+    "primary", "corroborating", "context", "missing_required_roles",
+    "verification_state", "strong_exception_applied",
 }
 DIFY_INPUT_MAX_CHARS = 30000
 HISTORY_INPUT_MAX_CHARS = 8000
@@ -127,6 +141,9 @@ def _validate_evidence(source: str, evidence: Any) -> None:
             "Triggered", "Re-Triggered", "Recovered", "Warn", "No Data", "Renotify"
         }:
             _fail("DATADOG_TRANSITION")
+        assessment_input = evidence["assessment_input"]
+        _exact(assessment_input, {"evidence_type", "observed_at", "sample_count", "data_state", "signal_strength", "scope", "measurements"}, "ASSESSMENT_INPUT_FIELDS")
+        _datetime(assessment_input["observed_at"], "ASSESSMENT_OBSERVED_AT")
         return
     if not isinstance(evidence["candidate_id"], str) or not re.fullmatch(
         r"cand_[0-9A-HJKMNP-TV-Z]{26}", evidence["candidate_id"]
@@ -202,8 +219,10 @@ def validate_envelope(payload: Any) -> dict[str, Any]:
     if payload["lifecycle"] not in {"OPEN", "RECOVERING", "RESOLVED"}:
         _fail("LIFECYCLE")
     if payload["analysis_reason"] not in {
-        "INITIAL_DETECTION", "CROSS_SOURCE_EVIDENCE_ADDED", "MATERIAL_SEVERITY_CHANGE",
-        "AMBIGUITY_RECORDED", "RECOVERY_EVIDENCE_ADDED",
+        "INITIAL_DETECTION", "CROSS_SOURCE_EVIDENCE_ADDED", "EVIDENCE_ROLE_ADDED",
+        "MATERIAL_SEVERITY_CHANGE",
+        "AMBIGUITY_RECORDED", "RECOVERY_EVIDENCE_ADDED", "EVIDENCE_QUALITY_CHANGED",
+        "RECOVERY_SUSTAINED", "STRONG_EXCEPTION_APPLIED", "INCIDENT_REOPENED",
     }:
         _fail("ANALYSIS_REASON")
     _datetime(payload["opened_at"], "OPENED_AT")
@@ -220,7 +239,7 @@ def validate_envelope(payload: Any) -> dict[str, Any]:
     if correlation["reason_code"] not in {
         "CHAT_FIRST_NO_METRIC", "DATADOG_FIRST_NO_CHAT", "UNIQUE_ACTIVE_MATCH",
         "MULTIPLE_ACTIVE_MATCHES", "INSUFFICIENT_DIMENSIONS",
-        "SOURCE_ENVIRONMENT_MISMATCH",
+        "SOURCE_ENVIRONMENT_MISMATCH", "STRONG_EXCEPTION", "REOPEN_WINDOW_MATCH",
     }:
         _fail("CORRELATION_REASON")
     matched = correlation["matched_on"]
@@ -240,6 +259,8 @@ def validate_envelope(payload: Any) -> dict[str, Any]:
     context = payload["normalized_context"]
     _exact(context, CONTEXT_FIELDS, "CONTEXT_FIELDS")
     _string(context["environment"], "CONTEXT_ENVIRONMENT", 1, 128)
+    if context["incident_family"] not in INCIDENT_FAMILIES:
+        _fail("CONTEXT_INCIDENT_FAMILY")
     if context["symptom_family"] not in {"LATENCY", "AVAILABILITY", "ERROR_RATE", "UNKNOWN"}:
         _fail("CONTEXT_SYMPTOM_FAMILY")
     surfaces = context["suspected_surfaces"]
@@ -258,15 +279,66 @@ def validate_envelope(payload: Any) -> dict[str, Any]:
     ):
         _fail("CONTEXT_BROADCASTS")
 
+    assessment = payload["evidence_assessment"]
+    _exact(assessment, EVIDENCE_ASSESSMENT_FIELDS, "EVIDENCE_ASSESSMENT_FIELDS")
+    assessed_ids: list[str] = []
+    for field in ("primary", "corroborating", "context"):
+        values = assessment[field]
+        if not isinstance(values, list) or len(values) != len(set(values)) or any(
+            not isinstance(value, str)
+            or not re.fullmatch(r"trg_[0-9A-HJKMNP-TV-Z]{26}", value)
+            for value in values
+        ):
+            _fail("EVIDENCE_ASSESSMENT_SIGNAL_IDS")
+        assessed_ids.extend(values)
+    if len(assessed_ids) != len(set(assessed_ids)):
+        _fail("EVIDENCE_ASSESSMENT_ROLE_OVERLAP")
+    missing_roles = assessment["missing_required_roles"]
+    if (
+        not isinstance(missing_roles, list)
+        or len(missing_roles) != len(set(missing_roles))
+        or any(value not in {"PRIMARY", "CORROBORATING"} for value in missing_roles)
+    ):
+        _fail("EVIDENCE_ASSESSMENT_MISSING_ROLES")
+    if assessment["verification_state"] not in {
+        "INSUFFICIENT_EVIDENCE",
+        "VERIFIED",
+        "AMBIGUOUS",
+    }:
+        _fail("EVIDENCE_ASSESSMENT_VERIFICATION_STATE")
+    if not isinstance(assessment["strong_exception_applied"], bool):
+        _fail("EVIDENCE_ASSESSMENT_STRONG_EXCEPTION")
+
+    data_quality = payload["data_quality"]
+    _exact(data_quality, {"state", "assessments"}, "DATA_QUALITY_FIELDS")
+    if data_quality["state"] not in {"SUFFICIENT", "MIXED", "NO_DATA", "STALE", "INSUFFICIENT_SAMPLES", "INVALID"}:
+        _fail("DATA_QUALITY_STATE")
+    severity = payload["severity_assessment"]
+    _exact(severity, {"level", "previous_level", "material_change", "basis_trigger_ids"}, "SEVERITY_FIELDS")
+    if severity["level"] not in {"UNKNOWN", "INFORMATIONAL", "WARNING", "HIGH", "CRITICAL"}:
+        _fail("SEVERITY_LEVEL")
+    recovery = payload["recovery_assessment"]
+    _exact(recovery, {"state", "started_at", "required_until", "recovered_roles"}, "RECOVERY_FIELDS")
+    if recovery["state"] not in {"NOT_STARTED", "OBSERVING", "SATISFIED"}:
+        _fail("RECOVERY_STATE")
+    notification = payload["notification_policy"]
+    _exact(notification, {"mode", "cooldown_seconds", "suppressed", "reason"}, "NOTIFICATION_POLICY_FIELDS")
+    if notification["mode"] not in {"SHADOW", "OPERATIONAL"}:
+        _fail("NOTIFICATION_POLICY_MODE")
+
     signals = payload["signals"]
     if not isinstance(signals, list) or not 1 <= len(signals) <= 20:
         _fail("SIGNALS")
     for signal in signals:
         validate_trigger(signal)
-    if correlation["state"] == "CORRELATED" and not {
-        "CHAT_INCIDENT_CANDIDATE", "DATADOG_MONITOR"
-    }.issubset({signal["source"] for signal in signals}):
-        _fail("CORRELATED_SOURCES")
+    signal_ids = {signal["trigger_id"] for signal in signals}
+    if set(assessed_ids) - signal_ids:
+        _fail("EVIDENCE_ASSESSMENT_UNKNOWN_SIGNAL")
+    if assessment["verification_state"] == "VERIFIED" and (
+        (not assessment["strong_exception_applied"] and (missing_roles or not assessment["primary"] or not assessment["corroborating"]))
+        or correlation["state"] != "CORRELATED"
+    ):
+        _fail("EVIDENCE_ASSESSMENT_VERIFIED_INVARIANT")
     _exact(payload["guardrails"], set(INCIDENT_GUARDRAILS), "GUARDRAIL_FIELDS")
     if payload["guardrails"] != INCIDENT_GUARDRAILS:
         _fail("GUARDRAIL_VALUES")
@@ -284,12 +356,17 @@ def _enabled() -> bool:
     return os.environ.get("AGENT_ENTRY_EXECUTION_ENABLED", "false").lower() == "true"
 
 
-def _allowed_incident_id() -> str:
+def _incident_allowed(incident_id: str) -> bool:
     raw = os.environ.get("AGENT_ENTRY_ALLOWED_INCIDENT_IDS", "")
     values = raw.split(",") if raw else []
+    operational = os.environ.get("AGENT_ENTRY_OPERATIONAL_MODE", "false").lower() == "true"
+    if operational:
+        if values:
+            raise WorkerError("OPERATIONAL_INCIDENT_ALLOWLIST_NOT_EMPTY")
+        return True
     if len(values) != 1 or not re.fullmatch(r"inc_[0-9A-HJKMNP-TV-Z]{26}", values[0]):
         raise WorkerError("SYNTHETIC_INCIDENT_ALLOWLIST_INVALID")
-    return values[0]
+    return incident_id == values[0]
 
 
 def _fingerprint(value: str) -> str:
@@ -689,9 +766,9 @@ def _process_record(record: dict[str, Any]) -> dict[str, str | int]:
     except (KeyError, TypeError, json.JSONDecodeError):
         raise ContractError("CONTRACT_REJECTED:INVALID_JSON") from None
     payload = validate_envelope(payload)
-    if payload["incident_id"] != _allowed_incident_id():
+    if not _incident_allowed(payload["incident_id"]):
         raise WorkerError("SYNTHETIC_INCIDENT_NOT_ALLOWED")
-    rendered = _serialize_payload(payload)
+    _serialize_payload(payload)  # Reject oversized input before state or secret reads.
     now = int(time.time())
     fingerprint = _fingerprint(payload["incident_id"])
     latest = _latest_revision(payload)
@@ -703,6 +780,16 @@ def _process_record(record: dict[str, Any]) -> dict[str, str | int]:
         return {"status": "DUPLICATE", "incident": fingerprint, "revision": payload["revision"]}
     vector, past_cases = _history_lookup(payload)
     try:
+        dify_payload, enrichment_errors = enrich_metrics(
+            payload, _client("lambda"), _client("ssm")
+        )
+        if enrichment_errors:
+            LOGGER.warning(json.dumps({
+                "event": "agent_metric_enrichment", "incident": fingerprint,
+                "revision": payload["revision"], "status": "PARTIAL",
+                "failed_sources": enrichment_errors,
+            }, separators=(",", ":")))
+        rendered = _serialize_payload(dify_payload)
         run_id = _call_dify(payload, rendered, past_cases)
         _finalize(payload, "SUCCEEDED", int(time.time()), **({"workflow_run_id": run_id} if run_id else {}))
     except WorkerError as exc:
