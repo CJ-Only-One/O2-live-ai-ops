@@ -7,9 +7,10 @@
 
     python3 scripts/seed_runbook.py
 
-테이블이 날아가도 이걸 다시 돌리면 그대로 복구된다 (runbook.tf 의 PITR
-안 거는 이유와 같은 전제). 그래서 이 파일이 곧 카탈로그 문서다 — 별도로
-스키마를 어딘가에 다시 적지 않는다.
+테이블이 날아가도 이걸 다시 돌리면 그대로 복구돼야 한다 (runbook.tf 의 PITR
+안 거는 이유와 같은 전제). 이 파일이 실행 데이터의 원본이다.
+`docs/runbook-catalog.md`는 사람이 읽는 형식·위험도 분석과 live drift snapshot이며,
+시딩값의 두 번째 원본이 아니다.
 
 ★ 사람이 로컬에서 SSO 자격으로 돌린다. Node 11(runbook_lookup Lambda)은
   읽기만 하고, 이 스크립트가 스스로 채우는 걸 대신하지 않는다 (runbook.tf).
@@ -471,8 +472,9 @@ KNOB_PARTITION = "KNOB"
 #    (AGENTS.md "숫자를 지어내지 않는다"). 실측되면 measurements.md 에 남기고
 #    여기를 그 값으로 덮어쓴다. ★★
 #
-# ★ risk_level 의 L1/L2/L3 척도는 저장소 어디에도 정의가 없다. 기존 ACTION
-#   아이템이 쓰던 값을 그대로 옮겼다 — 척도 정의는 별도 과제다.
+# ★ risk_level 의 L1/L2/L3 부여 척도는 아직 없다. 현재 실제 동작과
+#   중복·불일치는 docs/runbook-catalog.md 및 D-079를 본다. 기존 ACTION
+#   아이템이 쓰던 값을 그대로 옮겼고, Guardrail은 ACTION 쪽 값만 읽는다.
 
 KNOBS = [
     {
@@ -759,8 +761,10 @@ def main():
                     **action,
                 }
             )
-        # 삭제하지 않는다. 현재 시나리오와 의미가 달라진 옛 액션은 원문을
-        # 보존한 채 status 만 retired 로 바꿔 조회에서 제외한다.
+        # 삭제하지 않는다. 기존 아이템이 있으면 원문을 보존한 채 status 만
+        # retired 로 바꾼다. 다만 지금은 존재 조건이 없어 대상이 원래 없으면
+        # key+status 뿐인 sparse marker가 생긴다(D-079). 그 표식은 원문 보존
+        # 증거로 해석하면 안 된다.
         for action_id in entry.get("retired_action_ids", []):
             table.update_item(
                 Key={"rca_type": rca_type, "sk": f"ACTION#{action_id}"},

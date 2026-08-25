@@ -93,6 +93,7 @@
 | D-076 | S3 를 외부 결제 PG 장애로 바꾼다 — 실패로 끝나는 것이 정답인 시나리오 | 종착 경로 3분할, `pg_external_failure`, 목업 PG 스텁, 병합 키에서 broadcast_id 제외 |
 | D-077 | 런북은 시딩과 활성화를 분리한다 | `active`, `draft`, `retired`, Lookup 필터, 무삭제 전환, 승격 증거 |
 | D-078 | 목업 PG는 api 예약 뒤 동기 호출하고 실패 시 전부 보상한다 | `cfg:pg:*`, `payment.process`, 결정론적 실패, `idemstate`, 별도 admin key |
+| D-079 | Runbook 위험도는 현재 ACTION 승인 라우팅 값으로만 해석한다 | L1/L2 AUTO, L3 APPROVAL, KNOB 미연결, source-live drift, fail-open fallback |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4642,3 +4643,38 @@ PG 지연이 길어진 동안 같은 멱등키가 다시 들어오는 경우도 
 런북의 client pool 확대와 timeout/retry 조정은 필요한 수치와 효과·원복을 아직
 측정하지 않았다. 목업 PG 구현만으로 그 액션을 임의값에 연결하거나 S3 런북을
 `active`로 승격하지 않는다. 별도 Action Handler와 반복 E2E 증거가 여전히 필요하다.
+
+## D-079. Runbook 위험도는 현재 ACTION 승인 라우팅 값으로만 해석한다
+
+D-067은 KNOB의 가역성·예산·precondition으로 게이트 진입을 결정론화하려고 했다.
+2026-08-25 저장소 DSL과 실테이블을 다시 대조하니 조회 Lambda가 ACTION에 KNOB를
+붙이는 데까지만 구현됐고, Dify Guardrail은 여전히 ACTION 최상위 `risk_level`만
+읽었다. L1과 L2는 둘 다 `AUTO`, L3만 `APPROVAL`이며 등급을 부여하는 척도는 없다.
+
+따라서 현 상태에서 `risk_level`을 완성된 위험 평가로 설명하지 않는다. 이것은
+**승인 경로 라우팅 값**이다. `blast_radius`, `knob_reversible`,
+`user_effect_reversible`, `preapproved_budget`, `preconditions`가 존재해도 현재
+Guardrail이 검사한다는 뜻이 아니다. 실제 형식과 필드별 소비 경로는
+`docs/runbook-catalog.md`를 단일 설명 문서로 둔다.
+
+### 확인된 drift
+
+- `limit_channel_volume`은 코드 원본 ACTION에 L3, KNOB에 L2가 중복 저장돼 있다.
+  현재 유효값은 Guardrail이 읽는 ACTION L3다.
+- 실테이블의 active ACTION에는 KNOB가 없었다. source에 있는 S1 KNOB도 아직 live에
+  없고, 구형 네 RCA는 source에 없으면서 status-missing fallback으로 active다.
+- 누락된 ACTION `risk_level`은 DENY가 아니라 L3 기본값으로 승인 경로에 들어간다.
+- `validate_catalog()`은 위험도 enum·필수 필드·ACTION-KNOB 일치·live drift를
+  검사하지 않는다.
+- `KNOBS`에 정의된 독립 `set_read_path_degraded`는 전체 dry-run에서도 Runbook
+  ACTION 연결 필터에 걸려 시딩 대상에서 빠진다. “런북 없는 조치도 조회한다”는
+  D-067의 목적이 현재 시더에서는 성립하지 않는다.
+- 존재하지 않는 과거 ACTION을 retire하면 `update_item`이 키와 status만 가진
+  sparse marker를 만든다. live의 `pg_read_replica_failover`가 이 상태라서,
+  retired 표시 자체는 원문 보존 증거가 아니다.
+
+이번 결정은 런타임 등급이나 라우팅을 바꾸지 않는다. 현재 상태를 과장하지 않기
+위한 해석 경계를 정한 것이다. 척도를 실제 정책으로 만들 때는 ACTION을 실행
+위험도의 단일 원본으로 두고, KNOB에는 객관적 판정 재료만 남긴다. status 없는
+live 항목을 source에 편입하거나 retire하고 fallback을 제거한 뒤, precondition·
+측정 예산·구현 상태·원복 증거를 fail-closed로 검사해야 한다.

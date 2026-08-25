@@ -564,7 +564,9 @@ mttr_sec = recovered_at － occurred_at
   사례가 쌓이면 `_search` 에 메타데이터 필터를 걸고, 그 전까지는
   프롬프트의 "참고이지 정답이 아니다" 문장이 유일한 방어선이다
   (근거: `docs/architecture.md` 7.4)
-- **런북.** 라벨은 정했는데 `runbooks/<label>.md` 가 아직 하나도 없다.
+- **사람용 라벨 런북.** 라벨은 정했는데 `runbooks/<label>.md` 가 아직 하나도 없다.
+  이것은 DynamoDB의 기계 판독용 실행 카탈로그와 다른 자산이다. 실행 카탈로그
+  형식과 위험도 현황은 [`../../docs/runbook-catalog.md`](../../docs/runbook-catalog.md)를 본다.
   `label-report.py` 가 후보를 알려주면 사람이 쓴다. 그다음 Worker 가 라벨로
   **정확 키 조회**해서 프롬프트에 넣는다 — 런북은 유사도 검색으로 찾으면 안 된다
 - **Athena.** 원본이 `dt=` 로 파티션되어 있어 Glue 테이블만 얹으면 되지만,

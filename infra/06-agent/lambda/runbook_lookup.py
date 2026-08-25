@@ -124,8 +124,9 @@ def lambda_handler(event, context):
             knobs.append(item)
 
     # 상태 필드 도입 전 시딩된 항목은 하위 호환을 위해 active 로 본다.
-    # 새 시드 원본은 항상 status 를 명시하므로 전체 재시드 뒤에는 이 폴백이
-    # 실제 운영 데이터에 남지 않는다.
+    # 새 시드 원본은 항상 status 를 명시하지만, source 에 없는 orphan 은 전체
+    # 재시드로 없어지지 않는다. 명시적 migration/retire 뒤에만 이 폴백을
+    # 제거할 수 있다(D-079, docs/runbook-catalog.md).
     runbook_status = (definition or {}).get(
         "status", "active" if definition else "missing"
     )

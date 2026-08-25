@@ -1,6 +1,7 @@
 # Runbook 저장소. Node 11(진단 이후 조치 조회)이 읽는 원천이다.
 #
-# 스키마는 이미 확정되어 있다:
+# 시더가 쓰는 목표 형식은 다음과 같다. DynamoDB 자체는 스키마리스이고,
+# 2026-08-25 live scan에는 이 형식 전의 아이템도 남아 있다(D-079):
 #
 #   PK  rca_type              RCA 유형 하나
 #   SK  DEF                    유형당 정확히 하나. runbook_id·status·success_criteria 보관
@@ -9,8 +10,8 @@
 #
 # status 는 active·draft·retired 셋이다(D-077). Lookup Lambda 는 active DEF와
 # active ACTION만 Agent에 반환한다. draft·retired 는 같은 테이블에 남아도 자동
-# 실행 후보가 아니다. status 필드가 없던 기존 아이템은 재시드 전까지만 active
-# 로 간주하는 하위 호환 폴백이 있다.
+# 실행 후보가 아니다. status 필드가 없던 기존 아이템은 명시적 migration/retire
+# 전까지 active로 간주한다. 전체 재시드만으로 source에 없는 orphan은 없어지지 않는다.
 #
 # ★ PK 값 하나가 RCA 유형이 아니다 — `rca_type="KNOB"` 는 노브 카탈로그
 #   파티션이고 SK 는 `KNOB#{action_id}` 다(D-067). 게이트 진입을 LLM 서술이
@@ -35,7 +36,8 @@
 #
 # ★ labels.txt 의 runbooks/<label>.md(사람이 읽는 마크다운 대응 문서)와는
 #   다른 것이다. 이 테이블은 에이전트가 자동으로 조회·실행하는 기계 판독용
-#   카탈로그다 — 이름이 같아서 헷갈리기 쉽다.
+#   카탈로그다 — 이름이 같아서 헷갈리기 쉽다. 형식·위험도·live drift 대조는
+#   docs/runbook-catalog.md를 본다.
 
 resource "aws_dynamodb_table" "runbook" {
   name         = "${local.name}-runbook"
@@ -54,10 +56,10 @@ resource "aws_dynamodb_table" "runbook" {
     type = "S"
   }
 
-  # PITR 안 건다. 진짜 원본은 이 테이블이 아니라 시딩 스크립트다 — 테이블이
-  # 날아가도 스크립트를 다시 돌리면 그대로 복구된다. history.tf 의 S3 버전관리와는
-  # 반대 결론인데, 거기는 "산출물이라 원본이 코드 밖에만 있는" 경우고 여기는
-  # "원본이 스크립트(=코드)로 남아있는" 경우라 그렇다.
+  # PITR 안 건 결정은 시딩 스크립트가 전체 원본이라는 전제였다. 2026-08-25
+  # live scan에서 source에 없는 구형 active 항목이 확인돼 지금은 "그대로 복구"
+  # 전제가 성립하지 않는다(D-079, docs/runbook-catalog.md). orphan을 source에
+  # 편입하거나 retire하기 전에는 이 drift를 운영 리스크로 취급한다.
   point_in_time_recovery {
     enabled = false
   }
