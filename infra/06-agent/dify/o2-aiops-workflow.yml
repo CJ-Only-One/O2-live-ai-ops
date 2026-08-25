@@ -1360,8 +1360,21 @@ workflow:
         loop_id: main_loop
         sourceType: http-request
         targetType: http-request
-      id: hot_block_post-source-read_path_status_post-o2hot6
+      id: hot_block_post-source-hot_items_post-o2hot6
       source: hot_block_post
+      sourceHandle: source
+      target: hot_items_post
+      targetHandle: target
+      type: custom
+      zIndex: 1001
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        sourceType: http-request
+        targetType: http-request
+      id: hot_items_post-source-read_path_status_post-o2hot6b
+      source: hot_items_post
       sourceHandle: source
       target: read_path_status_post
       targetHandle: target
@@ -3361,7 +3374,7 @@ workflow:
       width: 260
       zIndex: 1001
     - data:
-        code: "import json\n\ndef _logical_value(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    return d.get('value') if d.get('status') == 'OK' else None\n\ndef _degraded_active(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    v=d.get('read_path_degraded_active')\n    return v if isinstance(v,bool) else None\n\ndef main(warm_body: str, propagation_body: str, block_body: str, degraded_body: str) -> dict:\n    try: warm=json.loads(warm_body or '{}')\n    except Exception: warm={}\n    latest=warm.get('latest')\n    if not isinstance(latest,dict):\n        latest={}\n        warm['latest']=latest\n    latest['chat_propagation_p95_ms']=_logical_value(propagation_body)\n    latest['channel_block_rate']=_logical_value(block_body)\n    latest['read_path_degraded_active']=_degraded_active(degraded_body)\n    return {'merged_post_metrics_body':json.dumps(warm,ensure_ascii=False,separators=(',',':'))}\n"
+        code: "import json\n\ndef _logical_value(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    return d.get('value') if d.get('status') == 'OK' else None\n\ndef _degraded_active(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    v=d.get('read_path_degraded_active')\n    return v if isinstance(v,bool) else None\n\ndef main(warm_body: str, propagation_body: str, block_body: str, items_body: str, degraded_body: str) -> dict:\n    try: warm=json.loads(warm_body or '{}')\n    except Exception: warm={}\n    latest=warm.get('latest')\n    if not isinstance(latest,dict):\n        latest={}\n        warm['latest']=latest\n    latest['chat_propagation_p95_ms']=_logical_value(propagation_body)\n    latest['channel_block_rate']=_logical_value(block_body)\n    latest['items_per_sec']=_logical_value(items_body)\n    latest['read_path_degraded_active']=_degraded_active(degraded_body)\n    return {'merged_post_metrics_body':json.dumps(warm,ensure_ascii=False,separators=(',',':'))}\n"
         code_language: python3
         desc: Warm 현재 지표에 Datadog 전파 p95·채널 차단률과 Valkey 원본 degraded 상태를 결합한다. 결측은 0이 아니라 None으로 유지한다.
         isInIteration: false
@@ -3387,6 +3400,10 @@ workflow:
           - hot_block_post
           - body
           variable: block_body
+        - value_selector:
+          - hot_items_post
+          - body
+          variable: items_body
         - value_selector:
           - read_path_status_post
           - body
@@ -4265,6 +4282,55 @@ workflow:
         y: 250
       positionAbsolute:
         x: 13300
+        y: 410
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 1001
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{
+  \"metric\": \"items_per_sec\",
+  \"service\": \"chat-gateway\",
+  \"window_seconds\": 300
+}"
+          type: json
+        desc: S1 복구 판정의 세 축 중 팬아웃 총량. propagation·block rate 와 달리 서비스 합계로 둔다 — M-010 의 붕괴점은 chat-gateway 파드 용량이고 파드는 방송들이 공유하므로, 방송별로 쪼개면 각각은 안전선 아래인데 합쳐서 무너지는 상황을 놓친다.
+        headers: 'Content-Type: application/json
+
+          X-O2-Proxy-Key: {{#env.O2_HOT_PROXY_KEY#}}'
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 500
+        selected: false
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 20
+          max_write_timeout: 10
+        title: 22-H2. Hot Path — Fanout Items/s
+        type: http-request
+        url: '{{#env.HOT_PROXY_URL#}}/v1/hot/datadog/metric'
+        variables: []
+      height: 142
+      id: hot_items_post
+      parentId: main_loop
+      position:
+        x: 12100
+        y: 250
+      positionAbsolute:
+        x: 13400
         y: 410
       selected: false
       sourcePosition: right
