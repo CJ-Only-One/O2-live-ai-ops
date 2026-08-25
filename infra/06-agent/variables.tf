@@ -306,6 +306,34 @@ variable "runbook_lookup_secret_name" {
   default     = "o2/dev/runbook-lookup"
 }
 
+variable "s2_experiment_runbook_enabled" {
+  description = "S2 실전 시연 동안에만 정확히 allowlist된 draft 런북을 조회하게 하는 임시 게이트"
+  type        = bool
+  default     = false
+}
+
+variable "s2_experiment_id" {
+  description = "S2 실험 감사 로그에 남길 식별자. 게이트가 꺼져 있을 때는 반드시 빈 문자열"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.s2_experiment_id == "" || can(regex("^s2-[0-9]{8}T[0-9]{6}[a-z0-9-]*$", var.s2_experiment_id))
+    error_message = "S2 experiment id는 s2-YYYYMMDDTHHMMSS 형식으로 시작해야 한다."
+  }
+}
+
+variable "s2_experiment_expires_at_epoch" {
+  description = "S2 draft 런북 조회 예외의 Unix 만료 시각. Lambda가 매 호출마다 검사한다"
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = floor(var.s2_experiment_expires_at_epoch) == var.s2_experiment_expires_at_epoch && var.s2_experiment_expires_at_epoch >= 0
+    error_message = "S2 experiment expiry는 0 이상의 Unix 정수여야 한다."
+  }
+}
+
 # ── 조치 실행기 (Scale Executor) ───────────────────────────────────
 
 variable "scale_executor_secret_name" {
@@ -325,6 +353,17 @@ variable "scale_executor_secret_name" {
   EOT
   type        = string
   default     = "o2/dev/scale-executor"
+}
+
+variable "s2_scale_stabilization_seconds" {
+  description = "S2 scale/isolation 조치 후 Warm/Endpoint 검증 전에 Action Handler가 기다릴 시간"
+  type        = number
+  default     = 60
+
+  validation {
+    condition     = floor(var.s2_scale_stabilization_seconds) == var.s2_scale_stabilization_seconds && var.s2_scale_stabilization_seconds >= 60 && var.s2_scale_stabilization_seconds <= 65
+    error_message = "S2 안정화 대기는 검증 기준인 60-65초 범위의 정수여야 한다."
+  }
 }
 
 # ── Session Manager ──────────────────────────────────────────────

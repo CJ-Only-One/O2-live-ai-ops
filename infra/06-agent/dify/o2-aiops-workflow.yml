@@ -2952,8 +2952,8 @@ workflow:
         ssl_verify: true
         timeout:
           max_connect_timeout: 10
-          max_read_timeout: 20
           max_write_timeout: 10
+          max_read_timeout: 70
         title: 19-D. Action Executor (HTTP, x-api-key)
         type: http-request
         url: '{{#resolve_target.resolved_url#}}'
@@ -3196,9 +3196,9 @@ workflow:
       width: 241
       zIndex: 1001
     - data:
-        code: "import json\n\ndef main(action_result_json: str) -> dict:\n    # Mock path deliberately does not sleep inside Dify sandbox. Real Action Handler/verification adapter should enforce stabilization/polling.\n    try:a=json.loads(action_result_json or '{}')\n    except Exception:a={}\n    return {'stabilization_json':json.dumps({'ready':True,'action_id':a.get('action_id',''),'note':'mock/no-blocking-wait'},ensure_ascii=False,separators=(',',':'))}\n"
+        code: "import json\n\ndef main(action_result_json: str) -> dict:\n    # REAL scale 조치는 Action Handler 응답 전에 60초 안정화를 완료한다. 이 노드는\n    # 그 계약을 검증하고, mock 경로는 준비되지 않은 것으로 표시한다.\n    try:a=json.loads(action_result_json or '{}')\n    except Exception:a={}\n    real=a.get('mode') == 'REAL' and a.get('status') == 'SUCCESS'\n    return {'stabilization_json':json.dumps({'ready':real,'action_id':a.get('action_id',''),'owner':'action-handler' if real else 'none'},ensure_ascii=False,separators=(',',':'))}\n"
         code_language: python3
-        desc: draw.io의 ≤30s Wait 의미를 유지하되 Dify Code에서 sleep하지 않음. 실제 운영은 Action Handler/Verification Adapter가 stabilization/polling을 담당.
+        desc: 실제 S2 Scale Executor가 응답 전 60초 안정화를 소유한다. Dify Code에서는 sleep하지 않고 REAL/SUCCESS 계약만 기록한다.
         isInIteration: false
         isInLoop: true
         loop_id: main_loop

@@ -108,8 +108,11 @@ resource "aws_lambda_function" "runbook_lookup" {
 
   environment {
     variables = {
-      RUNBOOK_TABLE       = aws_dynamodb_table.runbook.name
-      RUNBOOK_SECRET_NAME = var.runbook_lookup_secret_name
+      RUNBOOK_TABLE                  = aws_dynamodb_table.runbook.name
+      RUNBOOK_SECRET_NAME            = var.runbook_lookup_secret_name
+      S2_EXPERIMENT_RUNBOOK_ENABLED  = tostring(var.s2_experiment_runbook_enabled)
+      S2_EXPERIMENT_ID               = var.s2_experiment_id
+      S2_EXPERIMENT_EXPIRES_AT_EPOCH = tostring(var.s2_experiment_expires_at_epoch)
     }
   }
 
@@ -117,6 +120,16 @@ resource "aws_lambda_function" "runbook_lookup" {
     aws_iam_role_policy.runbook_lookup,
     aws_cloudwatch_log_group.runbook_lookup,
   ]
+
+  lifecycle {
+    precondition {
+      condition = (
+        (!var.s2_experiment_runbook_enabled && var.s2_experiment_id == "" && var.s2_experiment_expires_at_epoch == 0) ||
+        (var.s2_experiment_runbook_enabled && var.s2_experiment_id != "" && var.s2_experiment_expires_at_epoch > 0)
+      )
+      error_message = "S2 experiment runbook은 disabled+빈 ID+만료 0 또는 enabled+ID+양수 만료시각 조합만 허용한다."
+    }
+  }
 }
 
 resource "aws_lambda_function_url" "runbook_lookup" {

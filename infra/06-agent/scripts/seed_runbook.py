@@ -92,7 +92,7 @@ RUNBOOKS = [
                     "deployment": {
                         "type": "string",
                         "required": True,
-                        "source": "observability.pod.deployment_name",
+                        "source": "static:api-canary",
                     },
                     "replicas": {
                         "type": "int",
@@ -109,7 +109,7 @@ RUNBOOKS = [
                     # scale_executor_url output).
                     "endpoint": "$SCALE_EXECUTOR_URL",
                 },
-                "stabilization_wait_seconds": None,
+                "stabilization_wait_seconds": 60,
             },
         ],
     },
@@ -167,7 +167,7 @@ RUNBOOKS = [
                     "method": "POST",
                     "endpoint": "$SCALE_EXECUTOR_URL",
                 },
-                "stabilization_wait_seconds": None,
+                "stabilization_wait_seconds": 60,
             },
         ],
         # 실테이블에만 남아 있던 옛 범용 액션. 새 S2 흐름의 "한 단계 증설

@@ -98,9 +98,9 @@ resource "aws_lambda_function" "scale_executor" {
   runtime       = "python3.12"
   architectures = ["x86_64"]
 
-  # GET + PATCH 각 한 번, EKS 토큰 서명 하나. runbook_lookup 보다 살짝
-  # 넉넉하게 둔다 — 실제 K8s API 호출이 왕복 두 번이라서다.
-  timeout     = 15
+  # PATCH 뒤 60초 안정화 창을 Action Handler가 소유한다. Dify가 조치 직후의
+  # 이전 Warm window를 읽어 거짓 실패로 판정하지 않게 Lambda timeout을 넉넉히 둔다.
+  timeout     = 75
   memory_size = 128
 
   filename         = data.archive_file.scale_executor.output_path
@@ -108,10 +108,11 @@ resource "aws_lambda_function" "scale_executor" {
 
   environment {
     variables = {
-      CLUSTER_NAME               = var.cluster_name
-      CLUSTER_ENDPOINT           = data.aws_eks_cluster.this.endpoint
-      CLUSTER_CA                 = data.aws_eks_cluster.this.certificate_authority[0].data
-      SCALE_EXECUTOR_SECRET_NAME = var.scale_executor_secret_name
+      CLUSTER_NAME                = var.cluster_name
+      CLUSTER_ENDPOINT            = data.aws_eks_cluster.this.endpoint
+      CLUSTER_CA                  = data.aws_eks_cluster.this.certificate_authority[0].data
+      SCALE_EXECUTOR_SECRET_NAME  = var.scale_executor_secret_name
+      SCALE_STABILIZATION_SECONDS = tostring(var.s2_scale_stabilization_seconds)
     }
   }
 

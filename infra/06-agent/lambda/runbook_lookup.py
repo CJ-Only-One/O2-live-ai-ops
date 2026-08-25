@@ -24,6 +24,7 @@ import hashlib
 import hmac
 import json
 import os
+import time
 from decimal import Decimal
 
 import boto3
@@ -58,6 +59,40 @@ def _json_default(value):
 # rca_type 의 조치로 쓰이고, S3 처럼 런북 없이 조립하는 조치도 있기 때문이다.
 KNOB_PARTITION = "KNOB"
 KNOB_SK_PREFIX = "KNOB#"
+
+# S2 실전 시연에서만 draft 런북을 읽게 하는 제한된 예외다. DynamoDB의
+# status를 active로 바꾸지 않으므로 실험 종료 뒤 승격 상태가 남지 않는다.
+# 세 조건(명시적 활성화, experiment id, 만료 시각)이 모두 맞고, 아래의 정확한
+# runbook/action 조합일 때만 허용한다. 다른 draft 런북에는 적용되지 않는다.
+S2_EXPERIMENT_RUNBOOKS = {
+    "pod_resource_exhaustion": {
+        "runbook_id": "RB-API-LATENCY-001",
+        "action_ids": {"scale_api_one_step"},
+    },
+    "pod_load_skew": {
+        "runbook_id": "RB-API-POD-RESOURCE-SKEW",
+        "action_ids": {"isolate_slow_pod"},
+    },
+}
+
+
+def _s2_experiment_allowed(rca_type, definition, now=None):
+    if os.environ.get("S2_EXPERIMENT_RUNBOOK_ENABLED", "false").lower() != "true":
+        return False
+    experiment_id = os.environ.get("S2_EXPERIMENT_ID", "").strip()
+    try:
+        expires_at = int(os.environ.get("S2_EXPERIMENT_EXPIRES_AT_EPOCH", "0"))
+    except ValueError:
+        return False
+    if not experiment_id or expires_at <= int(time.time() if now is None else now):
+        return False
+    allowed = S2_EXPERIMENT_RUNBOOKS.get(rca_type)
+    return bool(
+        definition
+        and definition.get("status") == "draft"
+        and allowed
+        and definition.get("runbook_id") == allowed["runbook_id"]
+    )
 
 
 def _knob(action_id):
@@ -131,15 +166,32 @@ def lambda_handler(event, context):
         "status", "active" if definition else "missing"
     )
     runbook_id = (definition or {}).get("runbook_id")
-    active_definition = runbook_status == "active"
+    experiment_allowed = _s2_experiment_allowed(rca_type, definition)
+    active_definition = runbook_status == "active" or experiment_allowed
     success_criteria = (
         definition.get("success_criteria") if definition and active_definition else None
     )
-    actions = [
-        item
-        for item in action_items
-        if active_definition and item.get("status", "active") == "active"
-    ]
+    if experiment_allowed:
+        allowed_action_ids = S2_EXPERIMENT_RUNBOOKS[rca_type]["action_ids"]
+        actions = [
+            item
+            for item in action_items
+            if item.get("status") == "draft"
+            and item.get("action_id") in allowed_action_ids
+        ]
+        runbook_status = "experiment"
+        print(
+            "S2_EXPERIMENT_RUNBOOK_ALLOWED",
+            "experiment_id=", os.environ["S2_EXPERIMENT_ID"],
+            "rca_type=", rca_type,
+            "runbook_id=", runbook_id,
+        )
+    else:
+        actions = [
+            item
+            for item in action_items
+            if active_definition and item.get("status", "active") == "active"
+        ]
 
     # 게이트 진입 판정은 LLM 이 아니라 이 값들로 한다 — knob_reversible ·
     # user_effect_reversible · preapproved_budget · preconditions. 조치마다
@@ -156,6 +208,9 @@ def lambda_handler(event, context):
                 "rca_type": rca_type,
                 "runbook_id": runbook_id,
                 "runbook_status": runbook_status,
+                "experiment_id": (
+                    os.environ.get("S2_EXPERIMENT_ID") if experiment_allowed else None
+                ),
                 "success_criteria": success_criteria,
                 "actions": actions,
                 # rca_type="KNOB" 으로 부르면 카탈로그 전체가 여기 담긴다.
