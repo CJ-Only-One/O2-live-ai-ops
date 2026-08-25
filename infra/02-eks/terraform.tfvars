@@ -35,9 +35,9 @@ node_capacity_type  = "ON_DEMAND"
 #
 # desired_size 는 lifecycle 의 ignore_changes 에 있어 terraform 이 안 바꾼다.
 # 실제로 대수를 올리는 것은 min_size 다.
-node_desired_size   = 4
-node_min_size       = 4
-node_max_size       = 6
+node_desired_size = 4
+node_min_size     = 4
+node_max_size     = 6
 
 # CI/CD 자격증명은 infra/00-cicd 스택이 소유한다.
 # 배포는 Argo CD(GitOps)라 CI가 클러스터에 접근할 필요가 없다. (docs/decisions.md D-009)
