@@ -98,17 +98,24 @@
 | replicas 동기화 예외 | `argocd.tf`에 api `/spec/replicas` ignore와 `RespectIgnoreDifferences=true`가 있다. 실험 종료 시 2로 명시 원복 | **구현됨** |
 | api 에 HPA·KEDA 없을 것 | ScaledObject 는 `order-worker` 에만 붙어 있다 | **있음** |
 
-### 2.4 S3 — 사람/봇 미확정 / 정보 게이트
+### 2.4 S3 — 외부 결제 PG 장애 / 소진 → 실패 보고
 
 | 요구 | 현재 | 판정 |
 |---|---|---|
 | 채팅 파생 신호 → Candidate 생성 | `infra/08-chat-signal/lambda/runtime/processor.py`·`repository.py`. `CANDIDATE_CREATED` 구현됨. 실행 게이트는 꺼져 있다 | **비활성** |
 | Candidate → Agent 호출 handoff | `agent-entrypoint.md` 0절 `agent_handoff_status=NOT_CONFIGURED` | **없음** |
-| 읽기 요청당 CPU 감소 노브 | `/api/admin/read-path-degraded`가 `cfg:read_path_degraded:*`를 제어하고, 응답을 바꾸지 않은 채 `inventory.check` 발행만 생략한다(D-062) | **구현됨** |
-| 사람/자동화 두 패턴 부하 | `read-path.js`에 `human`·`ambiguous` 패턴, 세션·UA·지터·실제 `LIVE_ENTER` 발행이 있다. 구분 가능성 실측은 남음 | **구현됨** |
+| **목업 PG 스텁** | 없다. `payment_process` 를 발행하는 코드가 어디에도 없다 — SDK 함수·`pg_latency_ms` 필드·`PAYMENT_FAILURE` enum 은 이미 있고 **호출하는 쪽만 없다**(D-076) | **없음** |
+| **`cfg:pg:*` 노브** | 없다. `cfg:channel_limit:*`·`cfg:read_path_degraded:*` 와 같은 패턴으로 추가한다 | **없음** |
+| **주문 부하 스크립트** | `loadtest/` 에 읽기·채팅은 있고 **주문 경로 부하가 없다** | **없음** |
+| `pg_external_failure` 런북 (조치 **둘 이상**) | `seed_runbook.py` 에 항목이 없다. 하나만 넣으면 `rr` 이 안 올라 "다 해봤다" 가 성립하지 않는다 | **없음** |
+| `pg_latency_ratio` 집계 | `o2warm/sketch.py`·`metrics.py` 에 있다. `pg_latency_ms` 가 안 들어와서 지금은 표본이 0 | **있음** |
+| `pg_external_failure` 복구 판정 | `recovery_judge` 폴백에 `p95<=400`·`error<=0.05` 가 이미 있다 | **있음** |
+| 병합 키에서 `broadcast_id` 제외 | Correlator 가 source·service 로 묶는다. **S3 만 방송 축을 빼는 분기가 없다**(D-076) | **고쳐야** |
+| ~~읽기 요청당 CPU 감소 노브~~ | `/api/admin/read-path-degraded`(D-062) — **S3 에서 빠졌지만 지우지 않는다**(D-076). 읽기 경로 보호로는 유효 | **있음 · 미사용** |
+| ~~사람/자동화 두 패턴 부하~~ | `read-path.js` 의 `human`·`ambiguous` — **S3 에서 빠졌지만 지우지 않는다**(D-076) | **있음 · 미사용** |
 | 부하 생성기에 표식 없을 것 | 커스텀 헤더 없음 (`scenario-experiment.md` 2.1) | **있음** |
 | 채팅 본문 미저장 | `apps/chat-gateway/src/events.ts` — 길이·해시·중복만 싣는다 | **있음** |
-| 감별 지표 (`ua_diversity`·`interval_cv`·집중도) | `o2warm/metrics.py` 에 있다 | **있음** |
+| ~~감별 지표 (`ua_diversity`·`interval_cv`·집중도)~~ | `o2warm/metrics.py` — **S3 에서 빠졌지만 지우지 않는다**(D-076) | **있음 · 미사용** |
 
 ### 2.5 녹화 프로필
 
