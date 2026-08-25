@@ -25,18 +25,26 @@
 
 ## 0. 시나리오 셋과 게이트 셋
 
-### 0.1 게이트 — Agent 가 멈추는 세 가지 이유
+### 0.1 세 갈래 — 상태 머신이 도달하는 종착역
 
-**게이트는 "사람에게 넘기는 지점" 이고, 셋은 넘기는 이유가 다르다.**
-축은 서로 겹치지 않는다 — 대가 / 증거 / 자기 신뢰.
+시나리오 셋은 **상태 머신이 실제로 도달하는 세 종착 상태**에 일대일로 묶인다.
+다른 끝은 없다.
 
-| 게이트 | 진입 조건 | 사람에게 내미는 것 | 사람이 하는 일 |
+| 경로 | 종착 | 사람이 나오나 | 시나리오 |
 |---|---|---|---|
-| **대가** | 후보 조치의 `knob_reversible` 또는 `user_effect_reversible` 가 아니오이고 사전 승인 예산 밖 | 조치안 · 강도 선택지 · 조치 시 피해 · 방치 시 피해 · 만료 · 근거 · 배제 | 강도 선택 또는 거부 |
-| **정보** | 둘 이상의 가설이 관측을 모두 설명하고 조치가 상충 | 가설별 가능성 · 근거 · 추가로 필요한 증거 · 질문 · 양쪽에 안전한 임시 조치 | 시스템 밖 사실 답변 또는 "모르겠다" |
-| **자기 교정** | 조치 전 기준값 대비 검증 기준 미달 | 1차 가설과 검증 수치 · 되돌릴 것의 판정 · 재분석 결과 · 2차 조치 | 없음 (보고). 2차 조치가 Precheck 실패면 대가 게이트로 |
+| **승인 → 해결** | `RESOLVED` | 실행 **전에** 승인 1회 | S1 |
+| **재진단 → 해결** | `RESOLVED` | **안 나옴** | S2 |
+| **소진 → 실패 보고** | `RETRY_LIMIT_EXCEEDED` | 다 해본 **뒤에** 인계 | S3 |
 
-**"권한 게이트" 라고 부르지 않는다.** 진입 조건이 RBAC 권한이 아니라 **가역성**이다.
+**사람을 부르는 지점은 Guardrail 하나뿐이다.** 카탈로그 등급을 조회해 결정론적으로 정한다 —
+`L1`/`L2` 는 `AUTO`, `L3` 는 `APPROVAL`, 카탈로그에 없으면 `DENY`.
+**"물어봐야 하나" 를 LLM 이 판단하지 않는다.**
+
+| 버튼 | 그 다음 | 사람이 기여한 것 |
+|---|---|---|
+| 승인 | 조치 실행 → 검증 | 가치판단 |
+| 다시 보기 | 그 조치가 `excluded_actions` 로. 코멘트가 다음 진단·계획 입력 | 정보 |
+| 거부 | 재시도 없이 `ESCALATED` | 권한 회수 |
 
 ### 0.2 분류와 런북은 다른 축이다
 
@@ -95,11 +103,19 @@ S2 가 그 경우다 — 처음 보는 장애인데 증상 기반 런북으로 �
 
 ### 0.3 시나리오 셋
 
-| # | 진입 | 분류 | 게이트 | 장애 | 주 조치 |
+| # | 진입 | `rca_category` | 장애 | 조치 | 종착 |
 |---|---|---|---|---|---|
-| **S1** | Datadog | 알려진 | 대가 | 채팅 총량이 채널 감당 선 초과 → 전파 지연 | 채널 총량 제한 |
-| **S2** | Datadog | 처음 보는 | 자기 교정 | Service 에 붙은 파드 하나만 CPU 조임 → 서비스 꼬리 지연 | 느린 파드 격리 |
-| **S3** | 채팅 | 처음 보는 | 정보 | 읽기 급증. 사람인지 자동화인지 우리 데이터로 확정 불가 | 읽기 경로 버티기 |
+| **S1** | Datadog | `chat_channel_overload` | 채팅 총량이 채널 감당 선 초과 → 전파 지연 | 채널 총량 제한 (`L3`) | **승인 → 해결** |
+| **S2** | Datadog | `pod_resource_exhaustion`<br>→ `pod_load_skew` | Service 에 붙은 파드 하나만 CPU 조임 → 서비스 꼬리 지연 | 증설 → 미달 → 격리 (둘 다 `L1`/`L2`) | **재진단 → 해결** |
+| **S3** | **채팅** | `pg_external_failure` | 외부 결제 PG 지연 → 주문 타임아웃 | 커넥션 풀 · 타임아웃 조정 (전부 증상 완화) | **소진 → 실패 보고** |
+
+**인시던트 단위가 셋 다 다르다.** 이것이 곧 `Deduped` 병합 키다.
+
+| | 단위 | 근거 |
+|---|---|---|
+| S1 | `service` + **`broadcast_id`** | 채널 총량은 방송마다 별개다. 다른 방송의 폭주는 다른 인시던트이고 조치도 그 방송에만 건다 |
+| S2 | `service` + **`deployment`** | 파드가 여럿 이상해도 원인이 하나의 Deployment 설정이면 한 인시던트다 |
+| S3 | **`service` 만** (방송 무관) | 외부 의존이라 모든 방송에 동시에 영향한다. **`broadcast_id` 를 병합 키에서 뺀다** — 안 그러면 같은 사건이 방송 수만큼 늘어난다 |
 
 ### 0.4 공통 상태 머신
 
@@ -158,7 +174,7 @@ stateDiagram-v2
 `Judging` 의 세 갈래는 `diagnostic_contamination` 을 조회해 정한다.
 **무조건 되돌리는 것이 규칙이 아니다** — 틀린 조치와 불완전한 조치는 다르다.
 
-### 0.5 S1 흐름 — 대가 게이트
+### 0.5 S1 흐름 — 승인 → 해결
 
 ```mermaid
 flowchart TB
@@ -178,7 +194,7 @@ flowchart TB
 **첫 파동은 어떤 조치로도 못 막는다** — 알림→분석→승인→적용 사이에 단발 스파이크는
 끝나 있다. 조치가 낮추는 것은 **지속 고원**이다. 그래서 검증도 적용 시각 이후만 센다.
 
-### 0.6 S2 흐름 — 자기 교정 게이트
+### 0.6 S2 흐름 — 재진단 → 해결 (사람 없음)
 
 ```mermaid
 flowchart TB
@@ -211,7 +227,7 @@ flowchart TB
 전용 런북의 활성화만 별도 검증 완료 후에 가능하다. 다음 재발의 `알려진 장애`
 분류는 전용 런북 유무가 아니라 과거 원인 사례의 사람 검증 결과로 독립 판정한다.
 
-### 0.7 S3 흐름 — 정보 게이트
+### 0.7 S3 흐름 — 소진 → 실패 보고 (채팅 진입)
 
 ```mermaid
 flowchart TB
@@ -219,19 +235,48 @@ flowchart TB
     B --> C["agent.trigger.v1"]
     D["Datadog 알림<br/>지속 조건 때문에 늦게 도착"] -.->|"agent.trigger.v1"| E
     C --> E["Incident Correlator<br/>Deduped 병합"]
-    E --> F["같은 incident_id<br/>revision 증가"]
-    F --> G{"유사 과거 사례"}
-    G -->|"없음 · 처음 보는 장애"| H["조사 — 읽기 급증 · api 포화"]
-    H --> I{"가설"}
-    I -->|"정상 유입 → 늘려야"| J["정보 게이트<br/>조치가 정반대라 못 고른다"]
-    I -->|"자동화 → 막아야"| J
-    J -->|"질문: 계획된 외부 노출?"| K{"운영자 답변"}
-    K -->|"있음"| L["용량 쪽으로 조사 우선순위"]
-    K -->|"없음"| M["보안팀 확인 · 주문 경로 제한 후보"]
-    K -->|"모르겠다"| N["HoldAction<br/>양쪽에 안전한 조치"]
-    N --> O["읽기 경로 요청당 CPU 감소"]
-    O --> P["검증 — 포화 완화 AND 차단 0<br/>AND Agent 가 단정하지 않음"]
+    E --> F["조사 — 주문 실패율 상승<br/>클러스터 자원은 정상"]
+    F --> G["query_athena<br/>payment_process 원시 이벤트"]
+    G --> H["pg_external_failure<br/>failure_code=PG_TIMEOUT<br/>pg_latency_ms 이 지연의 대부분"]
+    H --> I["조치 1 — 커넥션 풀 확대"]
+    I --> J{"success_criteria"}
+    J -->|"미달"| K["조치 2 — 타임아웃 · 재시도 조정"]
+    K --> L{"success_criteria"}
+    L -->|"미달"| M["후보 소진<br/>CANDIDATES_EXHAUSTED"]
+    M --> N["재진단 — 증거가 그대로라 같은 결론"]
+    N --> O["ACTIONS_EXHAUSTED_SAME_RCA<br/>즉시 종료"]
+    O --> P["조치 전부 원복 → 실패 보고"]
 ```
+
+**이 시나리오는 해결되지 않는 것이 정답이다.** 원인은 정확히 진단하지만
+**고칠 수단이 카탈로그에 없다** — 남은 조치가 전부 증상 완화이고 PG 자체를 빠르게 만들지 못한다.
+
+`ACTIONS_EXHAUSTED_SAME_RCA` 는 단순 카운터가 아니다. **증거가 안 바뀌었는데 결론이 바뀌면
+그게 더 이상하므로**, 재진단이 같은 `rca_category` 를 내면 남은 재시도를 태우지 않고 즉시 끝낸다.
+
+**주입은 목업 PG 스텁 하나다. 결제 인프라를 만들지 않는다.**
+배선은 이미 있고 호출하는 코드만 없다 — SDK 에 `payment_process` 이벤트와
+`pg_latency_ms` · `failure_code`(`PG_TIMEOUT` 등)가 정의돼 있고, warm 은 `pg_latency_ratio` 를
+이미 집계하며, `pg_external_failure` 는 진단 enum 과 복구 판정 폴백에 이미 있다.
+
+```python
+# apps/api/app/services/payment.py — 목업 PG
+delay_ms  = int(valkey.get("cfg:pg:delay_ms")  or 0)
+fail_rate = float(valkey.get("cfg:pg:fail_rate") or 0)
+time.sleep(delay_ms / 1000)
+failed = random.random() < fail_rate
+emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
+                     failure_code="PG_TIMEOUT" if failed else None,
+                     failure_stage="PG_CALL" if failed else None,
+                     pg_latency_ms=pg_ms, total_latency_ms=pg_ms)
+```
+
+| | |
+|---|---|
+| 주입 · 해제 | `SET cfg:pg:delay_ms` · `cfg:pg:fail_rate` / 해제는 `DEL`. 재배포 없이 켜고 끈다 |
+| **어디에 넣나** | **`order-worker` 가 아니라 `api` 주문 접수 경로.** worker 에 넣으면 SQS 백로그가 쌓여 `queue_backlog` 로 오진한다 — 이 시나리오는 "정확히 진단했는데 못 고친다" 가 핵심이라 오진이 방해된다 |
+| 세기 | 동기 라우트라 uvicorn 스레드풀이 마르고 api p95 가 전면 상승한다(알림이 뜨니 좋다). 너무 세면 api 가 죽어 `pod_resource_exhaustion` 처럼 보인다 — **주문은 깨지는데 읽기는 사는 구간**을 찾는다 |
+| 런북 | **조치 후보가 최소 둘** 있어야 `rr` 이 올라 "다 해봤다" 가 성립한다 |
 
 **채팅 본문을 Agent 에게 주지 않는다.** 시청자가 자유롭게 타이핑하는 유일한 입력이라
 본문을 저장하면 프롬프트 인젝션 경로가 된다. 파생값만 쓴다.
@@ -244,12 +289,11 @@ flowchart TB
 | Candidate 생성·Incident 호출 정책 | `docs/chat-incident-candidate.md`, `docs/agent-entrypoint.md` 1.2, D-055 |
 
 **Chat trigger 생성은 `CANDIDATE_CREATED`에서 한 번만이다**(D-050, D-055).
-쿨다운 중 `CANDIDATE_UPDATED`는 저장만 한다. Agent는 source trigger가 아니라
-`agent.incident.v1` revision을 받으며, 첫 cross-source 증거 같은 material change에만 후속
-revision을 분석한다.
+쿨다운 중 `CANDIDATE_UPDATED`는 저장만 한다.
 
 **진입점이 둘이 되면 Agent 호출 전에 병합 계층이 반드시 필요해진다**(0.4 `Deduped`, D-055).
 채팅으로 하나, 알림으로 하나 들어오므로 합치지 않으면 같은 사건을 두 번 조사한다.
+**S3 는 병합 키에서 `broadcast_id` 를 뺀다**(0.3) — 외부 의존이라 모든 방송에 동시에 영향하기 때문이다.
 
 ---
 
@@ -278,7 +322,7 @@ revision을 분석한다.
 |---|---|---|
 | **S1** | 전파 p95 가 붕괴 전 구간으로 복귀 **AND** 정상 사용자 차단률이 상한 이내 | **효과는 조치 적용 시각 이후만 센다.** 첫 파동은 이미 지나가 있다.<br>채팅 전파 계약 기준이 저장소에 없다 — M-010 실측 형상을 기준선으로 쓴다 |
 | **S2** | 격리 후 p95 가 **canary 붙이기 전** 값으로 복귀 | **증설분을 원복한 뒤에도 유지되어야 끝이다.** 남긴 채 회복하면 "결국 파드를 늘려서 나은 것" 을 배제할 수 없다.<br>1차 증설은 **실패해야 정상**이다 — p50 만 개선되고 p95 는 그대로 |
-| **S3** | api 포화 완화 **AND** 정상 사용자 차단 **0** **AND** Agent 가 단정하지 않음 | 버티기라 "해결" 이 없다. **차단 0 이 버티기의 정의다.**<br>조치 효과는 조치 전/후로 `read-path.js` 를 같은 RPS 계단으로 돌려 M-009 포화점이 밀렸는지 본다 |
+| **S3** | **"해결" 이 성공 기준이 아니다.** ① 한도까지 시도 ② 같은 조치 반복 없음 ③ **한도에서 멈춤** ④ 보고에 원인·시도·필요한 것이 다 있음 ⑤ 조치 전부 원복 | 유일하게 **실패로 끝나는 것이 정답**인 시나리오다. 해결 안 됐는데 `RESOLVED` 로 닫히면 실패이고, **한도를 넘겨 계속 시도해도 실패**다.<br>재진단이 같은 결론을 내는 것은 버그가 아니다 — 증거가 안 바뀌었으니 정직한 결과다 |
 
 ---
 
@@ -299,12 +343,13 @@ revision을 분석한다.
 |---|---|---|
 | **S1** | `broadcast.js` 로 `아이템/s = 시청자 × 발화율` 을 M-010 붕괴점 위로. **연결 축**으로 올린다 — 같은 총량이면 연결이 많을수록 확실히 무너진다(M-010 해석 2) | **발화자를 넓게 퍼뜨린다.** 기존 조건(`발화자 수 = 채팅율 × 6`)은 발화자가 좁아 **1인 도배로 보인다.** 전제는 *전원이 한도 안인데 인원이 많아 총량이 넘는다* 이므로, 발화자를 늘리고 1인당 발화율을 낮춰 **전원이 `CHAT_RATE_PER_MIN` 아래**가 되게 한다.<br>파형은 **첫 파동 + 지속 고원** — 지금은 고정 발화율이라 추가해야 한다 |
 | **S2** | canary Deployment 를 같은 Service 에 붙인다. main 과 **같은 이미지·같은 셀렉터, CPU 상한만** 낮게. 부하는 `read-path.js` 고정 도착률 | **CPU 상한 값 잡기** — 총 부하를 총 포화 아래로 두고, `파드당 RPS × M-009 기울기` 로 필요 CPU 를 구한 뒤 그보다 낮은 구간을 스윕해 **Ready 는 유지되면서 파드별 p95 가 이상치로 뜨는 값**을 고른다.<br>너무 낮으면 파드가 Service 에서 빠져 저절로 회복된다 — **canary 에만** `readinessProbe` 의 `timeoutSeconds`·`failureThreshold` 를 올려 창을 넓힌다 |
-| **S3** | `read-path.js`를 `human`/`ambiguous` 두 갈래로 실행한다. **가르는 신호를 지우는 방향**으로 — 요청마다 새 세션 키, 실제 계약의 `LIVE_ENTER` 이벤트, 간격 지터, UA 혼합 | 읽기 요청과 무관한 구매 클릭을 위조하지 않는다. 두 패턴이 쉽게 갈리면 정보 게이트가 안 열린다. 지표 이름은 `o2warm/metrics.py` 가 원본이다 |
+| **S3** | **목업 PG 스텁**에 `cfg:pg:delay_ms` · `cfg:pg:fail_rate` 를 SET 하고 k6 주문 부하를 건다. `payment_process` 이벤트가 `pg_latency_ms` · `failure_code=PG_TIMEOUT` 을 싣고 나간다 | **지연을 끝까지 유지한다** — 중간에 풀리면 자연 회복이 조치 효과로 기록되고 `RESOLVED` 로 잘못 닫힌다.<br>**`api` 주문 접수 경로에 넣는다** — `order-worker` 에 넣으면 SQS 백로그가 쌓여 `queue_backlog` 로 오진한다.<br>**런북에 조치 후보 최소 둘** — 하나면 `rr` 이 안 올라 "다 해봤다" 가 성립하지 않는다 |
 
-**파드별 지연 지표는 새로 만들지 않는다.** 봉투에 `pod_name` 이 이미 있고(T-023)
-warm path 가 이미 파드별로 집계한다(`sketch.py` 의 `cache_hit_by_pod`).
-`latency` 만 같은 패턴으로 복제하면 된다. 파드 이상치 모니터도
-`05-datadog/monitor.tf` 에 `outliers(… by {pod_name}, 'DBSCAN', …)` 로 있다.
+**파드별 지연 지표는 이미 있다.** `p95:o2.apm.request.duration{...} by {pod_name}` 을
+`monitor.tf` 의 `latency_p95_pod_outlier` 가 DBSCAN 으로 본다.
+**조임 비율(`cfs.*`)은 보지 않는다** — 이 클러스터는 CPU limit 을 일부러 안 걸어서
+그 지표가 **영구히 비어 있다**(D-064). 파드별 CPU 는 `kubernetes.cpu.usage.total by {pod_name}`
+사용량으로 보되, **조여진 파드는 상한에 막혀 오히려 낮게 나온다**는 점을 기억한다.
 **ALB 액세스 로그는 쓰지 않는다** — 전달 지연이 커서 실험 반복에 안 맞는다.
 
 > **은폐와 범위는 다르다.** canary 설정값은 채점자 전용이지만 Agent 는 재분석에서
@@ -319,7 +364,7 @@ warm path 가 이미 파드별로 집계한다(`sketch.py` 의 `cache_hit_by_pod
 | 노브 · 카운터 | `cfg:*` 삭제 · `chat:rate:*` · 채널 총량 카운터 |
 | 파드 수 | main replicas 복원 · canary 제거 |
 | 캐시 | Valkey 는 **메타 키만** — `stock:*` 금지 (2.1) |
-| 시나리오 간섭 | S2 와 S3 가 같은 읽기 부하를 쓴다. S3 전 canary 제거 · S2 전 패턴 분기 해제 |
+| 시나리오 간섭 | S3 전 **canary 제거** 확인 · S2 전 **`cfg:pg:*` 해제** 확인. 지연이 남아 있으면 S2 의 p95 판정이 오염된다 |
 | **Datadog 모니터 상태** | **OK 로 돌아왔는지 확인하고 다음 실행을 시작한다.** ALERT 로 남아 있으면 다음 실행에서 알림이 다시 안 떠서 Agent 가 안 깨어난다 — **반복 실행에서 가장 자주 밟는다** |
 | k6 | 누락 반복 수 0 인지 확인. 아니면 부하 생성기가 먼저 막힌 것이다 |
 | 노드 | 부하 뒤 Karpenter 임시 노드가 남았는지 본다(D-051) |
@@ -413,30 +458,36 @@ kubectl scale deploy/api -n o2-dev --replicas=2
 kubectl rollout status deploy/api -n o2-dev --timeout=180s
 ```
 
-### 4.4 S3 — 사람과 구별하기 어려운 읽기 부하
+### 4.4 S3 — 외부 결제 PG 지연
 
 ```bash
-BASE_URL='https://<현재-ALB>' RATE='<M-009 아래 시작값>' DURATION='60s' \
-PATTERN=human JITTER_MS='<측정값>' EMIT_CLIENT_EVENTS=true \
-k6 run -e BASE_URL -e RATE -e DURATION -e PATTERN -e JITTER_MS \
-  -e EMIT_CLIENT_EVENTS loadtest/read-path.js
+# 주입 — 목업 PG 스텁이 읽는 Valkey 키
+valkey-cli -h "$VALKEY_HOST" --tls SET cfg:pg:delay_ms  '<실측 후 확정>'
+valkey-cli -h "$VALKEY_HOST" --tls SET cfg:pg:fail_rate '<실측 후 확정>'
 
-BASE_URL='https://<현재-ALB>' RATE='<동일 RPS>' DURATION='60s' \
-PATTERN=ambiguous JITTER_MS='<동일 지터 범위>' EMIT_CLIENT_EVENTS=true \
-k6 run -e BASE_URL -e RATE -e DURATION -e PATTERN -e JITTER_MS \
-  -e EMIT_CLIENT_EVENTS loadtest/read-path.js
+# 주문 부하
+BASE_URL='https://<현재-ALB>' RATE='<주문 RPS>' DURATION='<알림 창보다 길게>' \
+k6 run -e BASE_URL -e RATE -e DURATION loadtest/order-path.js
+
+# 해제 — 반드시 종료 후
+valkey-cli -h "$VALKEY_HOST" --tls DEL cfg:pg:delay_ms cfg:pg:fail_rate
 ```
 
-`human`은 VU별 세션을 유지하고, `ambiguous`는 요청마다 새 세션과 UA를 선택한다.
-둘 다 운영 계약의 `x-session-key`, `User-Agent`, `LIVE_ENTER`만 사용하며 정답을
-노출하는 커스텀 헤더를 넣지 않는다. 읽기 저하 노브 원복은 다음과 같다.
+**세기는 "주문은 깨지는데 읽기는 사는 구간" 이다.** 동기 라우트라 uvicorn 스레드풀이
+마르면서 api p95 가 전면 상승하는 것까지는 의도한 것이다(알림이 떠야 병합을 보여준다).
+너무 세면 api 자체가 죽어 `pod_resource_exhaustion` 으로 오진된다 — `delay_ms` × 주문 RPS 를
+스윕해 하한을 잡는다.
 
-```bash
-curl -fsS -X POST "$API_ADMIN_URL" \
-  -H "x-admin-key: $READ_PATH_DEGRADED_ADMIN_KEY" \
-  -H 'content-type: application/json' \
-  -d '{"broadcast_id":"bc_1042","action":"clear"}'
-```
+**확인할 것**
+
+| 무엇 | 어떻게 |
+|---|---|
+| 채팅이 알림보다 **먼저** 왔는가 | Candidate 생성 시각과 Datadog 알림 시각의 차 — 0 이면 이 시나리오의 전제가 없다 |
+| 두 진입이 **한 인시던트로 병합**됐는가 | 같은 `incident_id` 의 revision 증가 |
+| `pg_latency_ratio` 가 1.0 에 가까운가 | 이 값이 "우리가 아니라 PG" 의 유일한 증거다 |
+| 조치가 **우연히 성공하지 않았는가** | 성공하면 지연 폭을 키운다 |
+| 종료 사유 | `final_status: RETRY_LIMIT_EXCEEDED` · `terminal_reason: ACTIONS_EXHAUSTED_SAME_RCA` |
+| **조치가 전부 원복됐는가** | 실패로 끝나도 시스템은 조치 이전 상태여야 한다 |
 
 ### 4.5 다음 실행 전 확인
 
