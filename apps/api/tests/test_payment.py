@@ -19,6 +19,9 @@ class _FakeValkey:
     def mset(self, values):
         self.values.update(values)
 
+    def set(self, key, value, ex=None):
+        self.values[key] = value
+
     def delete(self, *keys):
         for key in keys:
             self.values.pop(key, None)
@@ -128,6 +131,56 @@ def test_default_config_is_success_without_delay(monkeypatch):
 def test_invalid_manual_config_fails_open_to_normal(values, monkeypatch):
     monkeypatch.setattr(payment, "valkey", _FakeValkey(values))
     assert payment.get_config(authoritative=True) == payment.PgStubConfig()
+
+
+def test_pg_b_bypasses_injected_pg_a_fault(monkeypatch):
+    """PG-B로 전환된 뒤에는 PG-A용으로 주입된 지연·실패가 재현되면 안 된다."""
+    fake_valkey = _FakeValkey(
+        {
+            payment.PG_DELAY_KEY: "5000",
+            payment.PG_FAIL_RATE_KEY: "1",
+            payment.PG_ACTIVE_PROVIDER_KEY: "PG-B",
+        }
+    )
+    sent = _Emit()
+    monkeypatch.setattr(payment, "valkey", fake_valkey)
+    monkeypatch.setattr(payment, "emit", sent)
+    monkeypatch.setattr(
+        payment.time,
+        "sleep",
+        lambda _: pytest.fail("PG-B 전환 후에는 PG-A 지연을 재현하면 안 된다"),
+    )
+
+    result = payment.process_payment(
+        order_id="od_01TEST",
+        idempotency_key="00000000-0000-4000-8000-000000000005",
+        amount=12000,
+    )
+
+    assert result.succeeded is True
+    assert result.failure_code is None
+    assert sent.calls[0]["pg_provider"] == "PG-B"
+    assert sent.calls[0]["pg_response_code"] == "OK"
+
+
+def test_set_and_clear_active_provider_round_trip(monkeypatch):
+    fake_valkey = _FakeValkey()
+    monkeypatch.setattr(payment, "valkey", fake_valkey)
+
+    assert payment.get_config(authoritative=True).active_provider == "PG-A"
+
+    switched = payment.set_active_provider("PG-B")
+    assert switched.active_provider == "PG-B"
+    assert payment.get_config(authoritative=True).active_provider == "PG-B"
+
+    reverted = payment.clear_active_provider()
+    assert reverted.active_provider == "PG-A"
+
+
+def test_invalid_provider_value_rejected(monkeypatch):
+    monkeypatch.setattr(payment, "valkey", _FakeValkey())
+    with pytest.raises(ValueError):
+        payment.set_active_provider("PG-Z")
 
 
 def test_valkey_or_event_sink_failure_does_not_create_checkout_failure(monkeypatch):

@@ -24,6 +24,7 @@ from app.core.admin_auth import require_admin_key
 from app.core.config import settings
 from app.db.valkey import valkey
 from app.schemas.common import BroadcastId
+from app.services import payment
 from app.services.broadcast import degraded_key
 
 router = APIRouter()
@@ -80,13 +81,15 @@ def set_read_path_degraded(
     )
 
 
-# S3 재설계(2026-08-25) 조치 3개 — "외부 PG(결제 게이트웨이)가 느리다/안 붙는다"에
-# 우리 쪽에서 방어적으로 할 수 있는 조치만 담는다. 결제 게이트웨이 연동 자체는
-# architecture.md 0.2 "이 문서가 다루지 않는 것"으로 스코프 밖이라, PG 자체를
-# 실제로 고치는 조치(예: 리드 리플리카 failover)는 만들지 않는다 — 우리가
-# 소유하지 않은 인프라라 개념적으로 성립하지 않는다. 여기 셋은 real Valkey
-# 노브라 실제로 켜지고 원복되지만, 읽는 실제 결제 호출 경로가 없어서 근본
-# 원인(PG 자체가 느림)은 못 고친다 — 그게 이 시나리오의 요지다.
+# S3 재설계(2026-08-25) 조치 — "외부 PG(결제 게이트웨이)가 느리다/안 붙는다"에
+# 우리 쪽에서 할 수 있는 조치들이다. 아래 셋(circuit/timeout/retry)은 방어적
+# 조치라 PG-A 자체가 느린 근본 원인은 못 고친다. 그래서 넷째로 pg-provider-switch
+# 를 추가한다 — 실제 PG 연동을 새로 만드는 게 아니라(그건 architecture.md 0.2
+# 스코프 밖 그대로다), 이미 있는 목업 PG 스텁(payment.py)의 활성 provider를
+# PG-A에서 PG-B로 바꿔서 "다른 게이트웨이로 우회했다"를 재현한다(2026-08-25
+# 회의 결정 — S3는 방어 조치만으로 끝나지 않고 재발 시 실제로 해결되는
+# 시나리오로 간다). 결제 경로를 바꾸는 조치라 L3로 등록하고 Slack 승인 뒤에만
+# 실행한다(seed_runbook.py).
 
 class PgCircuitOpenIn(BaseModel):
     service: str
@@ -189,4 +192,34 @@ def set_pg_retry_backoff(
         service=body.service,
         action=body.action,
         previous_backoff_ms=previous_backoff_ms,
+    )
+
+
+class PgProviderSwitchIn(BaseModel):
+    action: Literal["set", "clear"]
+
+
+class PgProviderSwitchOut(BaseModel):
+    action: str
+    previous_provider: str
+    provider: str
+
+
+@router.post("/admin/pg-provider-switch", response_model=PgProviderSwitchOut)
+def set_pg_provider_switch(
+    body: PgProviderSwitchIn,
+    x_admin_key: str | None = Header(default=None),
+):
+    require_admin_key(settings.READ_PATH_DEGRADED_ADMIN_KEY, x_admin_key)
+
+    previous_provider = payment.get_config(authoritative=True).active_provider
+    if body.action == "set":
+        current = payment.set_active_provider("PG-B")
+    else:
+        current = payment.clear_active_provider()
+
+    return PgProviderSwitchOut(
+        action=body.action,
+        previous_provider=previous_provider,
+        provider=current.active_provider,
     )
