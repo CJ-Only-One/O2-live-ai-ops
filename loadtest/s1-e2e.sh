@@ -66,10 +66,29 @@ r[cmd](...args)
 # ponytail: o2.chat.propagation 에 broadcast_id 태그가 아직 없어서(①) 이 값은
 # 전체 방송 합산이다. 방송 축이 붙기 전에는 방송 하나만 띄운 채로 돌려야
 # 한다. 태그가 붙으면 여기에 group_by 를 넘긴다.
+# 지표 조회 경로 둘. Hot Proxy 는 Dify 호스트 안에서 도는 SigV4 중계기라
+# 노트북에서는 안 닿는다. 그 경우 같은 Lambda 를 직접 부른다 — Agent 가
+# 읽는 것과 같은 논리 지표 Adapter 라 값이 갈리지 않는다.
 hot_raw() {
-  curl -fsS -X POST "${HOT_PROXY_URL}/v1/hot/datadog/metric" \
-    -H 'content-type: application/json' -H "X-O2-Proxy-Key: ${O2_HOT_PROXY_KEY}" \
-    -d "{\"metric\":\"$1\",\"service\":\"chat-gateway\",\"window_seconds\":$2}"
+  local body="{\"metric\":\"$1\",\"service\":\"chat-gateway\",\"env\":\"${DD_ENV:-dev}\",\"window_seconds\":$2}"
+  if [ -n "${HOT_PROXY_URL:-}" ]; then
+    curl -fsS -X POST "${HOT_PROXY_URL}/v1/hot/datadog/metric" \
+      -H 'content-type: application/json' -H "X-O2-Proxy-Key: ${O2_HOT_PROXY_KEY}" -d "${body}"
+    return
+  fi
+  local out
+  out="$(mktemp)"
+  aws lambda invoke --function-name "${HOT_API_FUNCTION:-o2-hot-api}" \
+    --cli-binary-format raw-in-base64-out \
+    --payload "{\"requestContext\":{\"http\":{\"method\":\"POST\",\"path\":\"/v1/hot/datadog/metric\"}},\"body\":$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "${body}")}" \
+    "${out}" >/dev/null || { rm -f "${out}"; return 1; }
+  python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+if d.get("statusCode")!=200: raise SystemExit(1)
+print(d["body"] if isinstance(d["body"],str) else json.dumps(d["body"]))' "${out}"
+  local rc=$?
+  rm -f "${out}"
+  return "${rc}"
 }
 
 # 값이 없거나 호출이 실패하면 빈 문자열이다. 여기서 죽지 않는 이유는,
@@ -115,15 +134,26 @@ preflight)
   # 여기서 막는 것들은 전부 "안 막으면 30분 뒤에 알게 되는" 것들이다.
   need WS_URL "예: wss://<현재-ALB>"
   need BROADCAST_ID
-  need HOT_PROXY_URL; need O2_HOT_PROXY_KEY
+  # Hot Proxy 를 쓰면 URL·키가 둘 다 필요하고, 없으면 Lambda 를 직접 부른다.
+  [ -z "${HOT_PROXY_URL:-}" ] || need O2_HOT_PROXY_KEY
   command -v k6 >/dev/null || die "k6 가 없습니다."
 
   kubectl config current-context
   kubectl get deploy api chat-gateway -n "${NAMESPACE}" -o wide
 
   # 직전 실행 잔여. 반복 실행에서 제일 자주 밟는다.
+  #
+  # 대상 방송에 걸려 있으면 중단한다 — 제한된 상태를 재면 붕괴점이 아니다.
+  # 다른 방송 것은 경고만 한다. 클러스터를 나눠 쓰므로 남이 실험 중일 수
+  # 있고, 남의 상태 때문에 내 측정이 막힐 이유는 없다. 다만 안 보이게
+  # 넘기지도 않는다 — 조치에는 만료가 없어서 아무도 안 지우면 영원히 남는다.
+  [ -z "$(valkey get "cfg:channel_limit:${BROADCAST_ID}")" ] ||
+    die "대상 방송(${BROADCAST_ID})에 제한이 이미 걸려 있습니다. clear 로 지우고 시작하세요."
   leftover="$(valkey keys 'cfg:channel_limit:*')"
-  [ -z "${leftover}" ] || die "채널 제한이 남아 있습니다: ${leftover}. clear 로 지우고 시작하세요."
+  [ -z "${leftover}" ] || {
+    echo "경고: 다른 방송에 제한이 남아 있습니다 — 소유자 확인 없이 지우지 마세요."
+    printf '  %s\n' ${leftover}
+  }
   leftover="$(valkey keys 'chat:total:*')"
   [ -z "${leftover}" ] || echo "경고: 총량 카운터가 남아 있습니다(60초 뒤 만료): ${leftover}"
 

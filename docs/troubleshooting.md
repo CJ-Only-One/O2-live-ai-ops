@@ -54,6 +54,8 @@
 | T-036 | validate는 통과하지만 IAM policy plan이 duplicate Sid로 실패한다 | `aws_iam_policy_document`, merge 중복, provider 렌더링 |
 | T-037 | topologySpreadConstraints 를 걸었는데 파드가 안 갈린다 | merge key 중복, `matchLabelKeys`, 롤링 중 구 ReplicaSet 계산 |
 | T-038 | 조치 실행기가 증설했는데 10초 뒤 원래 replicas로 돌아간다 | cue-warmer, 조치 소유권 충돌, 실험 잠금, RoleBinding 원복 |
+| T-040 | 지표는 있는데 조회 값이 `0` 이나 `1.0` 으로 튄다 | `_latest()`, 미완성 버킷, 창 전체 합산 |
+| T-041 | 부하 테스트 p95 가 서버 지표보다 6배 크다 | k6 이벤트 루프, 클라이언트측 계측, 부하 생성기 포화 |
 
 
 ---
@@ -1693,3 +1695,59 @@ Agent의 임시 증설이 서로를 덮었다.
 대표 주체인 Argo CD부터 확인하게 된다. 실제 원복 주체는 10초 주기의 다른
 컨트롤러였고, Kubernetes 이벤트에는 "누가 scale을 바꿨는지"가 직접 남지 않아
 cue-warmer 애플리케이션 로그를 보기 전까지 구분되지 않았다.
+
+## T-040. 지표는 있는데 조회 값이 `0` 이나 `1.0` 으로 튄다
+
+**증상** — 채널 총량 제한이 실제로 동작하는 중인데 Hot 논리 지표 조회가
+`items_per_sec = 0.0`, `block_rate = 1.0` 을 준다. 같은 응답의 `sample_count` 은
+1,193,650 이고 `status` 는 `OK`, `freshness_seconds` 는 23 초다. 즉 데이터도 있고
+신선하다. 조금 전 같은 조회는 `block_rate = 0.0` 이었다.
+
+**원인** — `o2hot/metric_catalog.py:227` 의 `_latest()` 가 창 안에서 타임스탬프가
+가장 큰 점 **하나**를 값으로 쓴다. Datadog 의 마지막 버킷은 아직 집계 중이라
+`null` 이 아니라 0 으로 채워져 오는 경우가 있고, 그 0 이 그대로 지표 값이 된다.
+비율 지표는 분자 · 분모의 마지막 버킷이 서로 어긋나면 0 이나 1.0 같은 극단값이 된다.
+
+**확인** — WebSocket 프로브로 실제 전달을 세면 팬아웃이 살아 있다.
+
+```bash
+kubectl exec -n o2-dev deploy/chat-gateway -- node -e '
+const WebSocket=require("ws");
+const ws=new WebSocket("ws://127.0.0.1:8080/ws?broadcast_id=<방송>");
+let got=0; ws.on("message",d=>{try{got+=(JSON.parse(d).items||[]).length}catch(e){}});
+setTimeout(()=>{console.log("수신",got);process.exit(0)},15000);'
+```
+
+**영향** — 복구 판정이 이 값을 읽는다. `items_per_sec <= 20000` 은 0 이 오면 무조건
+통과하고 `block_rate <= 0.05` 는 1.0 이 오면 무조건 실패한다. 같은 `_latest()` 를
+`latency_p95` · `failure_rate` · `cache_hit_rate` 도 쓴다. warm 도 방금 열린 창을
+`latest` 로 주므로 같은 순간 `channel_limited_rate = 0` 이 나온다.
+
+**고치는 방향** — 비율은 분자 · 분모를 창 전체로 합산해 나누고(`sum_points` 인자가
+이미 있다), 게이지 · 백분위는 완성된 버킷만 쓴다.
+
+**왜 늦게 찾았나** — `status: OK` 에 `sample_count` 이 백만 단위라 응답만 보면
+정상이다. 값이 0 이면 "부하가 안 걸렸나" 로 읽히고, 1.0 이면 "조치가 과했나" 로
+읽힌다. 둘 다 그럴듯해서 지표를 의심하지 않는다. Valkey 카운터와 WebSocket 프로브로
+같은 순간을 따로 재고 나서야 갈렸다.
+
+## T-041. 부하 테스트 p95 가 서버 지표보다 6배 크다
+
+**증상** — `loadtest/broadcast.js` 가 40,000 아이템/s 에서 전파 p95 1,252ms 를
+보고하는데, 같은 시각 서버측 `o2.chat.propagation` p95 는 186ms 다.
+
+**원인** — 두 값이 다른 구간을 잰다. 서버측은 발행 시각부터 WebSocket send 직전까지고,
+k6 값은 거기에 네트워크와 **k6 자신의 이벤트 루프 지연**을 더한 것이다. VU 하나가
+소켓 여러 개를 들고 단일 이벤트 루프로 프레임을 처리하므로, 노트북 한 대가 2,000 소켓에
+초당 7,500 프레임을 받으면 그 밀림이 서버 지연으로 기록된다.
+
+**확인** — 서버측 지표를 같이 본다. 서버가 평평한데 k6 만 오르면 생성기 쪽이다.
+`k6 CPU%` 가 100% 에 안 닿아도 발생한다 — 코어 포화가 아니라 루프 지연이다.
+
+**영향** — M-010 의 계단 값이 전부 k6 클라이언트측이다. 거기서 읽은 "2 파드 안전선
+20,000 아이템/s" 는 서버 용량이 아니라 이 측정 방식의 한계선일 수 있다.
+서버 용량을 정하려면 생성기를 여러 대로 나누거나 서버측 지표로만 판정한다.
+
+**왜 늦게 찾았나** — k6 표는 연결 실패 0 · 깨진 프레임 0 으로 깨끗했고 p95 만 올랐다.
+"서버가 느려졌다" 로 읽기 딱 좋다. `docs/measurements.md` M-010 주석에 이 현상이
+경고로 적혀 있었지만, 그 크기를 재본 적이 없어서 얼마나 큰 편향인지 몰랐다.
