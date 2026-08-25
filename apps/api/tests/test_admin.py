@@ -174,6 +174,7 @@ def test_pg_provider_switch_set_then_clear(fake_pg_valkey, admin_key):
         "previous_provider": "PG-A",
         "provider": "PG-A",
         "pg_b_ready": True,
+        "already_in_target_state": False,
     }
 
     res = client.post(PG_PROVIDER_URL, json={"action": "set"}, headers={"x-admin-key": admin_key})
@@ -183,6 +184,7 @@ def test_pg_provider_switch_set_then_clear(fake_pg_valkey, admin_key):
         "previous_provider": "PG-A",
         "provider": "PG-B",
         "pg_b_ready": True,
+        "already_in_target_state": False,
     }
     assert fake_pg_valkey.get(payment.PG_ACTIVE_PROVIDER_KEY) == "PG-B"
 
@@ -192,6 +194,7 @@ def test_pg_provider_switch_set_then_clear(fake_pg_valkey, admin_key):
     assert body["previous_provider"] == "PG-B"
     assert body["provider"] == "PG-A"
     assert body["pg_b_ready"] is True
+    assert body["already_in_target_state"] is False
     assert fake_pg_valkey.get(payment.PG_ACTIVE_PROVIDER_KEY) is None
 
 
@@ -199,6 +202,38 @@ def test_pg_provider_switch_requires_ready_pg_b(fake_pg_valkey, admin_key):
     res = client.post(PG_PROVIDER_URL, json={"action": "set"}, headers={"x-admin-key": admin_key})
     assert res.status_code == 409
     assert fake_pg_valkey.get(payment.PG_ACTIVE_PROVIDER_KEY) is None
+
+
+def test_pg_provider_switch_retries_are_idempotent(fake_pg_valkey, admin_key):
+    headers = {"x-admin-key": admin_key}
+    client.post(
+        PG_PROVIDER_URL,
+        json={"action": "set_pg_b_ready", "pg_b_ready": True},
+        headers=headers,
+    )
+    client.post(PG_PROVIDER_URL, json={"action": "set"}, headers=headers)
+
+    repeated_set = client.post(PG_PROVIDER_URL, json={"action": "set"}, headers=headers)
+    assert repeated_set.status_code == 200
+    assert repeated_set.json() == {
+        "action": "set",
+        "previous_provider": "PG-B",
+        "provider": "PG-B",
+        "pg_b_ready": True,
+        "already_in_target_state": True,
+    }
+
+    cleared = client.post(PG_PROVIDER_URL, json={"action": "clear"}, headers=headers)
+    assert cleared.status_code == 200
+    repeated_clear = client.post(PG_PROVIDER_URL, json={"action": "clear"}, headers=headers)
+    assert repeated_clear.status_code == 200
+    assert repeated_clear.json() == {
+        "action": "clear",
+        "previous_provider": "PG-A",
+        "provider": "PG-A",
+        "pg_b_ready": True,
+        "already_in_target_state": True,
+    }
 
 
 def test_pg_provider_switch_blocks_rollback_while_pg_a_injection_is_active(

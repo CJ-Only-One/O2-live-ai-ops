@@ -4843,5 +4843,10 @@ PG-A 자연 복구가 아니라 provider 우회 효과다. 반대로 rollback(`c
 `delay_ms`·`fail_rate` 주입이 모두 해제된 경우에만 허용한다. 아직 주입된 PG-A로
 되돌려 성공 기록을 오염시키는 것을 막기 위해서다.
 
+전환·원복 명령은 전송 재시도에 안전해야 한다. 그래서 이미 PG-B인 `set`, 그리고
+PG-A 주입이 없는 이미 PG-A인 `clear`는 200으로 같은 상태를 반환하고
+`already_in_target_state=true`를 명시한다. 다만 주입이 남은 PG-A에서의 `clear`는
+자연 복구를 성공으로 오인할 수 있으므로 계속 409으로 거부한다.
+
 이 결정은 Agent workflow, 승인 배선, Runbook 생명주기를 바꾸지 않는다. 해당 경로가
 기존 API를 호출하더라도, ready 선언과 실제 Agent E2E 검증은 별도 운영 증거로 남긴다.
