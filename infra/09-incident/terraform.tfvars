@@ -28,8 +28,8 @@ incident_reopen_window_seconds      = 1800
 incident_shadow_mode                  = false
 incident_operational_handoff_approved = true
 
-datadog_source_adapter_execution_enabled    = true
-datadog_source_adapter_allowed_monitor_ids  = ["21940250"]
-datadog_source_adapter_not_before_epoch     = 1787634074
-incident_correlator_execution_enabled       = true
-incident_correlator_event_source_enabled    = true
+datadog_source_adapter_execution_enabled   = true
+datadog_source_adapter_allowed_monitor_ids = ["21940250"]
+datadog_source_adapter_not_before_epoch    = 1787634074
+incident_correlator_execution_enabled      = true
+incident_correlator_event_source_enabled   = true
