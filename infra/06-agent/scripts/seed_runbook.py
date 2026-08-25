@@ -19,6 +19,7 @@
   다시 만드는 게 아니라 값만 최신으로 맞추는 것이므로 여러 번 돌려도 안전하다.
 """
 
+import argparse
 from decimal import Decimal
 
 import _history as H
@@ -26,21 +27,38 @@ import boto3
 
 # ── 카탈로그 ───────────────────────────────────────────────────────
 #
-# S1(chat_channel_overload)·S2(pod_load_skew)·S3 는 docs/scenario-experiment.md
-# 의 시연 시나리오 셋이다. 나머지 rca_type 은 시나리오 설계가 끝나면 각자
-# 항목으로 채운다 — labels.txt 의 통제 어휘 전체가 여기 다 있어야
-# label-report.py 의 "쓸 때 됐다" 경고가 의미가 있다.
+# `status=active` 만 Runbook Lookup 이 Agent 에 돌려준다. `draft` 는 같은
+# 테이블에 시딩하되 자동 조회·실행에서 제외한다(D-077). 한 번의 복구 결과를
+# 곧바로 active 전용 런북으로 올리지 않기 위한 경계다.
+#
+# 현재 시나리오에서 필요한 네 항목:
+#   S1  chat_channel_overload                 active 전용
+#   S2  RB-API-LATENCY-001                    draft 범용
+#   S2  RB-API-POD-RESOURCE-SKEW              draft 전용 후보
+#   S3  pg_external_failure                   draft 시나리오 런북
+#
+# S2 범용은 실험 검증 증거가, S2 전용 후보는 승격 증거가, S3 는 실제 조치
+# 실행기가 아직 없다. 시딩은 하되 이 세 항목을 active 로 가장하지 않는다.
 
 RUNBOOKS = [
     {
         # S2(scenario-experiment.md 0.6·2.2) 최종 진단 — canary 격리로
         # 검증하고, 증설분 원복 후에도 유지되는지가 이 라벨의 통과 기준.
+        "runbook_id": "RB-API-POD-RESOURCE-SKEW",
+        "runbook_kind": "dedicated",
+        "status": "draft",
         "rca_type": "pod_load_skew",
+        "promotion_blockers": [
+            "repeatability evidence missing",
+            "misapplication impact not verified",
+            "rollback and baseline recovery evidence missing",
+            "operator approval missing",
+        ],
         "success_criteria": {
             # 절대 SLO — architecture.md 12.1 계약, M-009 실측이 이 기준으로 판정됨.
             "conditions": [
                 {"metric": "latency_p95", "comparison": "<=", "threshold": 800},
-                {"metric": "failure_rate", "comparison": "<=", "threshold": Decimal("0.01")},
+                {"metric": "overall_failure_rate", "comparison": "<=", "threshold": Decimal("0.01")},
             ],
             # 기준선 상대(D-058) — canary 붙이기 전 정상 파드만의 p95 가
             # baseline_p95_ms 로 Baseline 상태에서 기록된다(0.4). 격리 후,
@@ -95,6 +113,71 @@ RUNBOOKS = [
         ],
     },
     {
+        # S2 1차 조치. 원인을 확정하기 전에 서비스 지연이라는 증상만으로
+        # 정상 api Deployment 를 2 -> 3 한 단계만 늘린다. 현재 실행기는
+        # 절대 replicas 값을 받으므로 static:3 으로 경계를 고정한다.
+        #
+        # 등록 기준 자체는 코드로 표현했지만 실제 canary 반복 재현·원복
+        # 증거가 아직 없어 draft 다(scenario-readiness.md 2.3).
+        "runbook_id": "RB-API-LATENCY-001",
+        "runbook_kind": "generic",
+        "status": "draft",
+        "rca_type": "pod_resource_exhaustion",
+        "promotion_blockers": [
+            "bounded scale action not validated in the S2 experiment",
+            "rollback and final baseline recovery evidence missing",
+            "owner review and approval missing",
+        ],
+        "success_criteria": {
+            "conditions": [
+                {"metric": "latency_p95", "comparison": "<=", "threshold": 800},
+                {"metric": "overall_failure_rate", "comparison": "<=", "threshold": Decimal("0.01")},
+            ],
+            "baseline_conditions": [
+                {"metric": "latency_p95", "comparison": "<=", "relative_to": "baseline_p95_ms"},
+            ],
+            "verification_metrics": ["latency_p95", "overall_failure_rate"],
+            "logic": "AND",
+        },
+        "actions": [
+            {
+                "action_id": "scale_api_one_step",
+                "risk_level": "L1",
+                "expected_effect": "api deployment replicas 2 -> 3; p50 may improve while a slow-pod p95 outlier remains",
+                "blast_radius": "api deployment only, o2-dev namespace; one additional replica",
+                "parameters_schema": {
+                    "namespace": {
+                        "type": "string",
+                        "required": True,
+                        "source": "static:o2-dev",
+                    },
+                    "deployment": {
+                        "type": "string",
+                        "required": True,
+                        "source": "static:api",
+                    },
+                    "replicas": {
+                        "type": "int",
+                        "required": True,
+                        "source": "static:3",
+                    },
+                },
+                "execution_target": {
+                    "method": "POST",
+                    "endpoint": "$SCALE_EXECUTOR_URL",
+                },
+                "stabilization_wait_seconds": None,
+            },
+        ],
+        # 실테이블에만 남아 있던 옛 범용 액션. 새 S2 흐름의 "한 단계 증설
+        # 1회"와 다르므로 삭제하지 않고 retired 로 표시해 조회에서 제외한다.
+        "retired_action_ids": [
+            "horizontal_scale_up",
+            "memory_limit_increase",
+            "unhealthy_pod_restart",
+        ],
+    },
+    {
         # S1(scenario-experiment.md 0.5) — 채널 총량이 감당 선을 넘어
         # 전파 지연이 생긴 케이스. 조치는 채널 총량 노브 하향 —
         # 별도 Lambda 가 아니라 apps/chat-gateway 의 `/ws/admin/channel-limit`
@@ -119,6 +202,9 @@ RUNBOOKS = [
         #     telemetry 마이그레이션에서 chat_fanout_p95(수락→fanout
         #     publish)로 이미 구현됨. 실제 end-to-end 전파는 별도(합성
         #     카나리아) 지표로 간다.
+        "runbook_id": "chat_channel_overload",
+        "runbook_kind": "dedicated",
+        "status": "active",
         "rca_type": "chat_channel_overload",
         "success_criteria": {
             "conditions": [
@@ -196,11 +282,96 @@ RUNBOOKS = [
         ],
     },
     {
-        # S3(scenario-experiment.md 0.7) — 읽기 급증인데 사람인지 자동화인지
-        # 서버 증거로 못 가른다. 원인을 안 가르는 게 정답이라 other로 둔다.
-        # 조치는 양쪽에 다 안전한 것 하나뿐 — 응답 내용은 안 바뀌고 부가
-        # 이벤트 발행만 끈다(D-062). 다른 액션들처럼 여러 후보 중 고르는
-        # 절차가 없다, 후보가 원래 1개다.
+        # 새 S3(scenario-experiment.md 0.7) — 외부 결제 PG 지연은 우리
+        # 시스템의 풀·타임아웃 조정으로 근본 해결되지 않는다. 조치 둘을 한
+        # 번씩 시도하고 같은 RCA 로 후보가 소진되면 멈추는 경로다.
+        #
+        # 실제 payment stub·Action Handler 가 아직 없어 draft 다. 수치를
+        # 지어내지 않고 "기준선 복귀"만 성공 조건으로 둔다. 외부 PG 지연을
+        # 유지하는 실험에서는 두 조치 모두 이 조건을 통과하지 않아야 정상이다.
+        "runbook_id": "pg_external_failure",
+        "runbook_kind": "scenario",
+        "status": "draft",
+        "rca_type": "pg_external_failure",
+        "promotion_blockers": [
+            "mock payment PG stub deployment and live validation missing",
+            "payment action handler endpoints not implemented",
+            "rollback and candidate-exhaustion E2E evidence missing",
+        ],
+        "success_criteria": {
+            "baseline_conditions": [
+                {"metric": "latency_p95", "comparison": "<=", "relative_to": "baseline_latency_p95"},
+                {"metric": "overall_failure_rate", "comparison": "<=", "relative_to": "baseline_overall_failure_rate"},
+            ],
+            "verification_metrics": ["latency_p95", "overall_failure_rate", "pg_latency_ratio"],
+            "logic": "AND",
+        },
+        "actions": [
+            {
+                "action_id": "expand_payment_client_pool",
+                "risk_level": "L2",
+                "implementation_status": "not_implemented",
+                "expected_effect": "increase local payment-client concurrency; external PG latency itself is unchanged",
+                "blast_radius": "checkout payment client configuration",
+                "parameters_schema": {
+                    "service": {
+                        "type": "string",
+                        "required": True,
+                        "source": "observability.service",
+                    },
+                    "change": {
+                        "type": "string",
+                        "required": True,
+                        "source": "static:one_bounded_step",
+                    },
+                },
+                "execution_target": {
+                    "method": "POST",
+                    "endpoint": "/actions/payment-client-pool-expand",
+                },
+                "stabilization_wait_seconds": None,
+            },
+            {
+                "action_id": "tighten_payment_timeout_retry",
+                "risk_level": "L2",
+                "implementation_status": "not_implemented",
+                "expected_effect": "fail fast and bound retries; external PG latency itself is unchanged",
+                "blast_radius": "checkout payment timeout and retry policy",
+                "parameters_schema": {
+                    "service": {
+                        "type": "string",
+                        "required": True,
+                        "source": "observability.service",
+                    },
+                    "change": {
+                        "type": "string",
+                        "required": True,
+                        "source": "static:bounded_fail_fast",
+                    },
+                },
+                "execution_target": {
+                    "method": "POST",
+                    "endpoint": "/actions/payment-timeout-retry-tighten",
+                },
+                "stabilization_wait_seconds": None,
+            },
+        ],
+        # 기존 pg_external_failure 는 PG를 PostgreSQL로 해석한 액션이었다.
+        # 새 결제 PG 시나리오에서는 의미가 달라 삭제 대신 retired 처리한다.
+        "retired_action_ids": [
+            "pg_circuit_open",
+            "pg_query_timeout_tighten",
+            "pg_read_replica_failover",
+            "pg_retry_backoff_widen",
+        ],
+    },
+    {
+        # D-076 에서 시연 시나리오에서는 빠졌지만 read-path 보호 자산은
+        # 보존하기로 했다. `other` catch-all 이 자동 실행하는 것은 위험하므로
+        # 정의와 노브는 남기되 retired 로 시딩해 조회에서는 제외한다.
+        "runbook_id": "legacy_read_path_degraded",
+        "runbook_kind": "generic",
+        "status": "retired",
         "rca_type": "other",
         "success_criteria": {
             # 2026-08-24 데이터팀 회신(specification/2026-08-24-AIAgent-
@@ -332,6 +503,32 @@ KNOBS = [
         ],
     },
     {
+        "action_id": "scale_api_one_step",
+        "target": "o2-dev/api Deployment 2 -> 3",
+        "knob_reversible": True,
+        "user_effect_reversible": True,
+        "max_blast_radius": "api deployment only · one additional replica",
+        "max_duration_seconds": None,
+        "preapproved_budget": None,
+        "cooldown_seconds": None,
+        # 원인 미확정 상태의 범용 런북은 같은 인시던트에서 한 번만 쓴다.
+        # 측정값이 아니라 반복 금지 정책이라 1을 명시한다.
+        "max_attempts": 1,
+        "measured": False,
+        "risk_level": "L1",
+        "diagnostic_contamination": True,
+        "rollback_method": "previous_value",
+        "rollback_call": {"endpoint": "$SCALE_EXECUTOR_URL", "note": "replicas 를 이전 값으로"},
+        "verification_metrics": ["latency_p95", "overall_failure_rate"],
+        "preconditions": [
+            {"check": "target_deployment_is_api"},
+            {"check": "current_replicas_equal_normal_baseline"},
+            {"check": "node_headroom_for_one_api_pod"},
+            {"check": "no_hpa_or_keda_owns_api_replicas"},
+            {"check": "no_previous_attempt_in_incident"},
+        ],
+    },
+    {
         "action_id": "isolate_slow_pod",
         "target": "o2-dev 네임스페이스의 Deployment 하나",
         "knob_reversible": True,
@@ -348,7 +545,7 @@ KNOBS = [
         "diagnostic_contamination": True,
         "rollback_method": "previous_value",
         "rollback_call": {"endpoint": "$SCALE_EXECUTOR_URL", "note": "replicas 를 이전 값으로"},
-        "verification_metrics": ["latency_p95", "failure_rate"],
+        "verification_metrics": ["latency_p95", "overall_failure_rate"],
         # 이게 없으면 서비스를 통째로 내릴 수 있다 (scenario-experiment.md 3절).
         "preconditions": [
             {"check": "healthy_capacity_at_or_above_safe_minimum"},
@@ -358,8 +555,54 @@ KNOBS = [
         ],
     },
     {
-        # S3 는 런북이 없다 — 그래서 이 노브는 rca_type 파티션에 집이 없다.
-        # 노브 카탈로그를 rca_type 축에서 떼어낸 이유가 이것이다.
+        "action_id": "expand_payment_client_pool",
+        "target": "api payment client configuration",
+        "knob_reversible": True,
+        "user_effect_reversible": True,
+        "max_blast_radius": "checkout payment client only",
+        "max_duration_seconds": None,
+        "preapproved_budget": None,
+        "cooldown_seconds": None,
+        "max_attempts": 1,
+        "measured": False,
+        "risk_level": "L2",
+        "diagnostic_contamination": True,
+        "rollback_method": "previous_value",
+        "rollback_call": {"endpoint": "/actions/payment-client-pool-restore"},
+        "verification_metrics": ["latency_p95", "overall_failure_rate", "pg_latency_ratio"],
+        "preconditions": [
+            {"check": "payment_action_handler_available"},
+            {"check": "external_payment_pg_evidence_present"},
+            {"check": "change_is_one_bounded_step"},
+            {"check": "restore_value_recorded"},
+        ],
+    },
+    {
+        "action_id": "tighten_payment_timeout_retry",
+        "target": "api payment timeout and retry policy",
+        "knob_reversible": True,
+        "user_effect_reversible": True,
+        "max_blast_radius": "checkout payment requests only",
+        "max_duration_seconds": None,
+        "preapproved_budget": None,
+        "cooldown_seconds": None,
+        "max_attempts": 1,
+        "measured": False,
+        "risk_level": "L2",
+        "diagnostic_contamination": True,
+        "rollback_method": "previous_value",
+        "rollback_call": {"endpoint": "/actions/payment-timeout-retry-restore"},
+        "verification_metrics": ["latency_p95", "overall_failure_rate", "pg_latency_ratio"],
+        "preconditions": [
+            {"check": "payment_action_handler_available"},
+            {"check": "external_payment_pg_evidence_present"},
+            {"check": "retry_budget_is_bounded"},
+            {"check": "restore_value_recorded"},
+        ],
+    },
+    {
+        # 옛 S3 에서 쓰던 read-path 보호 노브. D-076 에 따라 자산은 남기되
+        # 현재 시나리오 런북에는 연결하지 않는다.
         "action_id": "set_read_path_degraded",
         "target": "api · broadcast 단위 읽기 경로",
         "knob_reversible": True,
@@ -381,7 +624,7 @@ KNOBS = [
         "rollback_method": "immediate_delete",
         "rollback_call": {"endpoint": "$API_ADMIN_URL", "action": "clear"},
         # 효율 축(포화점 이동)은 아직 못 넣는다 — 안 쟀다.
-        "verification_metrics": ["latency_p95", "failure_rate"],
+        "verification_metrics": ["latency_p95", "overall_failure_rate"],
         "preconditions": [
             {"check": "broadcast_is_live", "source": "observability.alert.broadcast_id"},
             {"check": "read_path_not_already_degraded", "source": "cfg:read_path_degraded:{broadcast_id}"},
@@ -390,8 +633,13 @@ KNOBS = [
 ]
 
 
-def main():
+VALID_STATUSES = {"active", "draft", "retired"}
+
+
+def validate_catalog():
     known = set(H.labels())
+    seen_rca_types = set()
+    seen_runbook_ids = set()
     for entry in RUNBOOKS:
         if entry["rca_type"] not in known:
             # labels.txt 가 원본이라 여기서 지어낸 값은 애초에 못 들어가게 막는다.
@@ -399,18 +647,106 @@ def main():
                 f"'{entry['rca_type']}' 는 labels.txt 에 없다 — 오타이거나 "
                 "새 라벨을 labels.txt 에 먼저 추가해야 한다."
             )
+        if entry["status"] not in VALID_STATUSES:
+            raise SystemExit(
+                f"'{entry['rca_type']}' status={entry['status']!r} — "
+                f"허용값은 {sorted(VALID_STATUSES)}"
+            )
+        if entry["rca_type"] in seen_rca_types:
+            raise SystemExit(f"rca_type 중복: {entry['rca_type']}")
+        if entry["runbook_id"] in seen_runbook_ids:
+            raise SystemExit(f"runbook_id 중복: {entry['runbook_id']}")
+        seen_rca_types.add(entry["rca_type"])
+        seen_runbook_ids.add(entry["runbook_id"])
+
+    # retired 런북은 Lookup이 액션을 반환하지 않으므로 노브가 없어도 된다.
+    # active·draft는 지금 또는 승격 뒤 게이트 판정에 쓰이므로 모두 필요하다.
+    known_actions = {
+        action["action_id"]
+        for entry in RUNBOOKS
+        if entry["status"] != "retired"
+        for action in entry["actions"]
+    }
+    knob_actions = {k["action_id"] for k in KNOBS}
+    missing = known_actions - knob_actions
+    if missing:
+        raise SystemExit(
+            f"런북이 참조하는데 노브 카탈로그에 없다: {sorted(missing)} — "
+            "게이트 진입을 판정할 근거가 없어진다."
+        )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="O2 Runbook DynamoDB 카탈로그 시딩")
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        metavar="RCA_OR_RUNBOOK_ID",
+        help="지정한 rca_type 또는 runbook_id 만 시딩. 여러 번 지정 가능",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="AWS와 Terraform을 호출하지 않고 선택·검증 결과만 출력",
+    )
+    return parser.parse_args()
+
+
+def select_runbooks(only):
+    if not only:
+        return RUNBOOKS
+    wanted = set(only)
+    selected = [
+        entry
+        for entry in RUNBOOKS
+        if entry["rca_type"] in wanted or entry["runbook_id"] in wanted
+    ]
+    found = {entry["rca_type"] for entry in selected} | {
+        entry["runbook_id"] for entry in selected
+    }
+    missing = wanted - found
+    if missing:
+        raise SystemExit(f"카탈로그에 없는 --only 값: {sorted(missing)}")
+    return selected
+
+
+def main():
+    args = parse_args()
+    validate_catalog()
+    selected = select_runbooks(args.only)
+    selected_action_ids = {
+        action["action_id"] for entry in selected for action in entry["actions"]
+    }
+    selected_knobs = [
+        knob for knob in KNOBS if knob["action_id"] in selected_action_ids
+    ]
+
+    if args.dry_run:
+        for entry in selected:
+            print(
+                f"DRY-RUN {entry['rca_type']} / {entry['runbook_id']} — "
+                f"{entry['status']} · ACTION {len(entry['actions'])}개 · "
+                f"retired {len(entry.get('retired_action_ids', []))}개"
+            )
+        print(f"DRY-RUN KNOB {len(selected_knobs)}개")
+        return
 
     table_name = H.tf_output("runbook_table_name")
     table = boto3.resource("dynamodb").Table(table_name)
 
-    for entry in RUNBOOKS:
+    for entry in selected:
         rca_type = entry["rca_type"]
+        definition = {
+            key: value
+            for key, value in entry.items()
+            if key not in {"actions", "retired_action_ids"}
+        }
 
         table.put_item(
             Item={
-                "rca_type": rca_type,
+                **definition,
                 "sk": "DEF",
-                "success_criteria": entry["success_criteria"],
             }
         )
         for action in entry["actions"]:
@@ -418,14 +754,27 @@ def main():
                 Item={
                     "rca_type": rca_type,
                     "sk": f"ACTION#{action['action_id']}",
+                    "runbook_id": entry["runbook_id"],
+                    "status": entry["status"],
                     **action,
                 }
             )
-        print(f"✓ {rca_type} — DEF + ACTION {len(entry['actions'])}개")
+        # 삭제하지 않는다. 현재 시나리오와 의미가 달라진 옛 액션은 원문을
+        # 보존한 채 status 만 retired 로 바꿔 조회에서 제외한다.
+        for action_id in entry.get("retired_action_ids", []):
+            table.update_item(
+                Key={"rca_type": rca_type, "sk": f"ACTION#{action_id}"},
+                UpdateExpression="SET #status = :retired",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={":retired": "retired"},
+            )
+        print(
+            f"✓ {rca_type} — {entry['status']} · DEF + ACTION "
+            f"{len(entry['actions'])}개 · retired {len(entry.get('retired_action_ids', []))}개"
+        )
 
     # 노브는 rca_type 축이 아니라 노브 축이라 KNOB 파티션에 따로 넣는다.
-    known_actions = {a["action_id"] for e in RUNBOOKS for a in e["actions"]}
-    for knob in KNOBS:
+    for knob in selected_knobs:
         table.put_item(
             Item={
                 "rca_type": KNOB_PARTITION,
@@ -433,19 +782,12 @@ def main():
                 **knob,
             }
         )
-        # 런북에 없는 노브는 정상이다(S3). 반대로 런북이 참조하는 노브가
-        # 카탈로그에 없으면 게이트가 판정할 근거를 못 찾는다.
-        orphan = "" if knob["action_id"] in known_actions else "  (런북 없음 — S3 처럼 조립하는 경우)"
-        print(f"✓ KNOB#{knob['action_id']}{orphan}")
+        print(f"✓ KNOB#{knob['action_id']}")
 
-    missing = known_actions - {k["action_id"] for k in KNOBS}
-    if missing:
-        raise SystemExit(
-            f"런북이 참조하는데 노브 카탈로그에 없다: {sorted(missing)} — "
-            "게이트 진입을 판정할 근거가 없어진다."
-        )
-
-    print(f"\n완료. {table_name} 에 rca_type {len(RUNBOOKS)}개 · 노브 {len(KNOBS)}개 시딩됨.")
+    print(
+        f"\n완료. {table_name} 에 rca_type {len(selected)}개 · "
+        f"노브 {len(selected_knobs)}개 시딩됨."
+    )
 
 
 if __name__ == "__main__":

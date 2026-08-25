@@ -6,7 +6,7 @@ from fastapi.openapi.utils import get_openapi
 
 from o2events.middleware import install_fastapi
 
-from app.api.routes import admin, broadcasts, client_events, health, internal, orders
+from app.api.routes import admin, broadcasts, client_events, health, internal, orders, pg_stub
 from app.core import errors
 from app.core.config import settings
 
@@ -66,6 +66,7 @@ app.include_router(broadcasts.router, prefix="/api")
 app.include_router(client_events.router, prefix="/api")
 app.include_router(orders.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(pg_stub.router, prefix="/api")
 app.include_router(internal.router, prefix="/api")
 
 

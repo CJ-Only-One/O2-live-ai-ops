@@ -13,7 +13,8 @@ asyncio 가 아니라 threading 으로 맞춰야 실제로 합쳐진다.
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 # 엔트리 수 상한이 있어야 한다. 무제한이면 방송·상품이 늘어날수록 파드가
 # OOM 으로 죽는다 (리스크 R-10).
@@ -94,3 +95,9 @@ def clear() -> None:
     """테스트와 자체 점검용."""
     with _store_lock:
         _store.clear()
+
+
+def delete(key: str) -> None:
+    """동적 설정을 바꾼 프로세스에서 해당 로컬 캐시만 즉시 무효화한다."""
+    with _store_lock:
+        _store.pop(key, None)

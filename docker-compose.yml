@@ -71,6 +71,9 @@ services:
       O2_SERVICE_VERSION: ${O2_SERVICE_VERSION:-local}
       O2_EVENTS_SINK: ${O2_EVENTS_SINK:-stdout}
       O2_EVENTS_SALT: ${O2_EVENTS_SALT:-local-dev-only}
+      # S3 관리자 경로. 운영에서는 api-admin Secret의 서로 다른 키를 쓴다.
+      READ_PATH_DEGRADED_ADMIN_KEY: ${READ_PATH_DEGRADED_ADMIN_KEY:-local-dev-only}
+      PG_STUB_ADMIN_KEY: ${PG_STUB_ADMIN_KEY:-local-dev-only}
       # cue-warmer 가 보내는 값과 같아야 한다 — 다르면 워머가 계속 403 을 받는다.
       CUE_WARMER_ADMIN_KEY: ${CUE_WARMER_ADMIN_KEY:-local-dev-only}
     depends_on:

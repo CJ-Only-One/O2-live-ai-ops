@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 ErrorCode = Literal[
     "SOLD_OUT",
     "NOT_STARTED",
+    "REQUEST_IN_PROGRESS",
+    "PAYMENT_FAILED",
     "RATE_LIMITED",
     "INVALID_REQUEST",
     "NOT_FOUND",
@@ -31,6 +33,8 @@ ErrorCode = Literal[
 STATUS = {
     "SOLD_OUT": 409,
     "NOT_STARTED": 409,
+    "REQUEST_IN_PROGRESS": 409,
+    "PAYMENT_FAILED": 502,
     "RATE_LIMITED": 429,
     "INVALID_REQUEST": 400,
     "NOT_FOUND": 404,
