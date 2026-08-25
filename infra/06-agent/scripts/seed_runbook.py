@@ -210,10 +210,11 @@ RUNBOOKS = [
         "success_criteria": {
             "conditions": [
                 # 실제 구현된 서버측 지표명(olavvn, telemetry 마이그레이션).
-                {"metric": "chat_propagation_p95_ms", "comparison": "<=", "threshold": 800},
-                # Datadog/Hot catalog가 반환하는 canonical 이름을 사용한다.
-                # 5%는 실측 전 임시 상한이며 E2E 후 measurements.md로 갱신한다.
-                {"metric": "channel_block_rate", "comparison": "<=", "threshold": Decimal("0.05")},
+                {"metric": "chat_fanout_p95", "comparison": "<=", "threshold": 800},
+                # TEMP: 개명 확정(channel_block_rate)됐지만 아직 미구현이라
+                # 지금 존재하는 이름(block_rate)을 쓴다. 5% 는 근거 없는
+                # 임시 상한이다.
+                {"metric": "block_rate", "comparison": "<=", "threshold": Decimal("0.05")},
                 # 실측값 — M-010 2파드 안전선(2026-08-21). 파드 수를 바꾸면
                 # 다시 재야 한다(측정 조건, measurements.md M-010).
                 {"metric": "items_per_sec", "comparison": "<=", "threshold": 20000},
@@ -221,7 +222,7 @@ RUNBOOKS = [
             # 기준선 상대(D-058) — S1은 "복구"가 아니라 "감내 가능한 열화"라
             # (2.1) 절대 임계만으론 자연 회복과 조치 효과를 못 가른다.
             "baseline_conditions": [
-                {"metric": "chat_propagation_p95_ms", "comparison": "<=", "relative_to": "baseline_propagation_p95_ms"},
+                {"metric": "chat_fanout_p95", "comparison": "<=", "relative_to": "baseline_propagation_p95_ms"},
             ],
             "logic": "AND",
         },
@@ -489,14 +490,14 @@ KNOBS = [
         "cooldown_seconds": None,
         "max_attempts": None,
         "measured": False,
-        "risk_level": "L3",
+        "risk_level": "L2",
         # 인입이 줄어 채팅 관련 지표가 통째로 바뀐다.
         "diagnostic_contamination": True,
         "rollback_method": "immediate_delete",
         "rollback_call": {"endpoint": "$CHAT_GATEWAY_ADMIN_URL", "action": "clear"},
         # 서버 fanout 완료와 합성 consumer E2E는 서로 다른 지표다. 자동 검증은
         # 항상 수집되는 서버측 논리 지표를 쓰고 E2E는 k6 수용 시험에서 확인한다.
-        "verification_metrics": ["chat_propagation_p95_ms", "channel_block_rate", "items_per_sec"],
+        "verification_metrics": ["chat_fanout_p95", "block_rate", "items_per_sec"],
         # 결정론적 사전 검사. 통과 못 하면 자동 실행하지 않는다.
         "preconditions": [
             {"check": "broadcast_is_live", "source": "observability.alert.broadcast_id"},
