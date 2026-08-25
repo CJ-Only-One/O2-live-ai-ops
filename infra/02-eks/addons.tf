@@ -61,6 +61,12 @@ locals {
         topologyKey       = "topology.kubernetes.io/zone"
         whenUnsatisfiable = "ScheduleAnyway"
         labelSelector     = { matchLabels = { "k8s-app" = "kube-dns" } }
+        # 없으면 롤링 중 구 ReplicaSet 파드까지 세어 제약이 무력해진다.
+        # 구 파드가 양쪽에 하나씩 남은 상태에서는 새 파드를 어느 쪽에 놓아도
+        # skew 가 1 이라 둘 다 통과하고, 구 파드가 빠지면 결과만 쏠린다.
+        # 2026-08-25 에 노드 drain 뒤 재시작에서 실제로 두 파드가 한 AZ 로
+        # 몰렸다. 같은 ReplicaSet 파드끼리만 비교하게 좁힌다.
+        matchLabelKeys = ["pod-template-hash"]
       }]
     })
     metrics-server = jsonencode({
@@ -69,6 +75,7 @@ locals {
         topologyKey       = "topology.kubernetes.io/zone"
         whenUnsatisfiable = "ScheduleAnyway"
         labelSelector     = { matchLabels = { "app.kubernetes.io/name" = "metrics-server" } }
+        matchLabelKeys    = ["pod-template-hash"]
       }]
     })
   }
