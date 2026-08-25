@@ -78,3 +78,115 @@ def set_read_path_degraded(
         action=body.action,
         previously_degraded=previously_degraded,
     )
+
+
+# S3 재설계(2026-08-25) 조치 3개 — "외부 PG(결제 게이트웨이)가 느리다/안 붙는다"에
+# 우리 쪽에서 방어적으로 할 수 있는 조치만 담는다. 결제 게이트웨이 연동 자체는
+# architecture.md 0.2 "이 문서가 다루지 않는 것"으로 스코프 밖이라, PG 자체를
+# 실제로 고치는 조치(예: 리드 리플리카 failover)는 만들지 않는다 — 우리가
+# 소유하지 않은 인프라라 개념적으로 성립하지 않는다. 여기 셋은 real Valkey
+# 노브라 실제로 켜지고 원복되지만, 읽는 실제 결제 호출 경로가 없어서 근본
+# 원인(PG 자체가 느림)은 못 고친다 — 그게 이 시나리오의 요지다.
+
+class PgCircuitOpenIn(BaseModel):
+    service: str
+    action: Literal["set", "clear"]
+    ttl_seconds: int = 60
+
+
+class PgCircuitOpenOut(BaseModel):
+    service: str
+    action: str
+    previously_open: bool
+
+
+@router.post("/admin/pg-circuit-open", response_model=PgCircuitOpenOut)
+def set_pg_circuit_open(
+    body: PgCircuitOpenIn,
+    x_admin_key: str | None = Header(default=None),
+):
+    require_admin_key(settings.READ_PATH_DEGRADED_ADMIN_KEY, x_admin_key)
+
+    key = f"cfg:pg_circuit_open:{body.service}"
+    previously_open = bool(valkey.get(key))
+
+    if body.action == "set":
+        valkey.set(key, "1", ex=body.ttl_seconds)
+    else:
+        valkey.delete(key)
+
+    return PgCircuitOpenOut(
+        service=body.service,
+        action=body.action,
+        previously_open=previously_open,
+    )
+
+
+class PgTimeoutTightenIn(BaseModel):
+    service: str
+    action: Literal["set", "clear"]
+    timeout_ms: int = 800
+
+
+class PgTimeoutTightenOut(BaseModel):
+    service: str
+    action: str
+    previous_timeout_ms: int | None
+
+
+@router.post("/admin/pg-timeout-tighten", response_model=PgTimeoutTightenOut)
+def set_pg_timeout_tighten(
+    body: PgTimeoutTightenIn,
+    x_admin_key: str | None = Header(default=None),
+):
+    require_admin_key(settings.READ_PATH_DEGRADED_ADMIN_KEY, x_admin_key)
+
+    key = f"cfg:pg_timeout_ms:{body.service}"
+    raw = valkey.get(key)
+    previous_timeout_ms = int(raw) if raw else None
+
+    if body.action == "set":
+        valkey.set(key, str(body.timeout_ms))
+    else:
+        valkey.delete(key)
+
+    return PgTimeoutTightenOut(
+        service=body.service,
+        action=body.action,
+        previous_timeout_ms=previous_timeout_ms,
+    )
+
+
+class PgRetryBackoffIn(BaseModel):
+    service: str
+    action: Literal["set", "clear"]
+    backoff_ms: int = 2000
+
+
+class PgRetryBackoffOut(BaseModel):
+    service: str
+    action: str
+    previous_backoff_ms: int | None
+
+
+@router.post("/admin/pg-retry-backoff", response_model=PgRetryBackoffOut)
+def set_pg_retry_backoff(
+    body: PgRetryBackoffIn,
+    x_admin_key: str | None = Header(default=None),
+):
+    require_admin_key(settings.READ_PATH_DEGRADED_ADMIN_KEY, x_admin_key)
+
+    key = f"cfg:pg_retry_backoff_ms:{body.service}"
+    raw = valkey.get(key)
+    previous_backoff_ms = int(raw) if raw else None
+
+    if body.action == "set":
+        valkey.set(key, str(body.backoff_ms))
+    else:
+        valkey.delete(key)
+
+    return PgRetryBackoffOut(
+        service=body.service,
+        action=body.action,
+        previous_backoff_ms=previous_backoff_ms,
+    )
