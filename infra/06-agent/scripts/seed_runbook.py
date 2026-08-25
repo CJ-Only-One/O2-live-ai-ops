@@ -212,12 +212,17 @@ RUNBOOKS = [
         # OR로 같이 둔다 — 부하 없어도 데모가 죽지 않게 하는 안전망이다.
         # 실 부하 재현으로 chat_propagation_p95_ms가 안정적으로 채워지는 게
         # 확인되면 뒤의 안전망 두 조건은 정리해도 된다.
+        # 2026-08-25: hot_items_post(22-H2, Dify DSL) 흡수 — Hot Path fanout
+        # items/s를 실측으로 붙였다. p95_ms/error_rate만으로는 fanout 자체가
+        # 막힌 채로도 RESOLVED 오판정이 날 수 있어(예: 요청이 아예 안 들어와
+        # error_rate가 낮아지는 경우) items_per_sec을 OR 조건에 추가한다.
         "success_criteria": {
             "conditions": [
                 {"metric": "chat_propagation_p95_ms", "comparison": "<=", "threshold": 800},
                 {"metric": "channel_block_rate", "comparison": "<=", "threshold": Decimal("0.05")},
                 {"metric": "p95_ms", "comparison": "<=", "threshold": 500},
                 {"metric": "error_rate", "comparison": "<=", "threshold": Decimal("0.05")},
+                {"metric": "items_per_sec", "comparison": "<=", "threshold": 20000},
             ],
             "logic": "OR",
         },
