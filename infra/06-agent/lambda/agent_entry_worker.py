@@ -445,16 +445,24 @@ def _history_lookup(payload: dict[str, Any]) -> tuple[list[float] | None, str]:
             returnDistance=True,
         )
         lines = []
+        skipped_unverified = 0
         for hit in search.get("vectors", []):
             if hit.get("distance", 99) > HISTORY_MAX_DISTANCE:
                 continue
-            summary = str((hit.get("metadata") or {}).get("summary", "")).strip()
+            metadata = hit.get("metadata") or {}
+            # S3의 2차 실행은 사람이 검증한 해결 사례만 근거로 쓴다. 누락된
+            # 구형 메타데이터까지 허용하면 Agent 추측이 자동 실행 근거가 된다.
+            if metadata.get("verified") is not True:
+                skipped_unverified += 1
+                continue
+            summary = str(metadata.get("summary", "")).strip()
             if summary:
                 lines.append(f"- {summary}")
         past_cases = "\n".join(lines)[:PAST_CASES_MAX_CHARS]
         LOGGER.info(json.dumps({
             "event": "agent_entry_history", "status": "MATCHED",
             "match_count": len(lines),
+            "skipped_unverified": skipped_unverified,
         }, separators=(",", ":")))
         return vector, past_cases
     except Exception:

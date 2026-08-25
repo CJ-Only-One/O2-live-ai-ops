@@ -130,8 +130,9 @@ class AgentEntryWorkerTest(unittest.TestCase):
         }
         vectors = mock.Mock()
         vectors.query_vectors.return_value = {"vectors": [
-            {"distance": 0.10, "metadata": {"summary": "가까운 장애"}},
-            {"distance": 0.90, "metadata": {"summary": "먼 장애"}},
+            {"distance": 0.10, "metadata": {"summary": "검증된 가까운 장애", "verified": True}},
+            {"distance": 0.10, "metadata": {"summary": "미검증 가까운 장애", "verified": False}},
+            {"distance": 0.90, "metadata": {"summary": "먼 장애", "verified": True}},
         ]}
         worker._clients.update({"bedrock-runtime": bedrock, "s3vectors": vectors})
         history_env = {
@@ -144,7 +145,8 @@ class AgentEntryWorkerTest(unittest.TestCase):
             embedding, past_cases = worker._history_lookup(self.chat_first)
 
         self.assertEqual(len(embedding), 1024)
-        self.assertIn("가까운 장애", past_cases)
+        self.assertIn("검증된 가까운 장애", past_cases)
+        self.assertNotIn("미검증 가까운 장애", past_cases)
         self.assertNotIn("먼 장애", past_cases)
         bedrock.invoke_model.assert_called_once()
 

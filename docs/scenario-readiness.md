@@ -109,10 +109,10 @@
 | **목업 PG 스텁** | `apps/api/app/services/payment.py`가 주문 예약 뒤 `cfg:pg:*` 지연·결정론적 실패를 적용하고 `payment.process`를 발행한다. PG 실패 시 재고·멱등키를 보상한다(D-078). 아직 배포·실측 전 | **구현됨** |
 | **`cfg:pg:*` 노브** | `/api/admin/pg-stub`이 별도 admin key로 `delay_ms`·`fail_rate`를 함께 SET·DEL한다. 단위 테스트가 있고 배포 Secret 값은 별도 주입 필요 | **구현됨** |
 | **주문 부하 스크립트** | `loadtest/order-path.js`가 고정 도착률 주문을 만들며 RATE·DURATION·VU 수를 필수 입력으로 받는다. 시나리오 식별 헤더는 없다 | **구현됨** |
-| Dify History 유무 분기 | Worker가 S3 Vectors 검색 결과를 `past_cases`로 넘기고 DSL이 진단 프롬프트에 포함한다. 하지만 History 없음/있음을 명시적으로 나누는 조건 분기와 verified 상태 검사는 없다 | **고쳐야** |
+| Dify History 유무 분기 | Worker가 S3 Vectors 검색 결과 중 `verified=true`인 사례만 `past_cases`로 넘기고 DSL이 진단 프롬프트에 포함한다. History 없음/있음 자체를 별도 상태로 표시하는 DSL 분기는 아직 없다 | **부분 구현** |
 | 1차 실행: active Runbook 없음 → 실패 보고 | draft Runbook은 Lookup에서 제외되지만, active action 0건을 즉시 `ESCALATED`로 끝내는 전용 분기와 종료 사유는 없다. 현재 DSL은 후보 소진·재진단 루프로 갈 수 있다 | **고쳐야** |
 | 사람 해결 사례 → verified History | History 저장 기반은 있지만 PG-A→PG-B 수동 해결 사례를 검토·verified 처리하고 반복 시연용으로 격리하는 입력 경로는 없다 | **없음** |
-| PG Failover Runbook 생명주기 | 현재 `pg_external_failure` draft는 client pool·timeout/retry 조치라 최신 시나리오와 다르다. PG-B 상태·전환 조건·멱등성·오적용·실패·원복 검증을 담은 draft와 active 승격 증거가 필요하다 | **고쳐야** |
+| PG Failover Runbook 생명주기 | `pg_external_failure` draft는 PG-A→PG-B 우회 L3만 후보로 둔다. draft는 Lookup에서 제외되며, verified History·실측·원복·운영자 승인 증거가 있어야만 active 승격할 수 있다 | **부분 구현** |
 | PG-B 상태·전환·원복 제어면 | `/api/admin/pg-provider-switch`가 PG-B ready 확인 후 PG-A→PG-B 전환하고, PG-A 주입 해제 뒤에만 원복한다. 전환·안전한 원복 재시도는 멱등 처리한다. 로컬 통합 테스트가 PG-A 주입 실패 → PG-B 성공 이벤트 → 주입 중 원복 차단 → 안전 원복을 검증한다. 배포·실측 전 | **구현됨** |
 | PG-A→PG-B Action Handler | Guardrail 이후 호출할 실행기가 없다. 결제 경로 전환은 `L3`로 등록하고 Slack 승인 뒤에만 실행해야 한다 | **없음** |
 | `pg_latency_ratio` 집계 | `o2warm/sketch.py`·`metrics.py` 에 있다. `pg_latency_ms` 가 안 들어와서 지금은 표본이 0 | **있음** |

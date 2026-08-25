@@ -216,7 +216,7 @@ ACTION에 이미 중첩된 `knob`는 남지만 Guardrail은 읽지 않는다.
 | `chat_channel_overload` | dedicated | active | `limit_channel_volume` L3 |
 | `RB-API-LATENCY-001` | generic | draft | `scale_api_one_step` L1 |
 | `RB-API-POD-RESOURCE-SKEW` | dedicated | draft | `isolate_slow_pod` L2 |
-| `pg_external_failure` | scenario | draft | 결제 client pool·timeout/retry 각 L2, 둘 다 미구현 |
+| `pg_external_failure` | scenario | draft | PG-A→PG-B 우회 L3. 검증 History·실측·승인 증거 전에는 조회·실행되지 않음 |
 | `legacy_read_path_degraded` | generic | retired | `hold_read_path_degraded` L1 |
 
 코드 원본의 KNOB 정의는 6개다. 그러나 전체 dry-run이 실제 시딩 대상으로 고르는
