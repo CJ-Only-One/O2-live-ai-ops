@@ -15,8 +15,14 @@ vpc_cidr           = "10.0.0.0/16"
 eks_cluster_name = "o2-eks"
 owner            = "o2"
 
-enable_nat_gateway             = true
-single_nat_gateway             = true
+enable_nat_gateway = true
+# AZ 마다 NAT 를 둔다. 하나뿐이면 그 AZ 를 잃는 순간 나머지 AZ 의 파드도
+# 외부로 나가지 못한다 — SQS 발행·ECR pull·Datadog 전송이 함께 멈춘다.
+# 평시에도 반대 AZ 의 트래픽이 AZ 를 건너 요금을 더 낸다.
+#
+# 라우트 테이블은 이미 AZ 별로 나뉘어 있어(routes.tf) 테이블 구조는 바뀌지
+# 않고 2c 의 기본 경로 대상만 새 NAT 로 갈린다.
+single_nat_gateway             = false
 enable_ecr_interface_endpoints = false
 
 # private-data 서브넷 + DB/Cache 서브넷 그룹. 03-data 가 이것을 참조한다.
