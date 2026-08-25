@@ -20,7 +20,7 @@ db_engine_version    = "8.4"
 db_instance_class    = "db.t4g.micro"
 db_allocated_storage = 20
 
-db_multi_az              = false
+db_multi_az              = true
 db_backup_retention_days = 1
 db_deletion_protection   = false
 db_skip_final_snapshot   = true
@@ -41,7 +41,7 @@ cache_node_type      = "cache.t4g.micro"
 
 # 1 = 단일 노드. 자동 페일오버 없음.
 # Phase 6 에서 2 로 올려 R-02(Valkey 단일 장애) 시나리오를 검증한다.
-cache_num_nodes = 1
+cache_num_nodes = 2
 
 # ── SQS ──────────────────────────────────────────────────────────
 order_queue_visibility_timeout = 60
