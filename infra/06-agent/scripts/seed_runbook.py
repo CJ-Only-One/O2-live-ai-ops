@@ -363,7 +363,17 @@ RUNBOOKS = [
             "verified history match and active runbook paired E2E evidence missing",
             "operator approval and rollback evidence missing",
         ],
+        # 2026-08-26: baseline_conditions만 두면 "장애 발생 시점(이미 실패율
+        # 100%에 가까움)"을 기준선으로 잡을 때 아무 조치도 안 먹혔어도
+        # "기준선보다 안 나빠졌다"로 통과해버린다 — real test로 실제 재현함
+        # (switch_pg_provider가 no-op이었는데도 overall_failure_rate=0.8에서
+        # resolved=true가 나옴). chat_channel_overload에 이미 적용된 것과
+        # 같은 안전장치 — 절대 기준(conditions)을 같이 두고 logic은 AND.
+        # 0.05는 recovery_judge의 pg_external_failure 폴백 기준과 같은 값이다.
         "success_criteria": {
+            "conditions": [
+                {"metric": "overall_failure_rate", "comparison": "<=", "threshold": Decimal("0.05")},
+            ],
             "baseline_conditions": [
                 {"metric": "latency_p95", "comparison": "<=", "relative_to": "baseline_latency_p95"},
                 {"metric": "overall_failure_rate", "comparison": "<=", "relative_to": "baseline_overall_failure_rate"},
