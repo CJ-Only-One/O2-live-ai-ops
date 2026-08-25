@@ -193,16 +193,10 @@ RUNBOOKS = [
         #   숫자를 지어내지 않는다는 AGENTS.md 원칙의 예외이므로 굵게 표시.
         #
         #   2026-08-24 데이터팀 회신(specification/2026-08-24-AIAgent-
-        #   시나리오테스트.md)으로 필드명 정리됨, 같은 날 observability
-        #   telemetry 마이그레이션(olavvn, c6a846b)에서 실제로 구현됨:
-        #   - block_rate → channel_block_rate 로 개명 확정됐지만 아직 Warm
-        #     API에 안 붙어있다(chat.send 의 failure_code=CHANNEL_LIMITED
-        #     로 데이터팀이 계산해 노출할 예정). 지금 실제로 존재하는 이름은
-        #     여전히 block_rate 라 그걸 쓴다 — 개명되면 이 표도 같이 고칠 것.
-        #   - chat_propagation_p95_ms 후보였던 서버측 지표는 olavvn 쪽
-        #     telemetry 마이그레이션에서 chat_fanout_p95(수락→fanout
-        #     publish)로 이미 구현됨. 실제 end-to-end 전파는 별도(합성
-        #     카나리아) 지표로 간다.
+        #   시나리오테스트.md)으로 필드명 정리 논의 시작. 이후 실제로 구현된
+        #   이름·경로는 바로 아래(2026-08-25) 주석이 최신 기준이다 — 여기 있던
+        #   중간 단계 이름(chat_fanout_p95/block_rate 유지)은 그새 다시
+        #   바뀌었으므로 지운다. 최종본만 본다.
         "runbook_id": "chat_channel_overload",
         "runbook_kind": "dedicated",
         "status": "active",
@@ -588,9 +582,10 @@ KNOBS = [
         "diagnostic_contamination": True,
         "rollback_method": "immediate_delete",
         "rollback_call": {"endpoint": "$CHAT_GATEWAY_ADMIN_URL", "action": "clear"},
-        # 서버 fanout 완료와 합성 consumer E2E는 서로 다른 지표다. 자동 검증은
-        # 항상 수집되는 서버측 논리 지표를 쓰고 E2E는 k6 수용 시험에서 확인한다.
-        "verification_metrics": ["chat_fanout_p95", "block_rate", "items_per_sec"],
+        # 2026-08-25: chat_fanout_p95/block_rate는 낡은 이름 — success_criteria와
+        # 같은 실제 필드명(chat_propagation_p95_ms/channel_block_rate,
+        # o2.chat.propagation)으로 맞춘다. 합성 consumer E2E 검증은 k6로 별도.
+        "verification_metrics": ["chat_propagation_p95_ms", "channel_block_rate", "items_per_sec"],
         # 결정론적 사전 검사. 통과 못 하면 자동 실행하지 않는다.
         "preconditions": [
             {"check": "broadcast_is_live", "source": "observability.alert.broadcast_id"},
