@@ -147,13 +147,23 @@ def _search(vector):
     )
 
     lines = []
+    skipped_unverified = 0
     for hit in res.get("vectors", []):
         if hit.get("distance", 99) > MAX_DISTANCE:
             continue
         meta = hit.get("metadata") or {}
+        # 과거 사례의 유사도는 "같은 원인"의 증거가 아니다. 사람이 검증해
+        # verified=True로 갱신한 사례만 Dify 입력에 넣는다. 구형·누락 메타데이터도
+        # 안전하게 미검증으로 취급한다.
+        if meta.get("verified") is not True:
+            skipped_unverified += 1
+            continue
         lines.append(f"- {meta.get('summary', '')}")
 
-    print("history: matched", len(lines), "of", len(res.get("vectors", [])))
+    print(
+        "history: matched", len(lines), "of", len(res.get("vectors", [])),
+        "skipped_unverified", skipped_unverified,
+    )
     return "\n".join(lines)
 
 

@@ -93,15 +93,17 @@ def test_search_drops_far_hits():
         def query_vectors(self, **kwargs):
             return {
                 "vectors": [
-                    {"distance": 0.1, "metadata": {"summary": "가까움", "service": "api"}},
-                    {"distance": 0.9, "metadata": {"summary": "멂", "service": "api"}},
+                    {"distance": 0.1, "metadata": {"summary": "검증됨", "service": "api", "verified": True}},
+                    {"distance": 0.1, "metadata": {"summary": "미검증", "service": "api", "verified": False}},
+                    {"distance": 0.9, "metadata": {"summary": "멂", "service": "api", "verified": True}},
                 ]
             }
 
     worker._clients = lambda: (None, None, FakeVectors())
     out = worker._search([0.0] * 1024)
 
-    assert "가까움" in out
+    assert "검증됨" in out
+    assert "미검증" not in out, "검증 전 사례가 실행 근거로 새어 나왔다"
     assert "멂" not in out, "임계값을 넘은 사례가 새어 나왔다"
 
 

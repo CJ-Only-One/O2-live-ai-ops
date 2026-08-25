@@ -351,21 +351,17 @@ RUNBOOKS = [
         ],
     },
     {
-        # 새 S3(scenario-experiment.md 0.7) — 외부 결제 PG 지연은 우리
-        # 시스템의 풀·타임아웃 조정으로 근본 해결되지 않는다. 조치 둘을 한
-        # 번씩 시도하고 같은 RCA 로 후보가 소진되면 멈추는 경로다.
-        #
-        # 실제 payment stub·Action Handler 가 아직 없어 draft 다. 수치를
-        # 지어내지 않고 "기준선 복귀"만 성공 조건으로 둔다. 외부 PG 지연을
-        # 유지하는 실험에서는 두 조치 모두 이 조건을 통과하지 않아야 정상이다.
+        # S3(scenario-experiment.md 0.7) — 외부 결제 PG-A 지연은 client
+        # pool·timeout/retry 조정으로 해결하지 않는다. 검증된 사례와 운영자
+        # 승인 뒤에만 PG-B로 우회하는 L3 조치 하나를 후보로 둔다.
         "runbook_id": "pg_external_failure",
         "runbook_kind": "scenario",
         "status": "draft",
         "rca_type": "pg_external_failure",
         "promotion_blockers": [
-            "mock payment PG stub deployment and live validation missing",
-            "payment action handler endpoints not implemented",
-            "rollback and candidate-exhaustion E2E evidence missing",
+            "PG-A failure to PG-B success live measurement missing",
+            "verified history match and active runbook paired E2E evidence missing",
+            "operator approval and rollback evidence missing",
         ],
         "success_criteria": {
             "baseline_conditions": [
@@ -376,54 +372,6 @@ RUNBOOKS = [
             "logic": "AND",
         },
         "actions": [
-            {
-                "action_id": "expand_payment_client_pool",
-                "risk_level": "L2",
-                "implementation_status": "not_implemented",
-                "expected_effect": "increase local payment-client concurrency; external PG latency itself is unchanged",
-                "blast_radius": "checkout payment client configuration",
-                "parameters_schema": {
-                    "service": {
-                        "type": "string",
-                        "required": True,
-                        "source": "observability.service",
-                    },
-                    "change": {
-                        "type": "string",
-                        "required": True,
-                        "source": "static:one_bounded_step",
-                    },
-                },
-                "execution_target": {
-                    "method": "POST",
-                    "endpoint": "/actions/payment-client-pool-expand",
-                },
-                "stabilization_wait_seconds": None,
-            },
-            {
-                "action_id": "tighten_payment_timeout_retry",
-                "risk_level": "L2",
-                "implementation_status": "not_implemented",
-                "expected_effect": "fail fast and bound retries; external PG latency itself is unchanged",
-                "blast_radius": "checkout payment timeout and retry policy",
-                "parameters_schema": {
-                    "service": {
-                        "type": "string",
-                        "required": True,
-                        "source": "observability.service",
-                    },
-                    "change": {
-                        "type": "string",
-                        "required": True,
-                        "source": "static:bounded_fail_fast",
-                    },
-                },
-                "execution_target": {
-                    "method": "POST",
-                    "endpoint": "/actions/payment-timeout-retry-tighten",
-                },
-                "stabilization_wait_seconds": None,
-            },
             {
                 # 2026-08-25 회의 결정 — 위 둘(client pool·timeout/retry)은
                 # 방어 조치라 PG-A 자체가 느린 근본 원인을 못 고친다. 이건
@@ -452,6 +400,8 @@ RUNBOOKS = [
         # 기존 pg_external_failure 는 PG를 PostgreSQL로 해석한 액션이었다.
         # 새 결제 PG 시나리오에서는 의미가 달라 삭제 대신 retired 처리한다.
         "retired_action_ids": [
+            "expand_payment_client_pool",
+            "tighten_payment_timeout_retry",
             "pg_circuit_open",
             "pg_query_timeout_tighten",
             "pg_read_replica_failover",
