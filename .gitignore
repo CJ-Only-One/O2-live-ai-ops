@@ -18,6 +18,7 @@ plan.txt
 infra/06-datastream/lambda/*.zip
 infra/06-agent/lambda/*.zip
 infra/08-chat-signal/lambda/*.zip
+infra/09-incident/lambda/*.zip
 
 # ── JVM / Gradle ─────────────────────────────────────────
 .gradle/
