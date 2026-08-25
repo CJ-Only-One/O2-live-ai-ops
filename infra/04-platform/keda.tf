@@ -64,6 +64,38 @@ resource "helm_release" "keda" {
     # 최상위 nodeSelector 하나가 세 파드(operator, metrics-apiserver, webhooks)에
     # 모두 적용된다 — 차트 2.17.2 기준.
     nodeSelector = { role = "general" }
+
+    # ── AZ 이중화 ────────────────────────────────────────
+    # 셋이 모두 하나뿐이라 같은 노드에 올라가 있었다. 그 노드를 잃으면
+    # order-worker 의 자동 확장이 통째로 멈춘다 — 특가 구간에 큐가 쌓여도
+    # 아무도 파드를 늘리지 않는다. cue-warmer 가 미리 올려둔 바닥값은
+    # 남지만, 그것으로 모자랄 때 더 올리는 쪽이 KEDA 다(D-041 층 구조).
+    #
+    # 세 컴포넌트가 다중화되는 방식이 서로 다르다.
+    #   operator       리더 선출(lease operator.keda.sh). 하나만 일하고
+    #                  나머지는 대기하다 리더가 죽으면 넘겨받는다
+    #   metricsServer  외부 지표 APIService. 무상태라 요청이 분산된다
+    #   webhooks       검증 웹훅. 무상태. 이쪽이 죽어 있으면 ScaledObject
+    #                  변경 자체가 거부되므로 오히려 다중화 이득이 크다
+    #
+    # 셋 다 ScheduleAnyway 다. DoNotSchedule 이면 한쪽 AZ 에 자리가 없을 때
+    # 뜨지 못하는데, 오토스케일링이 아예 없는 것보다 한쪽에 몰리는 편이 낫다.
+    operator      = { replicaCount = 2 }
+    metricsServer = { replicaCount = 2 }
+    webhooks      = { replicaCount = 2 }
+
+    topologySpreadConstraints = {
+      for c, label in {
+        operator      = "keda-operator"
+        metricsServer = "keda-operator-metrics-apiserver"
+        webhooks      = "keda-admission-webhooks"
+        } : c => [{
+          maxSkew           = 1
+          topologyKey       = "topology.kubernetes.io/zone"
+          whenUnsatisfiable = "ScheduleAnyway"
+          labelSelector     = { matchLabels = { "app.kubernetes.io/name" = label } }
+      }]
+    }
   })]
 
   depends_on = [aws_eks_access_policy_association.admin]
