@@ -90,7 +90,7 @@
 
 | 요구 | 현재 | 판정 |
 |---|---|---|
-| canary Deployment (같은 Service, CPU 상한만 다름) | `O2-live-deploy/experiments/s2-api-canary`가 main을 base로 렌더링하고 `loadtest/s2-canary.sh`가 실측 CPU/probe 입력을 강제한다. 자동 배포는 안 됨 | **구현됨** |
+| canary Deployment (같은 Service, CPU 상한만 다름) | `loadtest/s2-canary.sh`가 클러스터의 현재 main Deployment를 원본으로 읽고 실측 CPU/probe 입력을 강제한다. 2026-08-25 로컬 Git base의 이미지 드리프트를 수정한 뒤 server-side dry-run과 200 RPS 실부하 재검증을 완료했다 | **구현·실측됨** |
 | 정상 파드 복수 | `api-deployment.yaml`은 `replicas: 2`; main/canary는 서로 다른 Deployment selector와 `o2.cj.io/api-service-member` Service 멤버십을 쓴다 | **구현됨** |
 | 파드별 지연 (`latency_by_pod`) | 2026-08-24 PR #133 으로 들어왔다 — `o2warm/sketch.py:514·609`, `metrics.py:328` `latency_p95_by_pod`, `datadog.py:131` 이 `pod_name` 태그로 전송한다 | **있음** |
 | 파드 단위 이상치 모니터 | `monitor.tf:420` `[O2][시나리오 5] 파드 단위 응답 지연 이상치` — `outliers(… latency_p95 … by {pod_name}, 'DBSCAN', …)`. 캐시 히트율 이상치(`monitor.tf:331`)와 별개로 붙었다 | **있음** |

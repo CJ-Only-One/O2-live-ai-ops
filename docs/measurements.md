@@ -1211,6 +1211,49 @@ KEDA 를 넣으면서(D-051) 그 Helm 차트가 자기 파드에 `limits.cpu` �
 S2 의 "느린 파드" 판정은 서버 값으로 한다 — 인터넷 왕복이 섞이면 파드
 간 차이가 묻힌다.
 
+### S2 실제 부하와 2단계 조치 리허설 (2026-08-25)
+
+**이 절은 자동 Agent E2E가 아니다.** 장애 주입과 부하, 실제
+`o2-dev-dify-scale-executor` Lambda의 조치 효과를 운영자가 단계별로 호출해
+검증했다. Datadog Monitor는 부하 보정 중 mute했고 Agent Signal/Invocation Queue가
+모두 0건이었으므로, "Agent가 판단해서 실행했다"고 주장하지 않는다.
+
+**조건**
+
+- 대상: main API와 같은 이미지·Pod template의 별도 `api-canary` Deployment
+- canary: CPU request/limit `100m`, readiness timeout 5초 · failure threshold 6
+- 부하: ALB 경유 `GET /api/broadcasts/bc_1042`, constant-arrival-rate
+  **200 RPS · 60초**, 총 12,000건
+- 생성기: k6 `preAllocatedVUs=maxVUs=1200`, `noConnectionReuse=true`;
+  모든 유효 실행에서 dropped iteration 0
+
+| 단계 | main | canary | p95 | p99 | HTTP 실패율 | 판정 |
+|---|---:|---:|---:|---:|---:|---|
+| 장애 주입 | 2 | 1 | **21.53s** | **23.87s** | 0 | 꼬리 지연 재현 |
+| 1차 조치 후에도 장애 유지 | 3 | 1 | **6.37s** | **12.62s** | **1.18%** | 증설만으로 실패 |
+| 2차 조치: 느린 canary 격리 | 3 | 0 | **29.25ms** | **99.78ms** | 0 | 복구 |
+| 증설분 최종 원복 | 2 | 0 | **27.81ms** | **99.57ms** | 0 | 복구 유지 |
+
+유효 실행은 모두 목표 200 RPS를 지켜 dropped iteration 0이었다. 첫 장애 주입은
+응답이 누적되며 최대 926 VU까지 사용했지만 1,200 VU 상한 안에서 12,001건을
+완료했다. 따라서 수 초 지연은 생성기 포화가 아니라 서버 endpoint 하나의
+지연이다. 1차 증설은 p95를 낮췄지만 성공 기준 800ms와 실패율 1%를 모두 넘겨
+재분석 대상으로 남았다.
+
+이 결과로 확인된 것은 **"증설 → 고정 조건 재검증 실패 → 느린 Deployment
+격리 → 기준 replicas 원복 후 재검증 성공"**이라는 조치 순서다. 아직 확인하지
+못한 것은 Datadog S2 신호가 Incident로 승격되고, Dify가 active Runbook을 고른 뒤,
+상태 머신의 1회 재분석을 거쳐 같은 두 조치를 자동 호출하는 구간이다.
+
+위 표 전에 한 첫 리허설에서는 **이미지 드리프트가 뒤늦게 확인됐다.** Datadog의
+최근 3시간 `kubernetes.cpu.usage.total by {image_tag}` 이력에서 canary는 `d5f4088...`,
+동시점 main은 APM version `0ab8267...`이었다. 로컬 `O2-live-deploy`가 원격보다
+한 커밋 뒤인 상태에서 기존 하네스가 로컬 YAML을 base로 렌더링한 것이 원인이다.
+그 첫 리허설 값은 **구버전 이미지 + 100m CPU 제한의 복합 장애**라 위 표에서
+제외했다. 하네스를 현재 클러스터의 main Deployment에서 생성하도록 수정하고
+server-side dry-run과 live Deployment의 image/version 일치를 확인한 뒤 위 표를
+다시 측정했다. 따라서 위 표는 CPU limit 차이만 남긴 재실험 결과다.
+
 ### 안 잰 것 (이 절)
 
 - **M-009 재측정.** `replicas` 1 → 2 는 M-009 의 재측정 트리거이고
