@@ -48,6 +48,9 @@
 | T-030 | 앱은 정상인데 `o2.app.*`가 전부 No Data다 | DogStatsD, `useHostPort`, `DD_AGENT_HOST`, UDP 8125 |
 | T-031 | distribution 값은 보이는데 p95 위젯만 No Data다 | `include_percentiles`, metric tag configuration, custom metric 비용, `avg` |
 | T-032 | APM span에는 pod_name이 있는데 trace metric에서 by pod_name이 안 된다 | APM primary tag 후보, span-based metric, `@duration`, 나노초 |
+| T-033 | 로컬 state 파일이 JSON인데 Terraform이 파싱하지 못한다 | Windows PowerShell, UTF-8 BOM, `Set-Content` |
+| T-034 | Correlator가 Shadow 메시지를 받자마자 모두 실패한다 | 환경변수 JSON 매핑 로딩, dict와 set의 차집합 |
+| T-035 | AWS CLI로 보낸 JSON이 Lambda에서 `SQS_BODY` 거부된다 | Windows PowerShell 네이티브 인자 quoting, `file://` |
 
 
 ---
@@ -1549,3 +1552,48 @@ APM additional primary tag 설정 화면에도 `pod_name`이 후보로 나오지
 **왜 늦게 찾았나** — Trace Explorer에서 보이는 모든 span tag가 표준 trace metric에도
 자동으로 붙는다고 생각하기 쉽고, additional primary tag UI는 선택 불가능한 이유를
 설명하지 않는다. 실제 span payload와 metric tag set을 따로 확인해야 경계가 드러난다.
+
+---
+
+## T-033. 로컬 state 파일이 JSON인데 Terraform이 파싱하지 못한다
+
+**증상** — `terraform state pull` 출력을 Windows PowerShell의
+`Set-Content -Encoding utf8`로 저장한 뒤 `terraform state mv -state=...`를 실행하면,
+첫 바이트에서 JSON 구문 오류가 나고 `version` 속성도 없다고 보고한다.
+
+**원인** — Windows PowerShell 5.1의 `utf8` 인코딩은 파일 앞에 UTF-8 BOM을 쓴다.
+Terraform state 파서는 BOM이 붙은 로컬 state 파일을 JSON으로 읽지 못한다. 원격 backend나
+state 내용이 손상된 것이 아니라 로컬 복사 과정에서 바이트가 추가된 것이다.
+
+**조치** — 원격 state를 다시 pull하고 `System.Text.UTF8Encoding($false)`를 사용해 BOM 없이
+저장한다. 교차-state 이동은 원격에 push하기 전에 로컬 복사본에서 먼저 수행하고, 대상 주소의
+누락·원본 잔존·목적지 초과가 모두 0인지 확인한다. 검증된 목적지 state를 먼저 push한 뒤 원본
+state를 push해, 두 번째 push 실패 시에도 리소스 소유권을 복구할 수 있는 상태를 유지한다.
+
+**왜 늦게 찾았나** — 파일 확장자와 화면에 보이는 내용은 정상 JSON이고 BOM은 일반 텍스트
+출력에서 보이지 않는다. 또한 오류가 state lock 획득 단계에 함께 표시되어 backend 잠금 문제로
+오해하기 쉽다.
+
+---
+
+## T-034. Correlator가 Shadow 메시지를 받자마자 모두 실패한다
+
+**증상** — 비활성 배포 검증 뒤 Correlator 이벤트 소스를 Shadow allowlist로 열자, 합성 Signal 세 건이 Incident 상태를 만들지 못하고 모두 재시도 상태에 들어갔다. Lambda 로그에는 `_mapping`에서 `TypeError: unsupported operand type(s) for -: 'dict' and 'set'`가 기록됐다.
+
+**원인** — `SEVERITY_LEVELS`는 심각도 순위를 담은 dict인데 환경변수 JSON 매핑을 검증하는 경로에서 `SEVERITY_LEVELS - {"UNKNOWN"}`처럼 set 차집합 연산을 직접 수행했다. 테스트 대부분은 파싱을 마친 설정 객체를 직접 주입해서 전체 환경변수 로딩 경로를 거치지 않았다.
+
+**조치** — 허용 심각도 검증을 `set(SEVERITY_LEVELS) - {"UNKNOWN"}`로 바꾸고, 실제 Terraform 환경변수와 같은 완전한 JSON을 넣어 `_mapping()` 전체를 호출하는 회귀 테스트를 추가했다. 재시도 전에는 이벤트 소스를 비활성화하고 실패한 합성 메시지를 정확한 idempotency key로 회수한다.
+
+**왜 늦게 찾았나** — 타입 오류는 JSON 환경변수가 존재할 때만 실행되는 초기화 분기 안에 있었고, 기존 단위 테스트가 계산 규칙 중심으로 설정 객체를 직접 전달해 배포 형태의 설정 로딩 경계를 건너뛰었다.
+
+---
+
+## T-035. AWS CLI로 보낸 JSON이 Lambda에서 `SQS_BODY` 거부된다
+
+**증상** — 계약 예제 객체를 PowerShell에서 `ConvertTo-Json -Compress`한 뒤 `aws sqs send-message --message-body $json`으로 보내면, Correlator가 `CONTRACT_REJECTED:SQS_BODY`로 거부한다. 같은 객체를 로컬 JSON 파서로 읽으면 정상이다.
+
+**원인** — Windows PowerShell이 네이티브 실행 파일에 문자열 인자를 전달하는 과정에서 JSON의 큰따옴표를 보존하지 않았다. SQS에는 JSON 객체 문자열이 아니라 따옴표가 손실된 본문이 저장됐다.
+
+**조치** — JSON을 BOM 없는 UTF-8 임시 파일로 직렬화하고 AWS CLI에는 `--message-body file://<path>`로 전달했다. 전송 직후 임시 파일을 삭제하고, 실패 메시지는 이벤트 소스를 닫은 뒤 MessageId로 한정해 회수했다.
+
+**왜 늦게 찾았나** — 전송 명령은 성공 MessageId를 반환하고 SQS도 본문 형식을 검증하지 않는다. 손상은 CLI 프로세스 경계에서 생기므로 송신 측 객체와 Lambda의 JSON 파싱을 따로 보면 모두 정상처럼 보인다.

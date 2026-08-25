@@ -275,13 +275,14 @@ resource "datadog_monitor" "cache_absorption_failure" {
     2초 늦는 것뿐입니다.
 
     @webhook-o2-dify
+    @webhook-o2-incident-entry
   EOT
 
   notify_no_data      = false
   require_full_window = true
   renotify_interval   = 0
 
-  tags = concat(local.monitor_tags, ["scenario:4", "service:api", "role:page"])
+  tags = concat(local.monitor_tags, ["env:${local.monitor_env}", "scenario:4", "service:api", "role:page"])
 }
 
 ###############################################################################

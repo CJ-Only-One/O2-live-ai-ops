@@ -211,6 +211,12 @@ variable "agent_entry_event_source_enabled" {
   default     = false
 }
 
+variable "agent_entry_operational_handoff_approved" {
+  description = "운영 Incident를 빈 합성 allowlist로 소비하도록 승인한 운영자 gate"
+  type        = bool
+  default     = false
+}
+
 variable "agent_entry_allowed_incident_ids" {
   description = "Phase 3D에서 전용 Dify 테스트 앱 호출을 허용할 합성 Incident id. 활성화 시 정확히 1개"
   type        = set(string)
@@ -222,136 +228,6 @@ variable "agent_entry_allowed_incident_ids" {
       can(regex("^inc_[0-9A-HJKMNP-TV-Z]{26}$", value))
     ])
     error_message = "Phase 3D allowlist는 inc_<ULID> 형식만 허용한다."
-  }
-}
-
-# ── Datadog Source Adapter (Phase 4A: 기본 비활성) ───────────────
-
-variable "datadog_source_adapter_execution_enabled" {
-  description = "Phase 4A 합성 dual-run에서만 true로 바꾸는 Datadog Source Adapter 실행 게이트"
-  type        = bool
-  default     = false
-}
-
-variable "datadog_source_adapter_allowed_monitor_ids" {
-  description = "신규 Signal Queue 전송을 허용할 합성 Datadog monitor ID. 활성화 시 정확히 1개"
-  type        = set(string)
-  default     = []
-
-  validation {
-    condition = alltrue([
-      for value in var.datadog_source_adapter_allowed_monitor_ids :
-      can(regex("^[^,]{1,128}$", value))
-    ])
-    error_message = "Datadog Source Adapter allowlist는 쉼표 없는 1~128자 합성 monitor ID만 허용한다."
-  }
-}
-
-variable "datadog_source_adapter_not_before_epoch" {
-  description = "이 Unix epoch 이전 Datadog event time은 신규 Signal Queue로 보내지 않는다. 비활성 기본값은 2100-01-01"
-  type        = number
-  default     = 4102444800
-
-  validation {
-    condition = (
-      var.datadog_source_adapter_not_before_epoch >= 0 &&
-      floor(var.datadog_source_adapter_not_before_epoch) == var.datadog_source_adapter_not_before_epoch
-    )
-    error_message = "Datadog Source Adapter cutover는 0 이상의 정수 Unix epoch여야 한다."
-  }
-}
-
-# ── Incident Correlator (Phase 3B: 비활성) ───────────────────────
-
-variable "incident_correlator_max_concurrency" {
-  description = "Signal Queue를 직렬에 가깝게 처리하는 Correlator 예약 동시성 상한"
-  type        = number
-  default     = 2
-
-  validation {
-    condition     = var.incident_correlator_max_concurrency >= 2 && var.incident_correlator_max_concurrency <= 10
-    error_message = "Lambda SQS scaling 하한과 상태 경합 상한을 고려해 2 이상 10 이하로 둔다."
-  }
-}
-
-variable "incident_correlator_execution_enabled" {
-  description = "Phase 3C 합성 상관관계 E2E에서만 true로 바꾸는 Correlator 실행 게이트"
-  type        = bool
-  default     = false
-}
-
-variable "incident_correlator_event_source_enabled" {
-  description = "Phase 3C 합성 상관관계 E2E에서만 true로 바꾸는 Signal Queue event source 게이트"
-  type        = bool
-  default     = false
-}
-
-variable "incident_correlation_window_seconds" {
-  description = "두 source event time을 같은 OPEN Incident 후보로 볼 시간창. 0 또는 60초 단위 60~900초"
-  type        = number
-  default     = 0
-
-  validation {
-    condition = (
-      var.incident_correlation_window_seconds == 0 ||
-      (var.incident_correlation_window_seconds >= 60 &&
-        var.incident_correlation_window_seconds <= 900 &&
-        floor(var.incident_correlation_window_seconds) == var.incident_correlation_window_seconds &&
-      var.incident_correlation_window_seconds % 60 == 0)
-    )
-    error_message = "correlation window는 0 또는 60초 단위의 60~900초 정수여야 한다. 0이면 Correlator를 활성화할 수 없다."
-  }
-}
-
-variable "incident_correlator_allowed_idempotency_keys" {
-  description = "Phase 3C에서 상태 접근을 허용할 합성 source idempotency key. 활성화 시 1~3개"
-  type        = set(string)
-  default     = []
-
-  validation {
-    condition = alltrue([
-      for value in var.incident_correlator_allowed_idempotency_keys :
-      can(regex("^(chat:cand_[0-9A-HJKMNP-TV-Z]{26}|datadog:[^,:]{1,128}:(Triggered|Re-Triggered|Recovered|Warn|No Data|Renotify))$", value))
-    ])
-    error_message = "Correlator allowlist는 합성 chat:cand_<ULID> 또는 datadog:<cycle>:<transition> 형식만 허용한다."
-  }
-}
-
-variable "incident_chat_surface_map" {
-  description = "Chat suspected_surface를 source 독립 상관관계 차원으로 바꾸는 고정 mapping"
-  type = map(object({
-    symptom_family    = string
-    suspected_surface = string
-    service           = string
-  }))
-  default = {
-    READ_PATH = {
-      symptom_family    = "LATENCY"
-      suspected_surface = "READ_PATH"
-      service           = "api"
-    }
-  }
-}
-
-variable "incident_datadog_monitor_map" {
-  description = "Datadog monitor_id를 상관관계 차원으로 바꾸는 명시 mapping. 환경별 실제 ID는 terraform.tfvars가 소유한다."
-  type = map(object({
-    symptom_family    = string
-    suspected_surface = string
-    service           = string
-  }))
-  default = {}
-
-  validation {
-    condition = alltrue([
-      for monitor_id, mapping in var.incident_datadog_monitor_map :
-      can(regex("^[0-9]{1,20}$", monitor_id)) &&
-      contains(["LATENCY", "AVAILABILITY", "ERROR_RATE", "UNKNOWN"], mapping.symptom_family) &&
-      contains(["READ_PATH", "PLAYBACK", "CHAT", "UNKNOWN"], mapping.suspected_surface) &&
-      length(trimspace(mapping.service)) >= 1 &&
-      length(mapping.service) <= 128
-    ])
-    error_message = "Datadog monitor mapping은 숫자 ID와 통제된 symptom/surface, 1~128자 service를 사용해야 한다."
   }
 }
 

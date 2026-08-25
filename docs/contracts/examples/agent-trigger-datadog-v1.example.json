@@ -20,7 +20,24 @@
     "alert_query": "example_metric > example_threshold",
     "host": "",
     "tags": "env:dev,service:api",
-    "link": ""
+    "link": "",
+    "assessment_input": {
+      "evidence_type": "SERVICE_TAIL_LATENCY",
+      "observed_at": "2026-08-23T00:00:16.000Z",
+      "sample_count": 12,
+      "data_state": "PRESENT",
+      "signal_strength": "STANDARD",
+      "scope": {
+        "environment": "dev",
+        "service": "api",
+        "pod": null,
+        "version": null,
+        "broadcast_id": null
+      },
+      "measurements": {
+        "p95_ms": 900
+      }
+    }
   },
   "guardrails": {
     "analysis_mode": "READ_ONLY",

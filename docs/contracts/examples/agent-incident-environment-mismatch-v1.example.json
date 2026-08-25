@@ -18,6 +18,7 @@
   },
   "normalized_context": {
     "environment": "dev",
+    "incident_family": "UNKNOWN",
     "symptom_family": "UNKNOWN",
     "suspected_surfaces": [
       "UNKNOWN"
@@ -25,6 +26,21 @@
     "services": [],
     "broadcast_ids": []
   },
+  "evidence_assessment": {
+    "primary": [],
+    "corroborating": [],
+    "context": [],
+    "missing_required_roles": [
+      "PRIMARY",
+      "CORROBORATING"
+    ],
+    "verification_state": "AMBIGUOUS",
+    "strong_exception_applied": false
+  },
+  "data_quality": {"state":"INVALID","assessments":[{"trigger_id":"trg_01ARZ3NDEKTSV4RRFFQ69G5FAX","evidence_type":"UNMAPPED","configured_role":null,"state":"UNMAPPED","sample_count":0,"minimum_samples":0,"observed_at":"2026-08-23T00:00:16.000Z","freshness_seconds":0,"age_seconds":0}]},
+  "severity_assessment": {"level":"UNKNOWN","previous_level":"UNKNOWN","material_change":false,"basis_trigger_ids":[]},
+  "recovery_assessment": {"state":"NOT_STARTED","started_at":null,"required_until":null,"recovered_roles":[]},
+  "notification_policy": {"mode":"SHADOW","cooldown_seconds":0,"suppressed":false,"reason":"NONE"},
   "signals": [
     {
       "schema_version": "1.0",
@@ -48,7 +64,12 @@
         "alert_query": "example_metric > example_threshold",
         "host": "",
         "tags": "env:o2-dev,service:api",
-        "link": ""
+        "link": "",
+        "assessment_input": {
+          "evidence_type":"SERVICE_TAIL_LATENCY","observed_at":"2026-08-23T00:00:16.000Z","sample_count":12,"data_state":"PRESENT","signal_strength":"STANDARD",
+          "scope":{"environment":"o2-dev","service":"api","pod":null,"version":null,"broadcast_id":null},
+          "measurements":{"p95_ms":900}
+        }
       },
       "guardrails": {
         "analysis_mode": "READ_ONLY",

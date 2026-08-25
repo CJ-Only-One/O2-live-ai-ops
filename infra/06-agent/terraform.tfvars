@@ -23,6 +23,9 @@ dify_ref = "1.16.1"
 # 외부 LLM API 만 쓸 거면 false 로 두고 키는 Dify UI 에서 넣는다.
 enable_bedrock_access = true
 
+# 운영 Incident Worker는 현재 배포된 운영 Dify workflow key를 유지한다.
+agent_entry_secret_name = "o2/dev/dify-alert-o2"
+
 # ── Session Manager (계정 전역) ───────────────────────────────────
 # idle 은 AWS 상한이 60분이라 더 못 올린다.
 # 6시간 연속 작업은 max_duration 360 + tunnel.sh 의 keepalive 조합으로 만든다.
@@ -30,17 +33,8 @@ manage_session_preferences   = true
 session_idle_timeout_minutes = 60
 session_max_duration_minutes = 360
 
-# 시나리오 4의 role:page composite만 READ_PATH Incident에 연결한다(D-072).
-# 하위 sub monitor 두 개와 주문 지연 monitor는 중복·오분류를 피하려고 제외한다.
-incident_datadog_monitor_map = {
-  "21940250" = {
-    symptom_family    = "LATENCY"
-    suspected_surface = "READ_PATH"
-    service           = "api"
-  }
-}
-
-# Phase 4F Shadow 초기값. 운영 monitor의 full window 300초와 관측된 Datadog
-# source-to-Queue 최대 69.474초를 60초 단위로 올린 120초를 합친다(D-073).
-# 근거와 계산식은 correlation-window-evidence.json이 소유한다.
-incident_correlation_window_seconds = 420
+# 2026-08-25 운영 Incident handoff 승인. 운영 모드에서는 합성 Incident allowlist를 비운다.
+agent_entry_execution_enabled            = true
+agent_entry_event_source_enabled         = true
+agent_entry_operational_handoff_approved = true
+agent_entry_allowed_incident_ids         = []

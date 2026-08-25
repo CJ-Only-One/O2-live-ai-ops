@@ -1582,6 +1582,30 @@ visible/in-flight/delayed 0, Incident State·ledger·Candidate·window state는 
 대체하지 않는다. 실제 장애의 source 발생 간격과 각 경로 지연을 반복 자동화로 더 측정한 뒤
 운영 correlation window를 결정한다.
 
+### 2026-08-25 결정론적 lifecycle Shadow 반복
+
+새 evidence/state 계약을 배포하되 Worker event source는 계속 disabled로 두고, Correlator에는
+정확한 합성 idempotency key만 허용했다. 기능 확인용 값은 recovery 1초, cooldown 60초,
+reopen 300초였으며 운영값이 아니다. Signal은 SQS에 직접 넣었으므로 이 표는 Datadog monitor
+평가 지연이나 source-to-Queue 시간을 측정하지 않는다.
+
+| 반복 | 같은 Incident의 revision 전이 | 검증 결과 | Invocation |
+|---|---|---|---:|
+| 1 | `1 OPEN` → `2 VERIFIED` → `3 RECOVERING` → `4 RESOLVED` → `5 OPEN` | reopen에서 `COOLDOWN_ACTIVE`, suppressed=true | 1 |
+| 2 | `1 OPEN` → `2 VERIFIED` → `3 RECOVERING` → `4 RESOLVED` → `5 OPEN` | 같은 Incident ID로 전체 전이 재현 | 1 |
+
+CloudWatch에서 관측한 revision 기록 시각의 간격은 1회차가 58.920초, 72.708초, 5.452초,
+3.500초였고 2회차가 25.704초, 38.986초, 21.706초, 16.708초였다. 이 값은 수동 AWS CLI
+호출과 polling 대기를 포함한 **입력 간격**이며 Correlator 처리시간으로 사용하면 안 된다.
+세 번째 반복은 자동 하네스 종료 뒤 수동 reopen 입력이 겹쳐 correlation 순서가 오염됐으므로
+실측 표본에서 제외했다.
+
+첫 Shadow 시도에서는 환경변수 매핑 로딩의 dict/set 타입 오류(T-034)를 발견해 회귀 테스트를
+추가했고, 재시도의 인라인 JSON은 PowerShell quoting으로 손상됐다(T-035). 수정 후 위 두 번의
+전체 lifecycle이 재현됐다. 종료 시 Correlator 실행 gate와 event source를 disabled로 되돌리고
+recovery/cooldown/reopen 값을 0으로 복귀했다. 이 반복만으로 운영 grouping/cooldown/reopen 값을
+확정하지 않는다. 실제 Datadog source 반복 측정과 운영자 승인이 여전히 필요하다.
+
 **다시 재야 할 때** — Source Adapter·Correlator·Worker 코드, Dify workflow 계약, Datadog
 monitor 평가 주기, Queue 설정 또는 environment canonicalization 정책을 바꿀 때.
 

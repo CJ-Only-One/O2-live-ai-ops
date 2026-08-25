@@ -39,6 +39,7 @@ def source_payload(**changes):
         "host": evidence["host"],
         "tags": evidence["tags"],
         "link": evidence["link"],
+        "assessment_input": evidence["assessment_input"],
     }
     payload.update(changes)
     return payload
@@ -113,6 +114,19 @@ class DatadogSourceAdapterTest(unittest.TestCase):
         self.assertEqual(
             self.sqs.messages[0]["MessageAttributes"]["source"]["StringValue"],
             "DATADOG_MONITOR",
+        )
+
+    def test_composite_condition_accepts_empty_measurements(self):
+        assessment = source_payload()["assessment_input"]
+        assessment.update(
+            {"evidence_type": "COMPOSITE_CONDITION", "sample_count": 1, "measurements": {}}
+        )
+        result = self.invoke(function_event(source_payload(assessment_input=assessment)))
+        self.assertEqual(result["statusCode"], 200)
+        envelope = json.loads(self.sqs.messages[0]["MessageBody"])
+        self.assertEqual(
+            envelope["evidence"]["assessment_input"]["evidence_type"],
+            "COMPOSITE_CONDITION",
         )
 
     def test_posix_timestamp_is_normalized_to_rfc3339(self):
@@ -212,6 +226,26 @@ class DatadogSourceAdapterTest(unittest.TestCase):
         self.assertEqual(result["statusCode"], 400)
         self.assertEqual(result["body"], "CONTRACT_REJECTED:ALERT_TRANSITION")
         self.assertEqual(self.sqs.messages, [])
+
+    def test_s1_propagation_requires_broadcast_scope(self):
+        payload = source_payload()
+        payload["assessment_input"]["evidence_type"] = "CHAT_PROPAGATION_P95"
+        payload["assessment_input"]["measurements"] = {"p95_ms": 800}
+        result = self.invoke(function_event(payload))
+        self.assertEqual(result["statusCode"], 400)
+        self.assertEqual(result["body"], "CONTRACT_REJECTED:ASSESSMENT_S1_SCOPE")
+
+    def test_s2_cpu_accepts_explicit_pod_and_version_scope(self):
+        payload = source_payload()
+        payload["assessment_input"].update({
+            "evidence_type": "POD_CPU_UTILIZATION",
+            "scope": {"environment":"dev", "service":"api", "pod":"api-canary-1", "version":"sha-123", "broadcast_id":None},
+            "measurements": {"cpu_utilization_ratio": 0.9},
+        })
+        result = self.invoke(function_event(payload))
+        self.assertEqual(result["statusCode"], 200)
+        envelope = json.loads(self.sqs.messages[0]["MessageBody"])
+        self.assertEqual(envelope["evidence"]["assessment_input"]["scope"]["pod"], "api-canary-1")
 
     def test_empty_allowlist_fails_closed(self):
         result = self.invoke(DATADOG_SOURCE_ADAPTER_ALLOWED_MONITOR_IDS="")

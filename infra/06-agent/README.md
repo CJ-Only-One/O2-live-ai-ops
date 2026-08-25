@@ -123,7 +123,8 @@ Phase 3D 합성 Shadow E2E는 D-053에 따라 event source와 실행 플래그�
 
 ## Datadog Source Adapter Phase 4A
 
-`datadog_source_adapter.tf`은 기존 `o2-dify-ingress`와 분리된 Shadow Function URL을 만든다.
+Datadog Source Adapter는 모니터링 팀 소유의 `../09-incident`로 이동했다(D-078).
+이 스택은 검증된 `agent.incident.v1` Invocation Queue의 소비자만 소유한다.
 기존 ingress·Worker·Dify 코드를 수정하지 않으며 신규 Lambda는 Signal Queue까지만 전송한다.
 
 ```text
@@ -194,8 +195,8 @@ monitor에 붙이지 않았고 Agent/Dify 호출은 0건이다.
 
 Phase 4F는 초기 Shadow correlation window를 420초로 준비한다(D-073). 운영 Datadog monitor의
 5분 full window 300초와 관측된 Datadog Triggered tail 최대 69.474초를 60초 단위로 올린
-120초를 합한다. 이 값은 p95나 SLO가 아니다. 기계 판독 근거는
-`correlation-window-evidence.json`, drift 검증은
+120초를 합한다. 이 값은 p95나 SLO가 아니다. correlation window의 기계 판독 근거는
+`../09-incident/correlation-window-evidence.json`, drift 검증은
 `../../scripts/validate-incident-correlation-window.py`가 소유한다. 비활성 Correlator가 측정된
 window를 미리 가질 수 있도록 precondition을 완화하지만 실행 false·event source false·empty
 allowlist는 계속 강제한다. 병합 전에는 `0 → 420` 환경변수 한 개의 targeted plan만 검증한다.

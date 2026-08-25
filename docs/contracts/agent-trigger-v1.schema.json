@@ -159,7 +159,8 @@
         "alert_query",
         "host",
         "tags",
-        "link"
+        "link",
+        "assessment_input"
       ],
       "properties": {
         "event_id": {
@@ -221,6 +222,60 @@
         "link": {
           "type": "string",
           "maxLength": 4096
+        },
+        "assessment_input": {
+          "$ref": "#/$defs/assessment_input"
+        }
+      }
+    },
+    "assessment_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_type",
+        "observed_at",
+        "sample_count",
+        "data_state",
+        "signal_strength",
+        "scope",
+        "measurements"
+      ],
+      "properties": {
+        "evidence_type": {
+          "enum": [
+            "CHAT_PROPAGATION_P95",
+            "CHAT_NORMAL_USER_BLOCK_RATE",
+            "SERVICE_TAIL_LATENCY",
+            "POD_TAIL_LATENCY",
+            "POD_CPU_UTILIZATION",
+            "POD_VERSION",
+            "POD_AGE",
+            "TELEMETRY_FRESHNESS",
+            "INTEGRITY_VIOLATION",
+            "COMPOSITE_CONDITION"
+          ]
+        },
+        "observed_at": { "type": "string", "format": "date-time" },
+        "sample_count": { "type": "integer", "minimum": 0 },
+        "data_state": { "enum": ["PRESENT", "NO_DATA", "STALE"] },
+        "signal_strength": { "enum": ["STANDARD", "STRONG"] },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["environment", "service", "pod", "version", "broadcast_id"],
+          "properties": {
+            "environment": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "service": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "pod": { "type": ["string", "null"], "maxLength": 253 },
+            "version": { "type": ["string", "null"], "maxLength": 128 },
+            "broadcast_id": { "type": ["string", "null"], "pattern": "^bc_[0-9]+$" }
+          }
+        },
+        "measurements": {
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "additionalProperties": { "type": "number" }
         }
       }
     },
