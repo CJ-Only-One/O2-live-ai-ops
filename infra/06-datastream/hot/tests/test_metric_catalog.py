@@ -132,3 +132,37 @@ def test_chat_fanout_has_no_semantically_incorrect_warm_fallback():
     assert got["status"] == "NO_DATA"
     assert got["fallback_used"] is False
     assert not any("o2.warm" in item for item in calls)
+
+
+def test_chat_propagation_uses_dedicated_datadog_metric_without_warm_fallback():
+    calls = []
+
+    def query(query_text, _from, _to):
+        calls.append(query_text)
+        return result(None)
+
+    got = read_metric(
+        {"metric": "chat_propagation_p95_ms", "service": "chat-gateway"},
+        query_fn=query,
+        now=1787558408,
+    )
+    assert got["status"] == "NO_DATA"
+    assert got["fallback_used"] is False
+    assert any("p95:o2.chat.propagation" in item for item in calls)
+    assert not any("o2.warm" in item for item in calls)
+
+
+def test_block_rate_uses_datadog_normalized_failure_code_tag():
+    calls = []
+
+    def query(query_text, _from, _to):
+        calls.append(query_text)
+        return result(None)
+
+    read_metric(
+        {"metric": "block_rate", "service": "chat-gateway"},
+        query_fn=query,
+        now=1787558408,
+    )
+    assert any("failure_code:channel_limited" in item for item in calls)
+    assert not any("failure_code:CHANNEL_LIMITED" in item for item in calls)

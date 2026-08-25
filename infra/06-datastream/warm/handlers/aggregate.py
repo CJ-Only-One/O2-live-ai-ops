@@ -193,7 +193,12 @@ def advance_baseline(service: str, current_window: int, now: float) -> dict | No
     if not target:
         return base
 
-    updated = baseline_mod.update(base, closed, float(target.get("rps") or 0.0))
+    updated = baseline_mod.update(base, closed, {
+        "rps": target.get("rps"),
+        "p95_ms": target.get("latency_p95"),
+        "inventory_check_rate": target.get("inventory_check_rate"),
+        "overall_failure_rate": target.get("overall_failure_rate"),
+    })
     if updated is None:
         return base
     try:

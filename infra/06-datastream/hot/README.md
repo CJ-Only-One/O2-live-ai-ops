@@ -7,10 +7,15 @@ Agent(Dify)가 `@webhook-dify` 알림을 받은 뒤 Datadog 에 보관된 인프
 
 Dify에는 raw Datadog query 대신 `/v1/hot/datadog/metric`만 노출한다. 요청은
 `rps`, `latency_p95`, `failure_rate`, `cache_hit_rate`, `chat_fanout_p95`,
-`block_rate`, `items_per_sec` 같은 논리 이름을 쓰며,
+`chat_propagation_p95_ms`, `block_rate`, `items_per_sec` 같은 논리 이름을 쓰며,
 단일 catalog가 APM/DogStatsD primary와 기존 `o2.warm.*` fallback을 선택한다.
 빈 series는 정상값 `0`이 아니라 `NO_DATA`다. 기존 `/datadog/query`는 운영
 디버깅과 하위 호환을 위해 백엔드에만 남기고 Dify OpenAPI에서는 제거한다.
+
+`chat_fanout_p95`는 인입 파드가 Valkey에 publish하는 시간이고,
+`chat_propagation_p95_ms`는 메시지의 `ts`부터 각 WebSocket 연결의
+`send()` 직전까지다. 이름만 다른 같은 지표가 아니며 S1 복구 판정은 후자를
+쓴다. 실제 브라우저 수신 시점까지 포함하는 값은 k6/synthetic probe 영역이다.
 
 ```
 hot/

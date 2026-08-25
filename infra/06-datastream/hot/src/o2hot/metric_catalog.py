@@ -89,9 +89,24 @@ METRIC_CATALOG = {
         "minimum_samples": 1,
         "maximum_freshness_seconds": 120,
     },
+    "chat_propagation_p95_ms": {
+        "source": "dogstatsd",
+        "primary": "p95:o2.chat.propagation{$scope}$group",
+        "sample": "sum:o2.app.fanout.items{$scope,result:delivered}.as_count()",
+        "fallback": None,
+        "unit": "ms",
+        "primary_scale": 1,
+        "fallback_scale": 1,
+        "value_type": "gauge",
+        "default_window_seconds": 300,
+        "minimum_samples": 1,
+        "maximum_freshness_seconds": 120,
+    },
     "block_rate": {
         "source": "dogstatsd",
-        "primary": "sum:o2.app.failure{$scope,event:chat.send,failure_code:CHANNEL_LIMITED}.as_count() / sum:o2.app.business_event{$scope,event:chat.send}.as_count()",
+        # Datadog tag index는 값도 소문자로 정규화한다. 송신 패킷의
+        # CHANNEL_LIMITED를 그대로 쿼리하면 metric은 있는데 영구 No Data다.
+        "primary": "sum:o2.app.failure{$scope,event:chat.send,failure_code:channel_limited}.as_count() / sum:o2.app.business_event{$scope,event:chat.send}.as_count()",
         "sample": "sum:o2.app.business_event{$scope,event:chat.send}.as_count()",
         "fallback": None,
         "unit": "ratio",
