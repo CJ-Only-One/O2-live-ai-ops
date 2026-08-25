@@ -1334,10 +1334,10 @@ workflow:
         loop_id: main_loop
         sourceType: http-request
         targetType: code
-      id: hot_mem_post-source-verification_shape-o2hot4
+      id: hot_mem_post-source-verification_inputs_merge-o2hot4
       source: hot_mem_post
       sourceHandle: source
-      target: verification_shape
+      target: verification_inputs_merge
       targetHandle: target
       type: custom
       zIndex: 1001
@@ -1360,8 +1360,21 @@ workflow:
         loop_id: main_loop
         sourceType: http-request
         targetType: http-request
-      id: hot_block_post-source-read_path_status_post-o2hot6
+      id: hot_block_post-source-hot_items_post-o2hot6
       source: hot_block_post
+      sourceHandle: source
+      target: hot_items_post
+      targetHandle: target
+      type: custom
+      zIndex: 1001
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        sourceType: http-request
+        targetType: http-request
+      id: hot_items_post-source-read_path_status_post-o2hot6b
+      source: hot_items_post
       sourceHandle: source
       target: read_path_status_post
       targetHandle: target
@@ -1377,6 +1390,19 @@ workflow:
       source: read_path_status_post
       sourceHandle: source
       target: verification_inputs_merge
+      targetHandle: target
+      type: custom
+      zIndex: 1001
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        sourceType: code
+        targetType: code
+      id: verification_inputs_merge-source-verification_shape-o2hot8
+      source: verification_inputs_merge
+      sourceHandle: source
+      target: verification_shape
       targetHandle: target
       type: custom
       zIndex: 1001
@@ -1525,7 +1551,7 @@ workflow:
       width: 242
       zIndex: 0
     - data:
-        code: "import json\nfrom datetime import datetime, timezone\n\ndef _tag_value(tags_str, key):\n    prefix = key + ':'\n    for t in (tags_str or '').split(','):\n        t = t.strip()\n        if t.startswith(prefix):\n            return t[len(prefix):]\n    return None\n\ndef main(custom_alert_json: str, alert_title: str, alert_body: str, alert_query: str, priority: str, host: str, tags: str, link: str) -> dict:\n    raw=(custom_alert_json or '').strip()\n    if (alert_title or '').strip():\n        # 실제 Datadog 알림 연동 경로: alert-triage.yml과 동일한 계약(alert_title/body/query/priority/host/tags/link)\n        source='DATADOG_ALERT'\n        payload={'alert_id':'ALERT-DD-'+datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S'),'service':(host or 'api'),\n                 'alert_type':'datadog_monitor','title':alert_title,'body':(alert_body or ''),'trigger_query':(alert_query or ''),\n                 'priority':(priority or 'P2'),'broadcast_id':(_tag_value(tags,'broadcast_id') or 'LIVE-001'),'host':(host or ''),'tags':(tags or ''),'link':(link or '')}\n    elif raw:\n        parsed=None\n        parse_error=None\n        try:\n            parsed=json.loads(raw)\n        except Exception as e:\n            parse_error=str(e)\n        if isinstance(parsed, dict) and parsed.get('event_type')=='agent.incident.v1':\n            # Chat 진입점(agent.incident.v1 envelope) - Datadog 알림과 동일하게 진단+조치 경로를 그대로 탄다.\n            source='CHAT_INCIDENT'\n            nc=parsed.get('normalized_context') or {}\n            services=nc.get('services') or ['api']\n            broadcast_ids=nc.get('broadcast_ids') or ['LIVE-001']\n            signals=parsed.get('signals') or []\n            evidence=(signals[0].get('evidence') if signals else {}) or {}\n            payload={'alert_id':parsed.get('incident_id','CHAT-DEMO'),'service':services[0],\n                     'alert_type':'chat_incident_candidate','title':'Chat-detected '+str(nc.get('symptom_family','UNKNOWN'))+' on '+','.join(nc.get('suspected_surfaces') or []),\n                     'body':json.dumps(evidence,ensure_ascii=False),'trigger_query':'','priority':'P2',\n                     'broadcast_id':broadcast_ids[0],'host':'','tags':'','link':'','chat_envelope':parsed}\n        elif parsed is not None:\n            source='CUSTOM_JSON'\n            payload=parsed\n        else:\n            source='CUSTOM_JSON_ERROR'\n            payload={'alert_id':'ALERT-PARSE-ERROR','service':'unknown','title':'Invalid custom payload','parse_error':parse_error}\n    else:\n        source='NO_ALERT_DATA'\n        payload={'alert_id':'ALERT-NONE','service':'api','title':'No alert data provided'}\n    if source=='CHAT_INCIDENT':\n        incident_id='INC-'+str(payload.get('alert_id','CHAT-DEMO')).replace('inc_','')\n    else:\n        incident_id='INC-'+payload.get('alert_id','DEMO').replace('ALERT-','')\n    service=payload.get('service') or 'api'\n    broadcast_id=payload.get('broadcast_id') or 'LIVE-001'\n    ctx={'incident_id':incident_id,'source':source,'received_at':datetime.now(timezone.utc).isoformat(),\n         'service':service,'broadcast_id':broadcast_id,'alert':payload}\n    return {'incident_id':incident_id,'incident_context_json':json.dumps(ctx,ensure_ascii=False,separators=(',',':')),'service':service,'broadcast_id':broadcast_id}\n"
+        code: "import json\nfrom datetime import datetime, timezone\n\ndef _tag_value(tags_str, key):\n    prefix = key + ':'\n    for t in (tags_str or '').split(','):\n        t = t.strip()\n        if t.startswith(prefix):\n            return t[len(prefix):]\n    return None\n\ndef _required_broadcast(value, source):\n    if not isinstance(value, str) or not value.strip():\n        raise ValueError(source + ': broadcast_id is required')\n    return value.strip()\n\ndef main(custom_alert_json: str, alert_title: str, alert_body: str, alert_query: str, priority: str, host: str, tags: str, link: str) -> dict:\n    raw=(custom_alert_json or '').strip()\n    if (alert_title or '').strip():\n        # 실제 Datadog 알림 연동 경로: alert-triage.yml과 동일한 계약(alert_title/body/query/priority/host/tags/link)\n        source='DATADOG_ALERT'\n        payload={'alert_id':'ALERT-DD-'+datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S'),'service':(host or 'api'),\n                 'alert_type':'datadog_monitor','title':alert_title,'body':(alert_body or ''),'trigger_query':(alert_query or ''),\n                 'priority':(priority or 'P2'),'broadcast_id':_required_broadcast(_tag_value(tags,'broadcast_id'),'DATADOG_ALERT'),'host':(host or ''),'tags':(tags or ''),'link':(link or '')}\n    elif raw:\n        parsed=None\n        parse_error=None\n        try:\n            parsed=json.loads(raw)\n        except Exception as e:\n            parse_error=str(e)\n        if isinstance(parsed, dict) and parsed.get('event_type')=='agent.incident.v1':\n            # Chat 진입점(agent.incident.v1 envelope) - Datadog 알림과 동일하게 진단+조치 경로를 그대로 탄다.\n            source='CHAT_INCIDENT'\n            nc=parsed.get('normalized_context') or {}\n            services=nc.get('services') or ['api']\n            broadcast_ids=nc.get('broadcast_ids') or []\n            if not broadcast_ids:\n                raise ValueError('CHAT_INCIDENT: broadcast_id is required')\n            signals=parsed.get('signals') or []\n            evidence=(signals[0].get('evidence') if signals else {}) or {}\n            payload={'alert_id':parsed.get('incident_id','CHAT-DEMO'),'service':services[0],\n                     'alert_type':'chat_incident_candidate','title':'Chat-detected '+str(nc.get('symptom_family','UNKNOWN'))+' on '+','.join(nc.get('suspected_surfaces') or []),\n                     'body':json.dumps(evidence,ensure_ascii=False),'trigger_query':'','priority':'P2',\n                     'broadcast_id':_required_broadcast(broadcast_ids[0],'CHAT_INCIDENT'),'host':'','tags':'','link':'','chat_envelope':parsed}\n        elif parsed is not None:\n            source='CUSTOM_JSON'\n            payload=parsed\n        else:\n            source='CUSTOM_JSON_ERROR'\n            payload={'alert_id':'ALERT-PARSE-ERROR','service':'unknown','title':'Invalid custom payload','parse_error':parse_error}\n    else:\n        source='NO_ALERT_DATA'\n        payload={'alert_id':'ALERT-NONE','service':'api','title':'No alert data provided'}\n    if source=='CHAT_INCIDENT':\n        incident_id='INC-'+str(payload.get('alert_id','CHAT-DEMO')).replace('inc_','')\n    else:\n        incident_id='INC-'+payload.get('alert_id','DEMO').replace('ALERT-','')\n    service=payload.get('service') or 'api'\n    broadcast_id=_required_broadcast(payload.get('broadcast_id'),'NORMALIZE')\n    ctx={'incident_id':incident_id,'source':source,'received_at':datetime.now(timezone.utc).isoformat(),\n         'service':service,'broadcast_id':broadcast_id,'alert':payload}\n    return {'incident_id':incident_id,'incident_context_json':json.dumps(ctx,ensure_ascii=False,separators=(',',':')),'service':service,'broadcast_id':broadcast_id}\n"
         code_language: python3
         desc: alert_title이 있으면(실제 Datadog 알림 연동 경로) DATADOG_ALERT. custom_alert_json이 agent.incident.v1 envelope(event_type로 판별)이면 CHAT_INCIDENT — Datadog과 동일하게 진단+조치 경로를 그대로 탄다. 그 외 custom_alert_json은 수동 테스트용 CUSTOM_JSON fallback.
         outputs:
@@ -1780,6 +1806,51 @@ workflow:
       positionAbsolute:
         x: 1750
         y: 250
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 1001
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"metric\": \"items_per_sec\",\n  \"service\": \"chat-gateway\",\n  \"window_seconds\": 300\n}"
+          type: json
+        desc: S1 복구 판정에 필요한 전체 fanout 처리량을 Hot metric catalog에서 조회한다. 방송별 propagation/block rate와 달리 총량 기준으로 유지한다.
+        headers: 'Content-Type: application/json
+
+          X-O2-Proxy-Key: {{#env.O2_HOT_PROXY_KEY#}}'
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 500
+        selected: false
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 20
+          max_write_timeout: 10
+        title: 22-H2. Hot Path — Fanout Items/s
+        type: http-request
+        url: '{{#env.HOT_PROXY_URL#}}/v1/hot/datadog/metric'
+        variables: []
+      height: 142
+      id: hot_items_post
+      parentId: main_loop
+      position:
+        x: 12100
+        y: 250
+      positionAbsolute:
+        x: 13400
+        y: 410
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3361,7 +3432,7 @@ workflow:
       width: 260
       zIndex: 1001
     - data:
-        code: "import json\n\ndef _logical_value(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    return d.get('value') if d.get('status') == 'OK' else None\n\ndef _degraded_active(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    v=d.get('read_path_degraded_active')\n    return v if isinstance(v,bool) else None\n\ndef main(warm_body: str, propagation_body: str, block_body: str, degraded_body: str) -> dict:\n    try: warm=json.loads(warm_body or '{}')\n    except Exception: warm={}\n    latest=warm.get('latest')\n    if not isinstance(latest,dict):\n        latest={}\n        warm['latest']=latest\n    latest['chat_propagation_p95_ms']=_logical_value(propagation_body)\n    latest['channel_block_rate']=_logical_value(block_body)\n    latest['read_path_degraded_active']=_degraded_active(degraded_body)\n    return {'merged_post_metrics_body':json.dumps(warm,ensure_ascii=False,separators=(',',':'))}\n"
+        code: "import json\n\ndef _logical_value(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    return d.get('value') if d.get('status') == 'OK' else None\n\ndef _degraded_active(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    v=d.get('read_path_degraded_active')\n    return v if isinstance(v,bool) else None\n\ndef main(warm_body: str, propagation_body: str, block_body: str, items_body: str, degraded_body: str) -> dict:\n    try: warm=json.loads(warm_body or '{}')\n    except Exception: warm={}\n    latest=warm.get('latest')\n    if not isinstance(latest,dict):\n        latest={}\n        warm['latest']=latest\n    latest['chat_propagation_p95_ms']=_logical_value(propagation_body)\n    latest['channel_block_rate']=_logical_value(block_body)\n    latest['items_per_sec']=_logical_value(items_body)\n    latest['read_path_degraded_active']=_degraded_active(degraded_body)\n    return {'merged_post_metrics_body':json.dumps(warm,ensure_ascii=False,separators=(',',':'))}\n"
         code_language: python3
         desc: Warm 현재 지표에 Datadog 전파 p95·채널 차단률과 Valkey 원본 degraded 상태를 결합한다. 결측은 0이 아니라 None으로 유지한다.
         isInIteration: false
@@ -3387,6 +3458,10 @@ workflow:
           - hot_block_post
           - body
           variable: block_body
+        - value_selector:
+          - hot_items_post
+          - body
+          variable: items_body
         - value_selector:
           - read_path_status_post
           - body
@@ -3422,8 +3497,8 @@ workflow:
         type: code
         variables:
         - value_selector:
-          - warm_post_metrics
-          - body
+          - verification_inputs_merge
+          - merged_post_metrics_body
           variable: post_metrics_body
         - value_selector:
           - warm_compare

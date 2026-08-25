@@ -101,6 +101,7 @@
 | D-084 | Dify가 아니라 Agent Worker가 승인된 복구 지표를 수집한다 | incident family catalog, Dify-only enrichment, 결측 보존, Lambda 직접 호출 |
 | D-085 | AZ 이중화는 하고 리전 DR 은 하지 않는다 | 방송 길이가 RTO 상한, mediamtx·Dify 단일점 유지 근거 |
 | D-086 | 방송 축은 Chat 전용이 아니다 — Datadog evidence 의 broadcast_id 도 채택한다 | TAG_KEYS, tag configuration 허용목록, multi-alert, LIVE-001 fallback, 팬아웃은 합계 |
+| D-087 | S1 E2E의 Datadog→Dify 호출은 명시적 opt-in으로 기존 webhook을 사용한다 | 운영 기본값 false, `enable_s1_dify_webhook=true`일 때만 `@webhook-o2-dify`, Incident Correlator 승격은 별도 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4761,3 +4762,19 @@ Datadog webhook payload 템플릿은 이 저장소에 없다(콘솔 설정). Ada
 `assessment_input.scope.broadcast_id` 를 실어 보내도록 콘솔에서 고쳐야 한다.
 multi-alert 의 그룹 태그는 `$ALERT_SCOPE` 로 꺼낸다. 이걸 빼먹으면 Adapter 가
 `ASSESSMENT_S1_SCOPE` 로 거부하고, 증상은 "S1 만 Incident 가 안 생긴다" 하나다.
+
+---
+
+## D-087. S1 E2E Datadog→Dify 호출은 명시적 opt-in으로 기존 webhook을 사용한다
+
+S1 E2E 시연에서는 Datadog monitor가 Agent를 깨워야 하지만, 새 Incident Correlator 경로를
+운영 monitor에 바로 연결하면 `primary`·`corroborating` 증거와 monitor map까지 동시에
+완성해야 한다. 따라서 기존 `@webhook-o2-dify` 경로를 시연용 진입점으로 사용한다.
+
+Terraform 변수 `enable_s1_dify_webhook`의 기본값은 `false`다. E2E 실행 환경에서만
+`true`로 켜며, 이 값이 켜진 경우에만 S1 두 monitor의 message에 webhook mention이
+추가된다. Incident Correlator 승격과 복합 evidence 시연은 별도 단계로 남긴다.
+
+`broadcast_id`가 webhook tag에 없으면 Dify normalize가 fallback하지 않고 실패해야 한다.
+S1 조치 대상은 방송 단위이므로, 대상 누락을 성공으로 기록하는 것보다 E2E를 중단하는
+것이 안전하다.
