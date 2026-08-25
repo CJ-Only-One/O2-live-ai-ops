@@ -66,7 +66,16 @@ workflow:
           required: true
           type: paragraph
           variable: custom_alert_json
-      height: 120
+        - default: ''
+          hint: Similar incident summaries prepared by the Worker. Optional and untrusted.
+          label: past_cases
+          max_length: 6000
+          options: []
+          placeholder: ''
+          required: false
+          type: paragraph
+          variable: past_cases
+      height: 160
       id: agent-entry-start
       position:
         x: 80
@@ -146,9 +155,11 @@ workflow:
               except ValueError:
                   fail(code)
 
-          def main(custom_alert_json: str):
+          def main(custom_alert_json: str, past_cases: str = ""):
               if not isinstance(custom_alert_json, str) or not custom_alert_json:
                   fail("INPUT_NOT_STRING")
+              if not isinstance(past_cases, str) or len(past_cases) > 6000:
+                  fail("PAST_CASES_INVALID")
               try:
                   payload = json.loads(custom_alert_json)
               except (TypeError, json.JSONDecodeError):
@@ -214,6 +225,7 @@ workflow:
                       "idempotency_key": key,
                       "incident_id": incident_id,
                       "revision": revision,
+                      "history_context_present": bool(past_cases),
                       "status": "ACCEPTED"
                   }, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
               }
@@ -234,6 +246,10 @@ workflow:
           - agent-entry-start
           - custom_alert_json
           variable: custom_alert_json
+        - value_selector:
+          - agent-entry-start
+          - past_cases
+          variable: past_cases
       height: 120
       id: agent-entry-validate
       position:

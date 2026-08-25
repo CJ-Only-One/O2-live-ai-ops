@@ -113,7 +113,7 @@ Slack Final Notify (HTTP) → END
 
 | # | 노드 | 타입 | 역할 |
 |---|---|---|---|
-| 14 | Remediation Planner | LLM (Bedrock Claude Sonnet 5) | 액션 후보를 비교해 trade-off 를 따져 하나를 선택. 현재는 tool 호출 없이 프롬프트 정보만으로 판단(`tools: null`) — **Agent 노드로 전환해 `history_lookup` 을 tool 로 호출하도록 변경 예정** |
+| 14 | Remediation Planner | LLM (Bedrock Claude Sonnet 5) | 액션 후보를 비교해 trade-off 를 따져 하나를 선택. 현재는 tool 호출 없이 프롬프트 정보만으로 판단(`tools: null`). 유사 이력은 공통 Worker가 Dify 호출 전에 `past_cases`로 준비한다(D-075); Planner의 별도 tool 연결은 현재 범위가 아니다. |
 | 15 | Guardrail Judge | CODE (결정론적 정책) | 액션의 `risk_level` 기준으로 verdict 산출: **L1/L2 → `AUTO`, L3 → `APPROVAL`** |
 | 16 | Verdict Router | 분기 | `AUTO` → 바로 실행(19번). `APPROVAL` → Slack 승인 요청(17번) |
 | 17 | Slack Approval Request | HTTP | 승인 대기. 데모 기준 타임아웃 600초 |

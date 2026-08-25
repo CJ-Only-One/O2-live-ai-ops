@@ -89,6 +89,7 @@
 | D-072 | READ_PATH 상관관계에는 시나리오 4 page composite monitor 하나만 매핑한다 | role:page, role:sub, cache absorption, order path, duplicate signal |
 | D-073 | READ_PATH 초기 correlation window는 운영 5분 창과 Datadog tail 상한을 합친 420초다 | event time, full window, 420초, Shadow, false merge |
 | D-074 | 원복에 쓸 값은 응답이 아니라 조치 기록에 남긴다 | `record_restore`, 먼저 쓴 값이 이긴다, Argo replica 예외, 실행기 권한 경계 |
+| D-075 | 공통 Agent 진입점도 Dify 전에 이력을 조회한다 | `agent.incident.v1`, Bedrock, S3 Vectors, `past_cases`, fail-open, 원문 채팅 제외 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4455,3 +4456,49 @@ Git 에는 정상 기준값(2)이 남는다. 그래서 "되돌릴 값이 아예 
 `restore` 를 실제로 적용하는 것은 여기 없다. 이 op 는 **값을 잃지 않게만**
 한다. 되돌리는 실행은 기존 실행기를 replicas 값만 바꿔 다시 부르는 것이고,
 그것을 부르는 것은 워크플로의 몫이다.
+
+## D-075. 공통 Agent 진입점도 Dify 전에 이력을 조회한다
+
+D-044의 Datadog 전용 Worker는 Dify 호출 전에 Bedrock으로 알림을 임베딩하고
+S3 Vectors에서 유사 장애를 찾아 `past_cases`로 넘긴다. 채팅과 Datadog을
+`agent.incident.v1`로 합친 공통 Agent Entry Worker에는 이 단계가 없어서, 같은
+장애라도 신규 경로로 들어오면 과거 사례를 쓰지 못했다.
+
+### 정한 것
+
+공통 Worker도 동일한 순서를 사용한다.
+
+```text
+agent.incident.v1 검증·락
+  → 구조화된 Incident 문맥 임베딩
+  → O2 전용 S3 Vectors 유사검색
+  → past_cases + custom_alert_json 으로 Dify 호출
+  → ledger 성공 확정
+  → S3 원본 + S3 Vectors 저장
+```
+
+Dify가 S3 Vectors를 직접 조회하지 않는다. D-044와 같이 Worker가 준비한 텍스트만
+받는다. 별도 저장소도 만들지 않고 `history_o2.tf`의 O2 전용 버킷과 인덱스를
+재사용한다. 기존 Datadog 레코드는 `cycle_key`, 공통 경로는 `incident_id`를 벡터
+key로 쓰므로 서로 덮어쓰지 않는다.
+
+### 채팅 원문은 임베딩에도 넣지 않는다
+
+공통 Incident에는 원문 채팅이 없다. 임베딩에는 `normalized_context`, source 종류,
+Datadog 제목·쿼리, Chat의 규칙 ID와 집계 수치만 쓴다. `candidate_id`,
+`broadcast_id`, 사용자 식별자, `root_cause=UNDETERMINED`는 제외한다. Dify 판단문도
+검색 벡터에 넣지 않는다. 검증 전 추측이 다음 장애의 검색 근거로 승격되는 것을
+막기 위해서다.
+
+### 실패 경계
+
+이력 조회 실패는 `past_cases=""`로 축소하고 Dify 분석을 계속한다. Dify 성공 뒤
+이력 저장이 실패해도 ledger를 실패로 되돌리거나 Dify를 재호출하지 않는다.
+`past_cases`는 Dify Start의 optional paragraph로 명시하고, Code 노드가 실제 수신
+여부를 응답에 넣는다. 모르는 입력을 조용히 무시하는 Dify 동작에는 기대지 않는다.
+
+### 안 한 것
+
+이 변경은 유사 이력 조회와 저장만 연결한다. 검색된 이력을 자동으로 사실 또는
+원인으로 확정하지 않고, 자동 조치 권한도 추가하지 않는다. 거리 임계값 0.35와
+top-k 3은 기존 경로의 보수적 초기값을 그대로 사용하며 운영 사례로 재보정한다.

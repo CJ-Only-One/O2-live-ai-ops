@@ -137,6 +137,31 @@ data "aws_iam_policy_document" "agent_entry_worker" {
     actions   = ["dynamodb:GetItem"]
     resources = [aws_dynamodb_table.incident_state.arn]
   }
+
+  statement {
+    sid       = "EmbedAgentIncidentHistory"
+    effect    = "Allow"
+    actions   = ["bedrock:InvokeModel"]
+    resources = ["arn:aws:bedrock:${var.region}::foundation-model/${local.embed_model_id}"]
+  }
+
+  statement {
+    sid    = "SearchAndStoreAgentIncidentHistory"
+    effect = "Allow"
+    actions = [
+      "s3vectors:QueryVectors",
+      "s3vectors:GetVectors",
+      "s3vectors:PutVectors",
+    ]
+    resources = [aws_s3vectors_index.incidents_o2.index_arn]
+  }
+
+  statement {
+    sid       = "WriteAgentIncidentHistory"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.history_o2.arn}/incidents/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "agent_entry_worker" {
@@ -169,7 +194,8 @@ resource "aws_lambda_function" "agent_entry_worker" {
   runtime       = "python3.12"
   architectures = ["x86_64"]
 
-  timeout     = 60
+  # Dify blocking 45초 앞에 Bedrock embedding과 S3 Vectors 조회가 추가된다.
+  timeout     = 90
   memory_size = 128
 
   filename         = data.archive_file.agent_entry_worker.output_path
@@ -195,6 +221,13 @@ resource "aws_lambda_function" "agent_entry_worker" {
       IDEMPOTENCY_TTL      = tostring(var.agent_entry_idempotency_ttl_seconds)
       IDEMPOTENCY_LEASE    = "120"
       DIFY_TIMEOUT_SECONDS = "45"
+
+      # 기존 O2 Datadog 이력과 같은 저장소를 재사용한다. key는 incident_id라
+      # 기존 cycle_key 기반 레코드와 충돌하지 않는다.
+      HISTORY_BUCKET = aws_s3_bucket.history_o2.bucket
+      VECTOR_BUCKET  = aws_s3vectors_vector_bucket.history_o2.vector_bucket_name
+      VECTOR_INDEX   = aws_s3vectors_index.incidents_o2.index_name
+      EMBED_MODEL_ID = local.embed_model_id
     }
   }
 
