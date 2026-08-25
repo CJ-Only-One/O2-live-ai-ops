@@ -73,6 +73,8 @@ locals {
 ###############################################################################
 
 resource "datadog_monitor" "chat_ingest_surge" {
+  # webhook 을 뗐다(D-088). Monitor 는 그대로 두고 사람만 본다.
+  # S1 진입은 `scenario_alerts.tf` 의 `s1_chat_fanout_volume` 이다. 같은 채팅 폭주에 둘 다 울면 에이전트가 두 번 깨어난다.
   count = var.enable_chat_ingest_monitor ? 1 : 0
 
   name    = "[O2][시나리오 2] 채팅 인입 급증 — 캐스케이드 조기 경보"
@@ -90,8 +92,6 @@ resource "datadog_monitor" "chat_ingest_surge" {
     상류(채팅)가 원인일 가능성이 높습니다. 1차 조치 후보는 채팅 표시 상한
     하향입니다 — 주문 API 스케일아웃이나 Valkey 등급 상향은 원인이 아니므로
     효과가 없습니다(제안서 시나리오 2 "조치가 갈리는 지점").
-
-    @webhook-o2-dify
   EOT
 
   query = "avg(last_${var.chat_early_warning_window_minutes}m):anomalies(sum:o2.app.business_event{service:chat-gateway,env:${local.monitor_env},event:chat.send}.as_rate(), 'agile', 3, direction='above', interval=60, alert_window='last_${var.chat_early_warning_window_minutes}m', seasonality='hourly') >= 1"
@@ -251,6 +251,8 @@ variable "enable_cache_absorption_monitor" {
 }
 
 resource "datadog_monitor" "cache_absorption_failure" {
+  # webhook 을 뗐다(D-088). Monitor 는 그대로 두고 사람만 본다.
+  # 확정 S1·S2·S3 셋 밖(옛 시나리오 4)이다. 길 B webhook 도 뗀다 — 09-incident 의 datadog_source_adapter_allowed_monitor_ids 에 이 monitor 가 없어 Adapter 가 거부하고, 그 거부가 Adapter 실패 알람으로 되돌아온다.
   count = var.enable_cache_absorption_monitor ? 1 : 0
 
   name    = "[O2][시나리오 4] 캐시 흡수 실패"
@@ -273,9 +275,6 @@ resource "datadog_monitor" "cache_absorption_failure" {
     (a)면 즉시 회복(무효화보다 TTL이 오래 버팀), (b)면 거의 안 변합니다
     (없는 것은 TTL을 늘려도 없음). 어느 쪽이어도 최대 손해는 가격 반영이
     2초 늦는 것뿐입니다.
-
-    @webhook-o2-dify
-    @webhook-o2-incident-entry
   EOT
 
   notify_no_data      = false
@@ -333,6 +332,8 @@ variable "pod_cache_outlier_tolerance" {
 }
 
 resource "datadog_monitor" "cache_hit_rate_pod_outlier" {
+  # webhook 을 뗐다(D-088). Monitor 는 그대로 두고 사람만 본다.
+  # 확정 셋 밖(옛 시나리오 1)이다.
   count = var.enable_pod_cache_outlier_monitor ? 1 : 0
 
   name    = "[O2][시나리오 1] 파드 단위 캐시 히트율 이상치"
@@ -352,8 +353,6 @@ resource "datadog_monitor" "cache_hit_rate_pod_outlier" {
 
     **조치**: 해당 파드 재시작 또는 전체 로컬 캐시 플러시. 근본 대응은
     재연결 시 전체 플러시(설계에 있음)와 TTL 안전망입니다.
-
-    @webhook-o2-dify
   EOT
 
   query = "avg(last_10m):outliers(sum:o2.app.cache_access{service:${var.default_service},env:${local.monitor_env},result:hit} by {pod_name}.as_count() / sum:o2.app.cache_access{service:${var.default_service},env:${local.monitor_env}} by {pod_name}.as_count(), 'DBSCAN', ${var.pod_cache_outlier_tolerance}) > 0"
@@ -486,6 +485,8 @@ resource "datadog_monitor" "latency_p95_pod_outlier" {
 ###############################################################################
 
 resource "datadog_monitor" "order_confirm_backlog_age" {
+  # webhook 을 뗐다(D-088). Monitor 는 그대로 두고 사람만 본다.
+  # 확정 셋 밖(옛 시나리오 6)이다. 부하 실험 중 큐가 밀리면 시나리오와 무관하게 울린다.
   count = var.enable_queue_backlog_monitor ? 1 : 0
 
   name    = "[O2][시나리오 6] 주문 확정 큐 적체"
@@ -510,8 +511,6 @@ resource "datadog_monitor" "order_confirm_backlog_age" {
     남을 수 있습니다. 그 건들을 전부 확정할지, 일부만 확정할지는 기술
     판단이 아니라 비즈니스 판단이므로 에이전트가 자동으로 결정하지 않고
     승인을 요청합니다.
-
-    @webhook-o2-dify
   EOT
 
   query = "min(last_5m):avg:aws.sqs.approximate_age_of_oldest_message{queuename:${var.order_confirm_queue_name}} >= ${var.queue_backlog_age_critical_seconds}"
@@ -621,6 +620,8 @@ resource "datadog_monitor" "order_confirm_inactive" {
 }
 
 resource "datadog_monitor" "order_confirm_stall" {
+  # webhook 을 뗐다(D-088). Monitor 는 그대로 두고 사람만 본다.
+  # 확정 셋 밖(옛 시나리오 6)이다.
   count = var.enable_order_confirm_stall_monitor ? 1 : 0
 
   name    = "[O2][시나리오 6] 주문 확정 정지"
@@ -634,8 +635,6 @@ resource "datadog_monitor" "order_confirm_stall" {
     있습니다 — 그 Monitor가 먼저 울렸는지 같이 확인하세요. 두 Monitor가
     함께 울리면 확정 처리가 완전히 정지된 것이 비즈니스 이벤트 쪽에서도
     교차 확인된 것입니다.
-
-    @webhook-o2-dify
   EOT
 
   notify_no_data      = false

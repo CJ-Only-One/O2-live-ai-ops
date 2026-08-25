@@ -102,6 +102,7 @@
 | D-085 | AZ 이중화는 하고 리전 DR 은 하지 않는다 | 방송 길이가 RTO 상한, mediamtx·Dify 단일점 유지 근거 |
 | D-086 | 방송 축은 Chat 전용이 아니다 — Datadog evidence 의 broadcast_id 도 채택한다 | TAG_KEYS, tag configuration 허용목록, multi-alert, LIVE-001 fallback, 팬아웃은 합계 |
 | D-087 | S1 E2E의 Datadog→Dify 호출은 명시적 opt-in으로 기존 webhook을 사용한다 | 운영 기본값 false, `enable_s1_dify_webhook=true`일 때만 `@webhook-o2-dify`, Incident Correlator 승격은 별도 |
+| D-088 | 에이전트를 깨우는 것은 시나리오 진입 Monitor 뿐이다 | webhook 22개→6개, DLQ·파이프라인은 사람만, 파이프라인 결측은 에이전트를 믿지 않아야 하는 신호 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4778,3 +4779,51 @@ Terraform 변수 `enable_s1_dify_webhook`의 기본값은 `false`다. E2E 실행
 `broadcast_id`가 webhook tag에 없으면 Dify normalize가 fallback하지 않고 실패해야 한다.
 S1 조치 대상은 방송 단위이므로, 대상 누락을 성공으로 기록하는 것보다 E2E를 중단하는
 것이 안전하다.
+
+---
+
+## D-088. 에이전트를 깨우는 것은 시나리오 진입 Monitor 뿐이다
+
+Datadog Monitor 22개 중 **22개가 에이전트를 깨우고 있었다**(2026-08-25 API 조회).
+DLQ 7, Firehose 2, Kubernetes rollout 1, warm 파이프라인 3, 옛 시나리오 셋 5가 전부
+`@webhook-o2-dify` 를 달고 있었다. `docs/scenario-readiness.md` 5절이 6개일 때 이미
+경고했는데 그 사이 늘었다 — **줄어드는 방향으로 관리된 적이 없다.**
+
+부하 실험 중에는 큐가 밀리고 rollout 이 흔들리므로 이것들이 같이 운다. 그때마다
+에이전트가 시나리오와 무관한 판단을 시작하고, `alert_relay_max_concurrency = 5`
+(두 파이프라인 합산 상한, M-003)를 잡아먹는다.
+
+### 규칙
+
+**시나리오당 진입 Monitor 하나만 webhook 을 단다.** 나머지는 Monitor 로 남기되
+사람만 본다 — 지우지 않는다(D-056 과 같은 이유).
+
+| 축 | 왜 에이전트를 안 부르나 |
+|---|---|
+| DLQ · Firehose · rollout | 런북에 대응 액션이 없다. 있어도 자동 조치가 위험한 축이다 |
+| warm 파이프라인 (`monitor_pipeline.tf`) | **에이전트의 판단 근거가 끊긴 상황이다.** 집계가 밀리면 snapshot 이 낡은 값을 주고, 그 상태로 깨우면 낡은 데이터로 조치를 판단한다. 파이프라인 결측은 에이전트를 부르는 신호가 아니라 **에이전트를 믿지 않아야 하는 신호**다 |
+| 옛 시나리오 셋(1·2·4·6) | 확정 S1·S2·S3 밖이다. `chat_ingest_surge` 는 S1 진입(`s1_chat_fanout_volume`)과 같은 채팅 폭주에 겹쳐 울어 이중 호출이 된다 |
+
+### 진짜 중복은 하나였다
+
+`cache_absorption_failure` 만 `@webhook-o2-dify` 와 `@webhook-o2-incident-entry` 를
+둘 다 달고 있었다. 그런데 `09-incident` 의
+`datadog_source_adapter_allowed_monitor_ids` 에 이 monitor 가 없어 Adapter 가 거부하고,
+**그 거부가 Adapter 실패 알람으로 되돌아온다.** 둘 다 뗐다.
+
+나머지는 이미 경로가 갈려 있었다 — S2(`order_latency_p95`, `s2_api_tail_latency`)는
+Incident Correlator 경로, S1·S3 는 기존 webhook 경로다. 정리 후 라우팅:
+
+| Monitor | 기존 webhook | Incident 경로 |
+|---|:---:|:---:|
+| `s1_chat_fanout_volume` | O | - |
+| `s3_pg_latency_p95` | O | - |
+| `chat_propagation_p95` · `chat_block_rate` | O (D-087 게이트) | - |
+| `order_latency_p95` · `s2_api_tail_latency` | - | O |
+
+### 이 결정이 안 정하는 것
+
+두 진입 경로를 하나로 합칠지는 여기서 정하지 않는다. 지금은 **중복이 없다**는 것까지가
+이 결정의 범위다. S2 만 Incident 경로인 이유는 그쪽이 Monitor 둘(PRIMARY +
+CORROBORATING)을 한 Incident 로 묶어 **한 번만** 호출하기 때문이고, 이는
+`test_distinct_datadog_roles_can_verify_one_incident` 가 검증한다.
