@@ -99,6 +99,7 @@
 | D-082 | 운영 READ_PATH Incident handoff는 composite evidence와 세 승인 window를 사용한다 | COMPOSITE_CONDITION, recovery 300초, cooldown 300초, reopen 1800초 |
 | D-083 | 기존 모니터를 유지하고 S1 채팅 과부하 지표를 별도 Monitor로 추가한다 | `o2.chat.propagation`, `o2.warm.channel_limited_rate`, broadcast scope 선행 조건 |
 | D-084 | Dify가 아니라 Agent Worker가 승인된 복구 지표를 수집한다 | incident family catalog, Dify-only enrichment, 결측 보존, Lambda 직접 호출 |
+| D-085 | AZ 이중화는 하고 리전 DR 은 하지 않는다 | 방송 길이가 RTO 상한, mediamtx·Dify 단일점 유지 근거 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4631,3 +4632,58 @@ Invocation Queue의 원본 snapshot과 revision은 바꾸지 않는다. 수집�
 복사본의 기존 `assessment_input.measurements` 확장점에만 숫자로 추가한다. 조회 실패나
 `NO_DATA`는 0으로 바꾸지 않고 해당 key를 생략하며 sanitized source 이름만 로그에 남긴다.
 따라서 Dify는 판단만 담당하고, 메트릭 추가·인증·수집 정책은 백엔드 코드와 IAM에서 관리한다.
+
+---
+
+## D-085. AZ 이중화는 하고 리전 DR 은 하지 않는다
+
+가용성 작업의 범위를 **가용영역 단위**로 끊는다. 다른 리전에 대기 인프라를
+두지 않고, 리전 장애는 다음 방송을 지키는 백업 수준으로만 대비한다.
+
+기준은 비용이 아니라 **시간**이다. 라이브 커머스는 방송이 90 분이고 특가
+구간은 그중 몇 분이다. 끊기면 나중에 복구해도 그 매출은 돌아오지 않으므로
+**방송 길이가 RTO 상한**이 된다. 리전 장애에서 다른 리전을 올리는 데는 아무리
+빨라도 수십 분이 걸려 그 방송은 이미 실패한 것이고, 상시 대기 인프라를 띄워도
+얻는 것은 "다음 방송" 뿐이다. 그것은 크로스리전 백업으로 충분하다.
+
+반대로 AZ 단위는 시간이 맞는다. 실측에서 RDS 전환 15 초, 노드 이동 1 초였다
+(M-022). 방송 한 편 안에서 회복되는 값이라 실제로 그 방송을 살린다.
+
+넣은 것은 여섯이다 — 노드를 AZ 당 둘로, api·chat-gateway·frontend 를 AZ 로
+분리, RDS MultiAZ, Valkey 복제본, coredns·metrics-server 분리, KEDA 세 컴포넌트
+이중화, NAT 를 AZ 마다. 노드 증설이 나머지 전부의 전제였다 — AZ 하나를 잃었을 때
+옮겨갈 요청량(1030m·2128Mi)이 남은 노드 여유(230m·416Mi)를 넘어, 데이터 계층만
+살아남고 그것을 쓸 파드가 Pending 으로 남는 상태였다.
+
+**mediamtx 는 단일점으로 남긴다.** RTMP 는 송출자가 파드 하나에만 붙고 HLS
+세그먼트도 메모리에만 있어(`hlsDirectory` 비어 있음) 파드끼리 공유되지 않는다.
+replicas 를 둘로 늘리면 스트림이 들어오지 않은 쪽으로 간 시청자가 404 를 받는다.
+origin/edge 로 나누면 시청 측은 이중화되지만 origin 이 여전히 하나라 단일점이
+없어지는 것이 아니라 옮겨간다. 자체 호스팅 RTMP 수신의 이중화는 원래 어렵고,
+실무에서 IVS 같은 관리형을 쓰는 이유가 그것이다. 대신 노드 장애에서 파드가
+옮겨지기까지의 대기를 기본값 300 초에서 20 초로 낮춰 약 6 분을 약 85 초로 줄였다.
+목업 재생이라 이 단일점은 감수하며, 오히려 진단 대상이 하나 늘어난다.
+
+**Dify 도 이번 범위에서 뺀다.** 가장 위험한 문제인 이중 조치는 이미 막혀 있다 —
+Agent Entry Worker 가 DynamoDB 로 인시던트당 실행을 직렬화하므로(`single_incident_action_lock_required`)
+Dify 를 둘로 늘려도 조치가 두 번 나가지 않는다. 막는 것은 상태의 위치다. Dify 의
+Postgres·Redis·벡터DB 가 EC2 의 EBS 볼륨(2a, 60GB)에 있고 EBS 는 AZ 에 묶이므로,
+반대 AZ 에 인스턴스를 띄워도 같은 볼륨을 붙일 수 없다. 그냥 둘을 띄우면 워크플로
+DSL·실행 이력·API 키가 각자 갈린다. 제대로 하려면 RDS·ElastiCache 로 상태를
+외부화하는 것이 선행돼야 하고 그 과정에서 Lambda 의 호출 주소까지 바꿔야 한다.
+Dify 가 죽었을 때 멈추는 것은 AI 진단뿐이고 방송·주문·채팅은 계속 도는 반면,
+이 작업은 지금 동작하는 AI 파이프라인을 뜯는다. 잃을 것이 얻을 것보다 크다.
+
+**Durable Functions 도 같은 이유로 미룬다.** 현 구조의 약점은 분명하다 —
+`alert_worker_o2` 의 timeout 이 850 초로 Lambda 상한 900 초에 50 초를 남기고 붙어
+있고, Slack 승인 노드가 최대 600 초를 기다린다. 게다가 더 큰 것은 검증 대기다.
+조치마다 지표 창이 차기를 기다려야 하고(모니터가 `last_5m`·`last_10m`) S2 는
+조치·재분석·원복 최종 재검증으로 그것이 세 번 돈다. 한 인시던트를 끝까지 처리하는
+데 필요한 시간이 이미 Lambda 상한을 넘는다. 그러나 그 기다림은 Lambda 가 아니라
+**Dify 워크플로 안에** 있다(`o2-aiops-workflow.yml`, `response_mode: blocking`).
+Lambda 쪽만 Durable 로 바꾸면 껍데기만 바뀌고 대기는 그대로다. 효과를 보려면
+Dify 를 오케스트레이터 자리에서 내려야 하는데, 그것은 이중화가 아니라 역할 교체다.
+그리고 그 교체를 하면 위의 Dify 이중화 작업 상당수가 무효가 되므로 순서상으로도
+Durable 이 먼저다.
+
+관련 실측은 M-022, 롤링 중 배치가 무력해지는 함정은 T-037 이다.

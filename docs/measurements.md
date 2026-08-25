@@ -34,6 +34,7 @@
 | M-019 | 파드 Ready 시간 (사전 확장 리드타임) | `readinessProbe` 설정 변경 · 이미지 크기 변경 · 인스턴스 타입 변경 · 노드 여유 부족으로 Karpenter 개입 시 |
 | M-020 | 실제 Chat·Datadog → 동일 Incident → Dify Shadow E2E | Source Adapter·Correlator·Worker·Dify 계약·monitor 평가 주기 변경 |
 | M-021 | 실제 Chat → Dify → 유사 장애 이력 조회·저장 E2E | Agent Entry Worker·Dify `past_cases` 계약·Bedrock 모델·S3 Vectors 설정 변경 |
+| M-022 | AZ 장애 복구 시간 (RDS·Valkey failover, 노드 drain) | MultiAZ·복제본 구성 변경 · 커넥션 풀 설정 변경 · readiness 판정 대상 변경 |
 
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
@@ -1644,3 +1645,67 @@ S3 원본·Vector 저장까지 하나의 경로로 연결됐음을 확인했다.
 
 **다시 재야 할 때** — Agent Entry Worker의 검색·저장 코드, Dify `past_cases` 계약,
 Bedrock embedding 모델, S3 Vectors index 또는 거리·top-k 정책을 바꿀 때.
+
+---
+
+## M-022. AZ 장애 복구 시간 (RDS·Valkey failover, 노드 drain)
+
+AZ 이중화를 켠 뒤 **실제로 전환을 일으켜** 앱이 얼마나 끊기는지 쟀다.
+"설정했다" 와 "몇 초 만에 돌아온다" 는 다른 주장이라 후자를 확인해야 했다.
+
+**조건 (2026-08-25)** — 노드 `c6i.large` × 4 (AZ 당 2) / RDS `db.t4g.micro`
+MultiAZ / Valkey `cache.t4g.micro` 2노드 / api replicas 2, AZ 분리 /
+외부 부하 없음.
+
+측정은 `api` 파드 안에서 `http://api/api/readyz` 를 **초당 1회** 폴링했다.
+이 경로가 MySQL 과 Valkey 연결을 둘 다 확인하므로 의존성 단절이 그대로 드러난다.
+Service 를 거치므로 파드가 엔드포인트에서 빠지는 것까지 관측된다.
+
+| 대상 | 트리거 | 앱 중단 | 인프라 전환 |
+|---|---|---|---|
+| RDS | `reboot-db-instance --force-failover` | **15초** | 73초 (status available 까지) |
+| Valkey | `test-failover` | **37초** | 22초 (역할 교체 완료) |
+| 노드 | `kubectl drain` 1대 | **1초** | 42초 (drain 완료) |
+| mediamtx | 파드 삭제 | 2초 | — |
+
+**해석 1 — RDS 15초는 MultiAZ 를 켠 값어치 그 자체다.**
+
+MultiAZ 가 없으면 인스턴스 장애의 유일한 수단이 스냅샷 복원이고 그것은 최소
+30 분이다. 방송 길이가 RTO 상한인 라이브 커머스에서 30 분은 해당 방송을
+포기하는 것과 같다.
+
+중단 뒤에도 09:59:34 와 10:00:02 에 단발 실패가 있었다. `pool_pre_ping` 은
+이미 켜져 있으므로 죽은 커넥션 문제가 아니라, 파드마다 재연결 시점이 달라
+초 단위로 성공과 실패가 섞인 구간이다. 앱 설정으로 줄일 수 있는 값이 아니다.
+
+**해석 2 — Valkey 37초 중 15초는 앱이 자초한 것이다.**
+
+Valkey 는 10:04:54 에 역할 교체를 마쳤는데 앱은 10:05:10 까지 응답하지
+못했다. 에러 종류가 순서대로 바뀐 것이 경로를 보여준다.
+
+| 구간 | 에러 | 의미 |
+|---|---|---|
+| 10:04:33~38 | `HTTPError` | api 가 살아서 503(`valkey=False`)을 반환 |
+| 10:04:39~10:05:01 | `TimeoutError` | Valkey 연결 시도가 매달림 |
+| 10:05:04~09 | `URLError` | **파드 둘 다 NotReady → Service 엔드포인트 0개** |
+
+`readyz` 는 MySQL 과 Valkey 를 동등하게 보고 하나라도 실패하면 503 을 낸다.
+`failureThreshold` 기본 3 · `periodSeconds` 10 이라 30 초 뒤 파드가 엔드포인트에서
+빠졌다. `broadcast.py` 는 Valkey 실패 시 DB 로 우회하도록 구현돼 있는데
+그 경로를 쓸 기회가 사라진 것이다.
+
+**고치지 않기로 했다** — 시나리오 S1·S2·S3 경로가 아니고 데모를 막지도 않는다.
+고친다면 `readyz` 의 503 판정을 MySQL 만으로 좁히고 `order.py` 의 `_reserve`
+호출을 `ApiError("INTERNAL_ERROR")` 로 감싸면 된다. 그 경우 22 초가 된다.
+
+**해석 3 — 노드 drain 1초는 노드를 넷으로 늘린 값어치다.**
+
+`75-27` 에서 api·coredns·metrics-server 세 파드가 쫓겨났는데 실패가 1 건뿐이고,
+이동 뒤에도 api·chat-gateway·frontend·metrics-server 가 AZ 분리를 유지했다.
+노드가 둘이던 때라면 `DoNotSchedule` 이 자리를 찾지 못해 Pending 이 났을 값이다.
+
+**해석 4 — mediamtx 2초는 노드 장애 복구가 아니다.**
+
+파드를 지우고 새 파드가 Ready 될 때까지의 값이다. 이미지가 노드에 캐시돼
+있고 스케줄이 즉시 됐다. 노드가 급사하는 경우는 감지 40 초 + toleration 20 초가
+앞에 붙으므로 약 85 초가 되고, 그 값은 **재지 않았다** — 노드를 실제로 죽여야 나온다.

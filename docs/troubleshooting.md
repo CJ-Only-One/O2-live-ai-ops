@@ -52,6 +52,7 @@
 | T-034 | Correlator가 Shadow 메시지를 받자마자 모두 실패한다 | 환경변수 JSON 매핑 로딩, dict와 set의 차집합 |
 | T-035 | AWS CLI로 보낸 JSON이 Lambda에서 `SQS_BODY` 거부된다 | Windows PowerShell 네이티브 인자 quoting, `file://` |
 | T-036 | validate는 통과하지만 IAM policy plan이 duplicate Sid로 실패한다 | `aws_iam_policy_document`, merge 중복, provider 렌더링 |
+| T-037 | topologySpreadConstraints 를 걸었는데 파드가 안 갈린다 | merge key 중복, `matchLabelKeys`, 롤링 중 구 ReplicaSet 계산 |
 
 
 ---
@@ -1615,3 +1616,48 @@ AWS 정책 JSON을 렌더링하는 plan 단계에서 provider가 중복 Sid를 �
 
 **왜 늦게 찾았나** — 충돌 표식 없이 정상 병합됐고 두 블록의 action 순서만 달라 육안 diff에서
 별개 권한처럼 보였다. Terraform core의 validate와 provider의 정책 렌더링 검증 시점도 다르다.
+
+---
+
+## T-037. topologySpreadConstraints 를 걸었는데 파드가 안 갈린다
+
+**증상** — 매니페스트에 `DoNotSchedule` 로 AZ 분산을 걸었는데 복제본 두 개가
+같은 AZ 에 올라간다. 이벤트도 경고도 없고 Argo 는 `Synced` 로 보고한다.
+
+**원인 A — 같은 `topologyKey` 로 항목을 둘 적으면 하나로 합쳐진다.**
+이 배열의 merge key 가 `topologyKey` 다. `kubernetes.io/hostname` 으로 두 항목을
+적으면 서버가 병합하면서 뒤엣것의 `whenUnsatisfiable` 을 버리고 `labelSelector` 는
+합친다. 매니페스트에는 제약이 둘로 보이지만 클러스터에는 `ScheduleAnyway` 하나만
+남는다. 게다가 `last-applied-configuration` 애노테이션에 그 중복 리스트가 남아
+있으면 고친 매니페스트를 넣어도 3-way 병합 결과가 `maxSkew: 0` ·
+`whenUnsatisfiable: ""` 이 되어 검증에서 apply 자체가 거부된다 — 애노테이션이
+갱신되지 않으므로 다음 시도도 같은 자리에서 실패한다.
+
+**원인 B — 롤링 중에는 구 ReplicaSet 파드까지 센다.**
+제약은 파드가 스케줄되는 **순간에만** 판정한다. 구 파드가 양쪽 AZ 에 하나씩 남은
+상태에서는 새 파드를 어느 쪽에 놓아도 skew 가 1 이라 둘 다 통과한다. 그렇게 새
+파드 둘이 같은 AZ 로 간 뒤 구 파드가 빠지면 결과만 쏠린다. **각 단계는 제약을
+지켰으므로 아무 신호도 남지 않는다.**
+
+**조치**
+
+- A: 두 번째 항목의 `topologyKey` 를 다르게 한다. AZ 분산이라면
+  `topology.kubernetes.io/zone` 이 원래 의도에도 맞다. 이미 오염된 애노테이션
+  때문에 apply 가 막히면 해당 리소스에
+  `argocd.argoproj.io/sync-options: ServerSideApply=true` 를 붙인다 — SSA 는
+  필드 소유권으로 병합해 이 이력을 타지 않고, 리소스 단위라 Argo 설정을 건드리지
+  않는다.
+- B: `matchLabelKeys: ["pod-template-hash"]` 를 넣는다. 같은 ReplicaSet 파드끼리만
+  비교하므로 새 파드 둘이 서로를 보고 갈라진다. EKS 애드온(coredns·metrics-server)도
+  스키마의 `topologySpreadConstraints` 가 `type: array` 로 열려 있어 그대로 전달된다.
+- 고친 뒤 **롤링을 두 번 연속 돌려 확인한다.** 한 번만 보면 우연히 갈린 것과
+  구분되지 않는다.
+- 애노테이션을 추가할 때 `metadata` 아래에 `annotations:` 블록이 이미 있는지 본다.
+  두 벌이 되면 YAML 중복 키라 뒤엣것만 남아 새로 넣은 값이 통째로 사라진다.
+
+**왜 늦게 찾았나** — 세 겹으로 가려져 있다. 첫째, 병합된 결과가 patch 적용 후
+상태와 일치하므로 Argo 가 드리프트로 잡지 않는다. 둘째, 원인 B 는 매 단계가
+제약을 만족해 이벤트가 남지 않는다. 셋째, `rollout restart` 직후에는 우연히
+갈리는 경우가 많아 그때만 확인하면 통과한다 — 실제로는 다음 배포에서 깨졌다.
+서버 dry-run 결과가 맞게 나오는 것도 함정이다. 그 입력이 이미 애노테이션이
+빠진 상태였는데 제약 두 개는 맞게 렌더링되어 통과로 보였다.
