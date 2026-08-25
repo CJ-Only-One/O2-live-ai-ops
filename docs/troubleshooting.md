@@ -1759,24 +1759,25 @@ k6 값은 거기에 네트워크와 **k6 자신의 이벤트 루프 지연**을 
 만들었는데, Dify 진단이 받은 `latency_p95_by_pod`는 계속 빈 값이고 `latency_samples_by_pod`도
 표본이 1~3건뿐이었다. `GET /api/broadcasts/{id}`를 300~400건씩 반복 호출해도 안 바뀌었다.
 
-**원인 후보(확정 아님)** — 처음엔 Datadog APM 파드 태깅 문제로 의심했다.
-`o2warm/datadog.py`의 "`latency_p95_by_pod`는 APM span-based metric이 대체한다"는
-주석 때문이었는데, 이건 **datadog.py가 Datadog에 보내는 쪽 얘기지 Warm snapshot API가
-반환하는 값의 출처가 아니다.** 실제로 `latency_p95_by_pod`는 `o2warm/metrics.py`의
-`sk.latency_by_pod`(SQS로 들어온 business event 기반 히스토그램, `LATENCY_POD_MIN_SAMPLES=5`
-미만이면 필터링됨)에서 온다. `get_broadcast` 라우트(`apps/api/app/services/broadcast.py`)는
-요청마다 샘플링 없이 무조건 `inventory.check`를 발행하므로, 표본이 안 쌓일 이유가 없어야
-했다. 그런데 실제로 받은 표본의 파드 이름(`hf478`, `t9lrb`)이 **그 시점에 떠 있던 실제
-파드 이름(`dmmt9`, `lgtkv`, `thxfn`)과 전혀 달랐다** — 즉 부하 테스트가 만든 이벤트가
-집계 창에 전혀 안 들어왔고, 훨씬 오래된(다른 파드 세대의) 잔여 데이터만 보인 것이다.
-SQS→Warm 집계 파이프라인의 지연이 테스트 창(수십 초~수 분)보다 길거나, 어딘가에서
-유실되고 있다는 뜻인데 정확한 지점은 특정하지 못했다.
+**원인(확정, 2026-08-26 정정)** — `bc_1042`의 `read_path_degraded` 노브가 켜져 있었다.
+`apps/api/app/services/broadcast.py`의 `get_snapshot()`은 `if not
+_read_path_degraded(broadcast_id): _emit_inventory_check(...)`로 이 플래그가 켜지면
+`inventory.check` 발행 자체를 건너뛴다(D-062, S3 조치 노브 — 응답 내용은 안 바뀌고
+부가 발행만 끈다). `GET /api/admin/read-path-degraded?broadcast_id=bc_1042`로 확인하니
+`read_path_degraded_active: true`였다 — S3 관련 이전 작업에서 켠 채로 안 지운 것으로
+보인다. `POST .../read-path-degraded {"action":"clear"}`로 끄고 다시 15건 요청하니
+`event_count: 15`(정확히 1:1), `latency_p95_by_pod`에 **지금 떠 있는 실제 파드 이름**으로
+값이 즉시 채워졌다. 파이프라인 지연·유실이 아니라 발행 자체가 꺼져 있던 것이었다.
 
-**다음에 볼 것** — 부하를 몇 분 이상 지속하면서 Warm snapshot을 반복 폴링해
-**지금 실제로 떠 있는 파드 이름**의 표본이 언제 나타나는지 직접 재본다. SQS 큐
-백로그·Lambda 동시성·배치 윈도우 설정도 확인 대상.
+처음 의심했던 두 경로는 둘 다 틀렸다 — Datadog APM 미태깅설도, Kinesis 배치 경합으로
+인한 조용한 데이터 유실설(`infra/06-datastream/lambda.tf`의 `already_applied` 가드 주석
+근거로 세운 가설)도 아니었다. 후자는 해당 시간대 `o2-agg` Lambda의 `IteratorAge`를
+CloudWatch로 직접 확인해(최대 3.8초, 문제 사례인 102초와 비교 불가) 기각했다.
 
 **왜 늦게 찾았나** — 필드 이름과 근처 주석("APM span-based metric이 대체한다")이
-그럴듯한 다른 원인을 가리켜서 거기부터 팠다. 표본 수(1~3건)에 숫자가 있어서 "그래도
-데이터는 온다"로 읽기 쉬웠는데, 그 표본의 파드 이름을 실제 떠 있는 파드 이름과
-대조해보고 나서야 전혀 다른 세대의 데이터라는 게 드러났다.
+그럴듯한 다른 원인을 가리켜서 거기부터 팠고, 그다음엔 Kinesis 파이프라인의 알려진
+결함(같은 파일의 실측 경고 주석)이 있어 거기로 더 팠다. 둘 다 코드에 진짜 있는
+문제이지만 **이번 증상의 원인은 아니었다** — 정작 원인은 같은 서비스의 다른 파일
+(`broadcast.py`)에 있는 조건문 하나였고, `GET /api/admin/read-path-degraded`로
+라이브 상태를 직접 찍어보고 나서야 드러났다. 문서·주석에서 그럴듯한 설명을 찾는 것과
+라이브 상태를 직접 조회하는 것 중 후자를 먼저 했어야 더 빨리 찾았을 것이다.

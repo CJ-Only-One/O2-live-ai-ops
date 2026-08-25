@@ -15,17 +15,19 @@
 #
 # ## 라우팅 규칙 — 시나리오당 진입 알림 하나
 #
-# `@webhook-o2-dify` 는 **시나리오마다 하나에만** 붙인다. 이유 둘:
+# 2026-08-26: Correlator가 운영 모드로 열렸다(`incident_operational_handoff_approved
+# =true`, `09-incident/terraform.tfvars`). 옛 직결 경로(`@webhook-o2-dify` →
+# `o2-dify-ingress` → Lambda 비동기 큐 → `o2-dify-worker` → Dify, 상관관계 계층
+# 없음)와 새 경로(`@webhook-o2-incident-entry` → Datadog Source Adapter → Signal
+# Queue → Incident Correlator → Agent Invocation Queue → Generic Worker → Dify)를
+# **같은 Monitor에 동시에 붙이지 않는다** — 둘 다 붙이면 한 장애에 에이전트가 두 번
+# 깨어난다(T-017과 같은 문제). 시나리오별 유일한 진입 Monitor는 이제 새 경로만
+# 쓴다: S1 `s1_chat_fanout_volume`, S2 `s2_api_tail_latency`.
 #
-#   1. 지금 경로에는 상관관계 계층이 없다. `o2-dify-ingress` → Lambda 비동기 큐 →
-#      `o2-dify-worker` → Dify 이고, Monitor 하나가 곧 워크플로 실행 하나다.
-#      여러 개를 붙이면 한 장애에 에이전트가 여러 번 깨어난다(T-017).
-#   2. `alert_relay_max_concurrency = 5` 가 두 파이프라인 합산 상한이다(M-003).
-#
-# 나머지는 **evidence 축**으로 둔다 — 대시보드와 사람이 읽고, 에이전트는 Warm Path
-# 스냅샷으로 당겨 쓴다(`docs/agent.md` 6번 노드). Correlator 가 운영 모드로 열리면
-# (명세 §8 "운영 Monitor/Webhook 연결과 Operational mode 승인" 대기) 그때 evidence
-# 축에도 붙여 복합 증거로 병합한다. **그 전에 붙이면 중복 호출이 된다.**
+# 나머지(evidence 축, 예: `chat_propagation_p95`·`chat_block_rate`)는 같은
+# `@webhook-o2-incident-entry`를 붙여 Correlator에 corroborating evidence로
+# 들어가게 하되, `incident_datadog_monitor_map`에서 `evidence_role`을
+# `CORROBORATING`으로 등록해 진입(entry) 판정 자체는 갖지 않게 한다.
 #
 # ## 임계값의 출처를 구분한다
 #
@@ -104,7 +106,7 @@ resource "datadog_monitor" "s1_chat_fanout_volume" {
     겪고 있습니다. 조치 후보는 채널 총량 상한(`limit_channel_volume`)이고,
     **비가역입니다** — 거부된 발화와 떠난 시청자는 안 돌아옵니다. 승인을 받으세요.
 
-    @webhook-o2-dify
+    @webhook-o2-incident-entry
   EOT
 
   monitor_thresholds {
