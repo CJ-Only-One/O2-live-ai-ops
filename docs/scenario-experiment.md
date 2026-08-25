@@ -365,7 +365,8 @@ S3가 증명해야 하는 것은 **같은 장애, 같은 Agent라도 검증된 �
 현재 API 주문 접수 경로에는 PG-A 지연·실패 주입과 `payment.process` 이벤트 발행이
 구현돼 있다. SDK에 `pg_latency_ms`·`failure_code`(`PG_TIMEOUT` 등)가 정의돼 있고,
 warm은 `pg_latency_ratio`를 집계하며, `pg_external_failure`는 진단 enum과 복구 판정
-폴백에 있다. 다만 **PG-B 상태 확인·전환·원복과 Provider별 성공 이벤트는 아직 없다.**
+폴백에 있다. PG-B ready 확인·전환·원복과 Provider별 성공 이벤트는 API 목업에
+구현됐지만, 이를 L3 승인 Action Handler와 active Runbook으로 연결한 경로는 아직 없다.
 
 ```python
 # apps/api/app/services/payment.py — 목업 PG
@@ -385,7 +386,7 @@ emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
 | 주입 · 해제 | `SET cfg:pg:delay_ms` · `cfg:pg:fail_rate` / 해제는 `DEL`. 재배포 없이 켜고 끈다 |
 | **어디에 넣나** | **`order-worker` 가 아니라 `api` 주문 접수 경로.** worker 에 넣으면 SQS 백로그가 쌓여 `queue_backlog` 로 오진한다 — 이 시나리오는 "정확히 진단했는데 못 고친다" 가 핵심이라 오진이 방해된다 |
 | 세기 | 동기 라우트라 uvicorn 스레드풀이 마르고 api p95 가 전면 상승한다(알림이 뜨니 좋다). 너무 세면 api 가 죽어 `pod_resource_exhaustion` 처럼 보인다 — **주문은 깨지는데 읽기는 사는 구간**을 찾는다 |
-| PG-B | 현재 목업은 `PG-A`만 기록한다. 2차 실행을 실제로 검증하려면 PG-B 상태·전환·원복 제어면과 `pg_provider=PG-B` 성공 이벤트가 추가돼야 한다 |
+| PG-B | `/api/admin/pg-provider-switch`에서 PG-B ready를 확인한 뒤 전환한다. PG-A 주입값은 유지되고 PG-B 요청은 이를 무시하므로, `pg_provider=PG-B`·`result=SUCCESS` 이벤트가 우회 효과를 증명한다. 이 작업은 Action Handler 배선을 변경하지 않는다 |
 | Runbook | 1차에는 active 항목이 없어야 한다. 사람의 별도 검증 뒤에만 PG Failover Runbook을 active로 올리고 2차 실행에서 조회한다 |
 
 **채팅 본문을 Agent 에게 주지 않는다.** 시청자가 자유롭게 타이핑하는 유일한 입력이라
@@ -642,9 +643,10 @@ curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
 | 사용자 영향도 회복했는가 | 주문 실패율·p95와 채팅 결제 불만 파생 신호가 함께 감소해야 한다 |
 | 2차 종료 사유 | `final_status: RESOLVED`. PG-A 주입은 검증이 끝날 때까지 유지한다 |
 
-> **현재 구현 경계:** PG-A 장애 주입·이벤트는 구현돼 있지만 PG-B 제어면,
-> Provider별 상태 확인, Failover Action Handler, 전용 Runbook active 승격 자동화는 없다.
-> 이 항목을 구현·검증하기 전에는 위 2차 실행을 E2E 완료로 표시하지 않는다.
+> **현재 구현 경계:** PG-A 장애 주입·이벤트와 PG-B ready·전환·원복 제어면은
+> 구현돼 있다. L3 승인 배선·Runbook active 승격·History 분기와 실제 Agent E2E는
+> 별도 검증 대상이며, 이 항목을 확인하기 전에는 위 2차 실행을 E2E 완료로
+> 표시하지 않는다.
 
 ### 4.5 다음 실행 전 확인
 

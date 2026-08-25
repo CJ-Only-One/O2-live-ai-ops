@@ -103,6 +103,7 @@
 | D-086 | 방송 축은 Chat 전용이 아니다 — Datadog evidence 의 broadcast_id 도 채택한다 | TAG_KEYS, tag configuration 허용목록, multi-alert, LIVE-001 fallback, 팬아웃은 합계 |
 | D-087 | S1 E2E의 Datadog→Dify 호출은 명시적 opt-in으로 기존 webhook을 사용한다 | 운영 기본값 false, `enable_s1_dify_webhook=true`일 때만 `@webhook-o2-dify`, Incident Correlator 승격은 별도 |
 | D-088 | 에이전트를 깨우는 것은 시나리오 진입 Monitor 뿐이다 | webhook 22개→6개, DLQ·파이프라인은 사람만, 파이프라인 결측은 에이전트를 믿지 않아야 하는 신호 |
+| D-089 | S3 PG-B 전환은 ready와 PG-A 주입 해제를 사전 검사한다 | provider switch, rollback, 자연 복구 배제 |
 
 **"겪은 함정"** 절이 두 곳에 있다 (D-006 뒤, D-019 뒤).
 증상으로 검색하는 편이 빠르다.
@@ -4827,3 +4828,20 @@ Incident Correlator 경로, S1·S3 는 기존 webhook 경로다. 정리 후 라�
 이 결정의 범위다. S2 만 Incident 경로인 이유는 그쪽이 Monitor 둘(PRIMARY +
 CORROBORATING)을 한 Incident 로 묶어 **한 번만** 호출하기 때문이고, 이는
 `test_distinct_datadog_roles_can_verify_one_incident` 가 검증한다.
+
+---
+
+## D-089. S3 PG-B 전환은 ready와 PG-A 주입 해제를 사전 검사한다
+
+목업 PG-B 전환도 결제 경로를 바꾸는 L3 조치다. 기존 `/api/admin/pg-provider-switch`
+계약은 유지하되, `set` 전에 `pg_b_ready=true`가 명시돼 있는지 확인한다. ready 상태는
+`set_pg_b_ready` 조치로 별도 기록하며, PG-B가 active인 동안 이를 false로 바꾸지 못하게
+한다.
+
+PG-A 장애 주입은 PG-B 전환 뒤에도 유지한다. 따라서 PG-B의 `payment.process` 성공은
+PG-A 자연 복구가 아니라 provider 우회 효과다. 반대로 rollback(`clear`)은 PG-A
+`delay_ms`·`fail_rate` 주입이 모두 해제된 경우에만 허용한다. 아직 주입된 PG-A로
+되돌려 성공 기록을 오염시키는 것을 막기 위해서다.
+
+이 결정은 Agent workflow, 승인 배선, Runbook 생명주기를 바꾸지 않는다. 해당 경로가
+기존 API를 호출하더라도, ready 선언과 실제 Agent E2E 검증은 별도 운영 증거로 남긴다.

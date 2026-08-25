@@ -17,8 +17,8 @@ apps/chat-gateway 의 `/ws/admin/channel-limit`(S1, D-061)과 같은 이유로
 
 from typing import Literal
 
-from fastapi import APIRouter, Header
-from pydantic import BaseModel
+from fastapi import APIRouter, Header, HTTPException
+from pydantic import BaseModel, model_validator
 
 from app.core.admin_auth import require_admin_key
 from app.core.config import settings
@@ -196,13 +196,40 @@ def set_pg_retry_backoff(
 
 
 class PgProviderSwitchIn(BaseModel):
-    action: Literal["set", "clear"]
+    action: Literal["set", "clear", "set_pg_b_ready"]
+    pg_b_ready: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_action_arguments(self):
+        if self.action == "set_pg_b_ready" and self.pg_b_ready is None:
+            raise ValueError("set_pg_b_ready requires pg_b_ready")
+        if self.action != "set_pg_b_ready" and self.pg_b_ready is not None:
+            raise ValueError("pg_b_ready is only valid for set_pg_b_ready")
+        return self
 
 
 class PgProviderSwitchOut(BaseModel):
     action: str
     previous_provider: str
     provider: str
+    pg_b_ready: bool
+
+
+class PgProviderSwitchStatusOut(BaseModel):
+    provider: str
+    pg_b_ready: bool
+    pg_a_injection_active: bool
+
+
+@router.get("/admin/pg-provider-switch", response_model=PgProviderSwitchStatusOut)
+def get_pg_provider_switch(x_admin_key: str | None = Header(default=None)):
+    require_admin_key(settings.READ_PATH_DEGRADED_ADMIN_KEY, x_admin_key)
+    current = payment.get_config(authoritative=True)
+    return PgProviderSwitchStatusOut(
+        provider=current.active_provider,
+        pg_b_ready=current.pg_b_ready,
+        pg_a_injection_active=current.active,
+    )
 
 
 @router.post("/admin/pg-provider-switch", response_model=PgProviderSwitchOut)
@@ -212,14 +239,31 @@ def set_pg_provider_switch(
 ):
     require_admin_key(settings.READ_PATH_DEGRADED_ADMIN_KEY, x_admin_key)
 
-    previous_provider = payment.get_config(authoritative=True).active_provider
-    if body.action == "set":
+    previous = payment.get_config(authoritative=True)
+    if body.action == "set_pg_b_ready":
+        try:
+            current = payment.set_pg_b_ready(body.pg_b_ready)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    elif body.action == "set":
+        if not previous.pg_b_ready:
+            raise HTTPException(status_code=409, detail="PG-B is not ready")
+        if previous.active_provider != "PG-A":
+            raise HTTPException(status_code=409, detail="active provider is not PG-A")
         current = payment.set_active_provider("PG-B")
     else:
+        if previous.active_provider != "PG-B":
+            raise HTTPException(status_code=409, detail="active provider is not PG-B")
+        if previous.active:
+            raise HTTPException(
+                status_code=409,
+                detail="cannot roll back while PG-A injection is active",
+            )
         current = payment.clear_active_provider()
 
     return PgProviderSwitchOut(
         action=body.action,
-        previous_provider=previous_provider,
+        previous_provider=previous.active_provider,
         provider=current.active_provider,
+        pg_b_ready=current.pg_b_ready,
     )

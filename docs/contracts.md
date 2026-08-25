@@ -247,16 +247,22 @@ X-Session-Key: <UUID v4>
 
 ### 2.6 S3 목업 PG 제어면
 
-실제 PG 관리 API가 아니라 장애 실험 전용이다. `x-admin-key`는 `api-admin`
-Secret의 `PG_STUB_ADMIN_KEY`와 일치해야 하며, 값이 비어 있으면 전부 403이다.
+실제 PG 관리 API가 아니라 장애 실험 전용이다. 장애 주입은
+`PG_STUB_ADMIN_KEY`, provider 전환은 기존 S3 Action Handler와 같은
+`READ_PATH_DEGRADED_ADMIN_KEY`를 쓴다. 해당 값이 비어 있으면 각 제어면은 403이다.
 
 ```
 GET  /api/admin/pg-stub
 POST /api/admin/pg-stub
+GET  /api/admin/pg-provider-switch
+POST /api/admin/pg-provider-switch
 ```
 
 ```json
 { "action": "set", "delay_ms": 0, "fail_rate": 0.0 }
+{ "action": "clear" }
+{ "action": "set_pg_b_ready", "pg_b_ready": true }
+{ "action": "set" }
 { "action": "clear" }
 ```
 
@@ -266,6 +272,12 @@ POST /api/admin/pg-stub
 코드 상한은 실측 기준이 아니라 무제한
 sleep을 막는 안전 경계이며, 실제 주입값은 `measurements.md`에서 확정하기 전까지
 문서와 스크립트에 기본값을 두지 않는다.
+
+`pg-provider-switch`의 `set`은 목업 `PG-B`가 ready일 때만 `PG-A → PG-B`를
+허용한다. 전환 뒤에도 PG-A의 `delay_ms`·`fail_rate` 주입값은 유지된다. 따라서
+PG-B 성공은 PG-A 자연 복구가 아니라 우회 효과라는 검증 근거가 된다. `clear`는
+PG-A 주입이 모두 해제된 경우에만 허용한다. 이 API는 승인·Runbook 권한을 판단하지
+않으며, Action Handler는 별도 승인 경계에서만 호출해야 한다.
 
 ---
 
@@ -454,12 +466,13 @@ SDK의 이벤트 이름은 쿠폰 도메인 기준이고 우리는 특가 판매
 | `DECR` 실패 (재고 부족) | `coupon.issue` | `result=FAILED`, `failure_code=SOLD_OUT` |
 | 특가 오픈 전 주문 시도 | `coupon.issue` | `result=FAILED`, `failure_code=NOT_ELIGIBLE` — SDK 열거에 `NOT_STARTED`가 없어 가장 가까운 값을 쓴다 |
 | 주문 접수 | `order.create` | `channel=LIVE` |
-| 목업 PG 호출 | `payment.process` | 성공·실패 모두. `pg_latency_ms`, 실패 시 `PG_TIMEOUT`·`PG_CALL` |
+| 목업 PG 호출 | `payment.process` | 성공·실패 모두. `pg_provider`, `pg_latency_ms`, 실패 시 `PG_TIMEOUT`·`PG_CALL` |
 | 워커 단계 실패 | `order.cancel` | `reason_code=INVENTORY_SHORTAGE` 등 |
 | 방송 진입·이탈 | `client.action` | `LIVE_ENTER` / `LIVE_LEAVE` |
 | 구매 버튼 누름 | `client.action` **2건** | `COUPON_BUTTON_CLICK` + `CHECKOUT_CLICK` |
 
-`payment.process`는 실제 결제 연동이 아니라 S3 목업 PG 호출 결과다. 같은
+`payment.process`는 실제 결제 연동이 아니라 S3 목업 PG 호출 결과다. PG-A 장애
+주입 중 PG-B로 전환하면 `pg_provider=PG-B`, `result=SUCCESS`으로 발행한다. 같은
 `Idempotency-Key`는 같은 `payment_id`와 성공·실패 결과를 가져 재시도가 관측
 결과를 뒤집지 않는다. 이벤트 발행 실패는 주문 결과를 바꾸지 않는다.
 

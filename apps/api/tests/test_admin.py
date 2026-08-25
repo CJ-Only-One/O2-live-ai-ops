@@ -35,6 +35,9 @@ class _FakeValkey:
     def mget(self, keys):
         return [self.store.get(key) for key in keys]
 
+    def mset(self, values):
+        self.store.update(values)
+
 
 @pytest.fixture
 def fake_valkey(monkeypatch):
@@ -160,9 +163,27 @@ def test_pg_provider_switch_requires_admin_key(fake_pg_valkey):
 
 
 def test_pg_provider_switch_set_then_clear(fake_pg_valkey, admin_key):
+    ready = client.post(
+        PG_PROVIDER_URL,
+        json={"action": "set_pg_b_ready", "pg_b_ready": True},
+        headers={"x-admin-key": admin_key},
+    )
+    assert ready.status_code == 200
+    assert ready.json() == {
+        "action": "set_pg_b_ready",
+        "previous_provider": "PG-A",
+        "provider": "PG-A",
+        "pg_b_ready": True,
+    }
+
     res = client.post(PG_PROVIDER_URL, json={"action": "set"}, headers={"x-admin-key": admin_key})
     assert res.status_code == 200
-    assert res.json() == {"action": "set", "previous_provider": "PG-A", "provider": "PG-B"}
+    assert res.json() == {
+        "action": "set",
+        "previous_provider": "PG-A",
+        "provider": "PG-B",
+        "pg_b_ready": True,
+    }
     assert fake_pg_valkey.get(payment.PG_ACTIVE_PROVIDER_KEY) == "PG-B"
 
     res = client.post(PG_PROVIDER_URL, json={"action": "clear"}, headers={"x-admin-key": admin_key})
@@ -170,4 +191,45 @@ def test_pg_provider_switch_set_then_clear(fake_pg_valkey, admin_key):
     body = res.json()
     assert body["previous_provider"] == "PG-B"
     assert body["provider"] == "PG-A"
+    assert body["pg_b_ready"] is True
     assert fake_pg_valkey.get(payment.PG_ACTIVE_PROVIDER_KEY) is None
+
+
+def test_pg_provider_switch_requires_ready_pg_b(fake_pg_valkey, admin_key):
+    res = client.post(PG_PROVIDER_URL, json={"action": "set"}, headers={"x-admin-key": admin_key})
+    assert res.status_code == 409
+    assert fake_pg_valkey.get(payment.PG_ACTIVE_PROVIDER_KEY) is None
+
+
+def test_pg_provider_switch_blocks_rollback_while_pg_a_injection_is_active(
+    fake_pg_valkey, admin_key
+):
+    client.post(
+        PG_PROVIDER_URL,
+        json={"action": "set_pg_b_ready", "pg_b_ready": True},
+        headers={"x-admin-key": admin_key},
+    )
+    client.post(PG_PROVIDER_URL, json={"action": "set"}, headers={"x-admin-key": admin_key})
+    fake_pg_valkey.mset(
+        {payment.PG_DELAY_KEY: "250", payment.PG_FAIL_RATE_KEY: "1"}
+    )
+
+    res = client.post(PG_PROVIDER_URL, json={"action": "clear"}, headers={"x-admin-key": admin_key})
+    assert res.status_code == 409
+    assert payment.get_config(authoritative=True).active_provider == "PG-B"
+
+
+def test_pg_provider_switch_status_is_authoritative(fake_pg_valkey, admin_key):
+    fake_pg_valkey.set(payment.PG_ACTIVE_PROVIDER_KEY, "PG-B")
+    fake_pg_valkey.set(payment.PG_B_READY_KEY, "true")
+    fake_pg_valkey.mset(
+        {payment.PG_DELAY_KEY: "250", payment.PG_FAIL_RATE_KEY: "1"}
+    )
+
+    res = client.get(PG_PROVIDER_URL, headers={"x-admin-key": admin_key})
+    assert res.status_code == 200
+    assert res.json() == {
+        "provider": "PG-B",
+        "pg_b_ready": True,
+        "pg_a_injection_active": True,
+    }
