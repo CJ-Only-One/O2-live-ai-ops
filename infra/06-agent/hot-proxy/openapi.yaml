@@ -34,6 +34,7 @@ paths:
                     - failure_rate
                     - cache_hit_rate
                     - chat_fanout_p95
+                    - chat_propagation_p95_ms
                     - block_rate
                     - items_per_sec
                     - pipeline_freshness

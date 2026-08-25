@@ -1308,8 +1308,60 @@ workflow:
         loop_id: main_loop
         sourceType: http-request
         targetType: code
-      id: hot_mem_post-source-verification_shape-o2hot4
+      id: hot_mem_post-source-hot_propagation_post-o2hot4
       source: hot_mem_post
+      sourceHandle: source
+      target: hot_propagation_post
+      targetHandle: target
+      type: custom
+      zIndex: 1001
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        sourceType: http-request
+        targetType: http-request
+      id: hot_propagation_post-source-hot_block_post-o2hot5
+      source: hot_propagation_post
+      sourceHandle: source
+      target: hot_block_post
+      targetHandle: target
+      type: custom
+      zIndex: 1001
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        sourceType: http-request
+        targetType: http-request
+      id: hot_block_post-source-read_path_status_post-o2hot6
+      source: hot_block_post
+      sourceHandle: source
+      target: read_path_status_post
+      targetHandle: target
+      type: custom
+      zIndex: 1001
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        sourceType: http-request
+        targetType: code
+      id: read_path_status_post-source-verification_inputs_merge-o2hot7
+      source: read_path_status_post
+      sourceHandle: source
+      target: verification_inputs_merge
+      targetHandle: target
+      type: custom
+      zIndex: 1001
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        sourceType: code
+        targetType: code
+      id: verification_inputs_merge-source-verification_shape-o2hot8
+      source: verification_inputs_merge
       sourceHandle: source
       target: verification_shape
       targetHandle: target
@@ -3286,6 +3338,52 @@ workflow:
       width: 260
       zIndex: 1001
     - data:
+        code: "import json\n\ndef _logical_value(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    return d.get('value') if d.get('status') == 'OK' else None\n\ndef _degraded_active(raw_json):\n    try: d=json.loads(raw_json or '{}')\n    except Exception: return None\n    v=d.get('read_path_degraded_active')\n    return v if isinstance(v,bool) else None\n\ndef main(warm_body: str, propagation_body: str, block_body: str, degraded_body: str) -> dict:\n    try: warm=json.loads(warm_body or '{}')\n    except Exception: warm={}\n    latest=warm.get('latest')\n    if not isinstance(latest,dict):\n        latest={}\n        warm['latest']=latest\n    latest['chat_propagation_p95_ms']=_logical_value(propagation_body)\n    latest['channel_block_rate']=_logical_value(block_body)\n    latest['read_path_degraded_active']=_degraded_active(degraded_body)\n    return {'merged_post_metrics_body':json.dumps(warm,ensure_ascii=False,separators=(',',':'))}\n"
+        code_language: python3
+        desc: Warm 현재 지표에 Datadog 전파 p95·채널 차단률과 Valkey 원본 degraded 상태를 결합한다. 결측은 0이 아니라 None으로 유지한다.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        outputs:
+          merged_post_metrics_body:
+            children: null
+            type: string
+        selected: false
+        title: 22-J. CODE — Verification Inputs Merge
+        type: code
+        variables:
+        - value_selector:
+          - warm_post_metrics
+          - body
+          variable: warm_body
+        - value_selector:
+          - hot_propagation_post
+          - body
+          variable: propagation_body
+        - value_selector:
+          - hot_block_post
+          - body
+          variable: block_body
+        - value_selector:
+          - read_path_status_post
+          - body
+          variable: degraded_body
+      height: 110
+      id: verification_inputs_merge
+      parentId: main_loop
+      position:
+        x: 12500
+        y: 250
+      positionAbsolute:
+        x: 13800
+        y: 410
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 260
+      zIndex: 1001
+    - data:
         code: "import json\n\ndef _hot_latest_max(raw_json):\n    try:\n        d = json.loads(raw_json or '{}')\n    except Exception:\n        return None\n    if d.get('status') != 'ok':\n        return None\n    series = d.get('series') or []\n    latest_values = []\n    for s in series:\n        points = s.get('pointlist') or []\n        if not points:\n            continue\n        latest = sorted(points, key=lambda p: p[0])[-1]\n        latest_values.append(latest[1])\n    return max(latest_values) if latest_values else None\n\ndef main(post_metrics_body: str, compare_body: str, action_result_json: str, hot_cpu_post_body: str, hot_mem_post_body: str) -> dict:\n    try: pm=json.loads(post_metrics_body or '{}')\n    except Exception: pm={}\n    try: cmp=json.loads(compare_body or '{}')\n    except Exception: cmp={}\n    try: a=json.loads(action_result_json or '{}')\n    except Exception: a={}\n    action=a.get('action_id','')\n    latest=pm.get('latest') or {}\n    before=cmp.get('before') or {}\n    delta=cmp.get('delta') or {}\n    version_fail_delta=(delta.get('version_fail_delta') or {}).get('delta')\n    # 첫 조치라 PRE 기준선이 없을 때 compare()는 409(snapshot_incomplete)를 낸다 -\n    # 그럴 땐 회귀로 오판하지 않고 regression=False로 둔다(판단 보류).\n    regression=bool(version_fail_delta is not None and version_fail_delta > 0.05)\n    metrics={\n        'p95_ms':latest.get('latency_p95'),\n        'error_rate':latest.get('overall_failure_rate'),\n        'cache_hit_rate':latest.get('cache_hit_rate'),\n        'click_ratio_delta':(delta.get('click_ratio') or {}).get('delta'),\n        'rps_ratio_delta':(delta.get('rps_ratio') or {}).get('delta'),\n        'cpu_usage_max':_hot_latest_max(hot_cpu_post_body),\n        'memory_usage_max':_hot_latest_max(hot_mem_post_body),\n        'latency_p95':latest.get('latency_p95'),\n        'overall_failure_rate':latest.get('overall_failure_rate'),\n        'chat_propagation_p95_ms':latest.get('chat_propagation_p95_ms'),\n        'channel_block_rate':latest.get('channel_block_rate'),\n        'read_path_degraded_active':latest.get('read_path_degraded_active'),\n        'inventory_check_rate':latest.get('inventory_check_rate'),\n        'items_per_sec':latest.get('items_per_sec'),\n        'baseline_p95_ms':before.get('latency_p95'),\n        'baseline_propagation_p95_ms':before.get('chat_propagation_p95_ms'),\n        'baseline_inventory_check_rate':before.get('inventory_check_rate'),\n        'baseline_latency_p95':before.get('latency_p95'),\n        'baseline_overall_failure_rate':before.get('overall_failure_rate'),\n        # 2026-08-24 추가 - metrics.py derive()가 이미 계산해 내놓는데 여기서\n        # 안 골라서 검증에서 죽어있던 필드들. 진단(9번)엔 스냅샷 전체가\n        # 그대로 넘어가 이미 보이지만, 검증은 이 dict에 없으면 못 쓴다.\n        'p50_ms':latest.get('latency_p50'),\n        'p99_ms':latest.get('latency_p99'),\n        'ua_diversity':latest.get('ua_diversity'),\n        'ip_diversity':latest.get('ip_diversity'),\n        'click_ratio':latest.get('click_ratio'),\n        'pg_latency_ratio':latest.get('pg_latency_ratio'),\n        'retry_rate':latest.get('retry_rate'),\n        'fallback_rate':latest.get('fallback_rate'),\n        'cancel_rate':latest.get('cancel_rate'),\n    }\n    # 파드별 지연(S2가 \"어느 파드냐\"를 못 찾아 막혀있는 문제의 실마리) - 스칼라가\n    # 아니라 pass/fail 비교용 metrics에는 안 넣고 verification_json에 별도로 둔다.\n    latency_p95_by_pod = latest.get('latency_p95_by_pod') or {}\n    out={'mode':'REAL','action_id':action,'metrics':metrics,'latency_p95_by_pod':latency_p95_by_pod,'regression':regression,'compare_error':cmp.get('error')}\n    return {'verification_json':json.dumps(out,ensure_ascii=False,separators=(',',':'))}\n"
         code_language: python3
         desc: Warm Path API 응답 2개(현재 윈도우 지표 + PRE/POST 비교)를 기존 recovery_judge가 쓰던 verification_json 스키마로 재구성. p95_ms/error_rate/cache_hit_rate는 없으면 None으로 오고, recovery_judge가 이를 '기준 미달'로 안전하게 처리한다. 2026-08-24 추가 — S1/S3 런북이 참조하는 필드(chat_propagation_p95_ms, channel_block_rate, read_path_degraded_active, inventory_check_rate, items_per_sec)와 baseline_* 기준선 값을 추가로 통과시킨다. 이전엔 이 7개 필드 목록에 없어서 recovery_judge가 절대 참인 판정을 못 냈다. 같은 날 추가 — metrics.py derive()가 이미 실제로 계산해 내놓는데(직접 코드 확인함) 이 노드가 안 골라서 검증에서 못 쓰던 필드(ua_diversity/ip_diversity/click_ratio/pg_latency_ratio/retry_rate/fallback_rate/cancel_rate/p50/p99)도 통과시킨다. latency_p95_by_pod는 dict라 metrics 비교 대상엔 안 넣고 verification_json에 별도로 둔다.
@@ -3301,8 +3399,8 @@ workflow:
         type: code
         variables:
         - value_selector:
-          - warm_post_metrics
-          - body
+          - verification_inputs_merge
+          - merged_post_metrics_body
           variable: post_metrics_body
         - value_selector:
           - warm_compare
@@ -4061,6 +4159,139 @@ workflow:
         y: 250
       positionAbsolute:
         x: 12800
+        y: 410
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 1001
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"metric\": \"chat_propagation_p95_ms\",\n  \"service\": \"chat-gateway\",\n  \"window_seconds\": 300\n}"
+          type: json
+        desc: S1 복구 판정용 서버 측 WebSocket 전파 p95. o2.chat.propagation distribution을 Hot logical metric Adapter로 읽는다.
+        headers: 'Content-Type: application/json
+
+          X-O2-Proxy-Key: {{#env.O2_HOT_PROXY_KEY#}}'
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 500
+        selected: false
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 20
+          max_write_timeout: 10
+        title: 22-G. Hot Path — Chat Propagation p95
+        type: http-request
+        url: '{{#env.HOT_PROXY_URL#}}/v1/hot/datadog/metric'
+        variables: []
+      height: 142
+      id: hot_propagation_post
+      parentId: main_loop
+      position:
+        x: 11750
+        y: 250
+      positionAbsolute:
+        x: 13050
+        y: 410
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 1001
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"metric\": \"block_rate\",\n  \"service\": \"chat-gateway\",\n  \"window_seconds\": 300\n}"
+          type: json
+        desc: S1 정상 사용자 차단률. Datadog이 태그 값을 소문자로 정규화하므로 catalog가 channel_limited를 사용한다.
+        headers: 'Content-Type: application/json
+
+          X-O2-Proxy-Key: {{#env.O2_HOT_PROXY_KEY#}}'
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 500
+        selected: false
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 20
+          max_write_timeout: 10
+        title: 22-H. Hot Path — Channel Block Rate
+        type: http-request
+        url: '{{#env.HOT_PROXY_URL#}}/v1/hot/datadog/metric'
+        variables: []
+      height: 142
+      id: hot_block_post
+      parentId: main_loop
+      position:
+        x: 12000
+        y: 250
+      positionAbsolute:
+        x: 13300
+        y: 410
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 1001
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: []
+          type: none
+        desc: S3 조치 상태를 Datadog에서 추정하지 않고 Valkey 원본을 읽는 인증 GET으로 확인한다.
+        headers: 'x-admin-key: {{#env.READ_PATH_DEGRADED_ADMIN_KEY#}}'
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop
+        method: get
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 500
+        selected: false
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 20
+          max_write_timeout: 10
+        title: 22-I. API — Read Path Degraded State
+        type: http-request
+        url: '{{#env.API_ADMIN_URL#}}?broadcast_id={{#normalize.broadcast_id#}}'
+        variables: []
+      height: 142
+      id: read_path_status_post
+      parentId: main_loop
+      position:
+        x: 12250
+        y: 250
+      positionAbsolute:
+        x: 13550
         y: 410
       selected: false
       sourcePosition: right
