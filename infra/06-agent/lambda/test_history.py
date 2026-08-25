@@ -86,6 +86,17 @@ def test_alert_text_skips_empty_and_truncates():
     assert len(worker._alert_text({"alert_title": "가" * 20000})) == 8000
 
 
+def test_dify_inputs_bound_untrusted_context():
+    values = worker._dify_inputs(
+        {"alert_body": "b" * 7000, "alert_query": "q" * 3000, "tags": None},
+        "p" * 2000,
+    )
+    assert len(values["alert_body"]) == 6000
+    assert len(values["alert_query"]) == 2000
+    assert values["tags"] == ""
+    assert len(values["past_cases"]) == 1200
+
+
 def test_search_drops_far_hits():
     """임계값보다 먼 사례는 프롬프트에 들어가면 안 된다."""
 
