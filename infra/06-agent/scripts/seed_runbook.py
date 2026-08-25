@@ -193,37 +193,33 @@ RUNBOOKS = [
         #   숫자를 지어내지 않는다는 AGENTS.md 원칙의 예외이므로 굵게 표시.
         #
         #   2026-08-24 데이터팀 회신(specification/2026-08-24-AIAgent-
-        #   시나리오테스트.md)으로 필드명 정리됨, 같은 날 observability
-        #   telemetry 마이그레이션(olavvn, c6a846b)에서 실제로 구현됨:
-        #   - block_rate → channel_block_rate 로 개명 확정됐지만 아직 Warm
-        #     API에 안 붙어있다(chat.send 의 failure_code=CHANNEL_LIMITED
-        #     로 데이터팀이 계산해 노출할 예정). 지금 실제로 존재하는 이름은
-        #     여전히 block_rate 라 그걸 쓴다 — 개명되면 이 표도 같이 고칠 것.
-        #   - chat_propagation_p95_ms 후보였던 서버측 지표는 olavvn 쪽
-        #     telemetry 마이그레이션에서 chat_fanout_p95(수락→fanout
-        #     publish)로 이미 구현됨. 실제 end-to-end 전파는 별도(합성
-        #     카나리아) 지표로 간다.
+        #   시나리오테스트.md)으로 필드명 정리 논의 시작. 이후 실제로 구현된
+        #   이름·경로는 바로 아래(2026-08-25) 주석이 최신 기준이다 — 여기 있던
+        #   중간 단계 이름(chat_fanout_p95/block_rate 유지)은 그새 다시
+        #   바뀌었으므로 지운다. 최종본만 본다.
         "runbook_id": "chat_channel_overload",
         "runbook_kind": "dedicated",
         "status": "active",
         "rca_type": "chat_channel_overload",
-        # 2026-08-25: 원래 필드명(chat_fanout_p95/block_rate)이 이미 낡은
-        # 이름이었다 — olavvn의 telemetry 작업으로 실제 구현된 이름은
+        # 2026-08-25: 원래 필드명(chat_fanout_p95/block_rate)은 낡은 이름이었다.
+        # olavvn의 telemetry 작업으로 실제 구현된 이름은
         # chat_propagation_p95_ms/channel_block_rate다(o2.chat.propagation
         # Datadog 메트릭, apps/chat-gateway/src/telemetry.ts, hot-proxy
-        # /v1/hot/datadog/metric, Dify DSL 22-G/22-H/22-J 체인까지 실배포
-        # 확인됨). 다만 이 스크립트를 고치는 시점엔 실 트래픽으로 그 필드가
-        # 항상 값이 채워지는지(표본 부족 null 여부)까지는 검증 못 했다.
-        # 그래서 지금 아래 success_criteria는 그 필드를 쓰지 않고, 실제로
-        # RESOLVED까지 검증된 임시 기준(p95_ms/error_rate, OR)을 그대로
-        # 둔다 — chat_propagation_p95_ms가 실측으로 안정적으로 채워지는 걸
-        # 확인한 뒤 이 조건을 그 필드 기반으로 교체할 것.
+        # /v1/hot/datadog/metric) — Dify DSL 22-G→22-H→22-I→22-J 체인도
+        # verification_shape까지 연결 완료(같은 날, 한 번 끊겼던 걸 복원함).
+        # 그래도 실 부하(loadtest/s1-e2e.sh) 없이는 표본 부족으로 이 필드가
+        # null일 수 있어, RESOLVED까지 실측 검증된 p95_ms/error_rate를
+        # OR로 같이 둔다 — 부하 없어도 데모가 죽지 않게 하는 안전망이다.
+        # 실 부하 재현으로 chat_propagation_p95_ms가 안정적으로 채워지는 게
+        # 확인되면 뒤의 안전망 두 조건은 정리해도 된다.
         # 2026-08-25: hot_items_post(22-H2, Dify DSL) 흡수 — Hot Path fanout
         # items/s를 실측으로 붙였다. p95_ms/error_rate만으로는 fanout 자체가
         # 막힌 채로도 RESOLVED 오판정이 날 수 있어(예: 요청이 아예 안 들어와
         # error_rate가 낮아지는 경우) items_per_sec을 OR 조건에 추가한다.
         "success_criteria": {
             "conditions": [
+                {"metric": "chat_propagation_p95_ms", "comparison": "<=", "threshold": 800},
+                {"metric": "channel_block_rate", "comparison": "<=", "threshold": Decimal("0.05")},
                 {"metric": "p95_ms", "comparison": "<=", "threshold": 500},
                 {"metric": "error_rate", "comparison": "<=", "threshold": Decimal("0.05")},
                 {"metric": "items_per_sec", "comparison": "<=", "threshold": 20000},
@@ -428,6 +424,30 @@ RUNBOOKS = [
                 },
                 "stabilization_wait_seconds": None,
             },
+            {
+                # 2026-08-25 회의 결정 — 위 둘(client pool·timeout/retry)은
+                # 방어 조치라 PG-A 자체가 느린 근본 원인을 못 고친다. 이건
+                # 다르다 — 목업 PG 스텁(apps/api/app/services/payment.py)의
+                # 활성 provider를 PG-B로 바꿔 "다른 게이트웨이로 우회"를
+                # 실제로 재현한다. 결제 경로 전환이라 L3(Slack 승인 필수).
+                "action_id": "switch_pg_provider",
+                "risk_level": "L3",
+                "implementation_status": "implemented",
+                "expected_effect": "route payments to PG-B instead of PG-A; bypasses whatever is slow on PG-A rather than just tolerating it",
+                "blast_radius": "service-wide checkout payments (global provider switch, not scoped to a single broadcast_id)",
+                "parameters_schema": {
+                    "action": {
+                        "type": "string",
+                        "required": True,
+                        "source": "static:set",
+                    },
+                },
+                "execution_target": {
+                    "method": "POST",
+                    "endpoint": "$PG_PROVIDER_SWITCH_URL",
+                },
+                "stabilization_wait_seconds": None,
+            },
         ],
         # 기존 pg_external_failure 는 PG를 PostgreSQL로 해석한 액션이었다.
         # 새 결제 PG 시나리오에서는 의미가 달라 삭제 대신 retired 처리한다.
@@ -567,9 +587,10 @@ KNOBS = [
         "diagnostic_contamination": True,
         "rollback_method": "immediate_delete",
         "rollback_call": {"endpoint": "$CHAT_GATEWAY_ADMIN_URL", "action": "clear"},
-        # 서버 fanout 완료와 합성 consumer E2E는 서로 다른 지표다. 자동 검증은
-        # 항상 수집되는 서버측 논리 지표를 쓰고 E2E는 k6 수용 시험에서 확인한다.
-        "verification_metrics": ["chat_fanout_p95", "block_rate", "items_per_sec"],
+        # 2026-08-25: chat_fanout_p95/block_rate는 낡은 이름 — success_criteria와
+        # 같은 실제 필드명(chat_propagation_p95_ms/channel_block_rate,
+        # o2.chat.propagation)으로 맞춘다. 합성 consumer E2E 검증은 k6로 별도.
+        "verification_metrics": ["chat_propagation_p95_ms", "channel_block_rate", "items_per_sec"],
         # 결정론적 사전 검사. 통과 못 하면 자동 실행하지 않는다.
         "preconditions": [
             {"check": "broadcast_is_live", "source": "observability.alert.broadcast_id"},
@@ -672,6 +693,31 @@ KNOBS = [
             {"check": "external_payment_pg_evidence_present"},
             {"check": "retry_budget_is_bounded"},
             {"check": "restore_value_recorded"},
+        ],
+    },
+    {
+        "action_id": "switch_pg_provider",
+        "target": "api 전체 결제 경로 (활성 PG provider)",
+        "knob_reversible": True,
+        # 전환 전 이미 실패한 결제는 되돌아오지 않는다 — 사용자에게 남는
+        # 손실이 없는 S1의 채널 제한 원복과는 다르다.
+        "user_effect_reversible": False,
+        "max_blast_radius": "service-wide checkout — 단일 broadcast_id 스코프가 아니라 모든 방송의 결제에 영향",
+        "max_duration_seconds": None,
+        "preapproved_budget": None,
+        "cooldown_seconds": None,
+        "max_attempts": 1,
+        "measured": False,
+        "risk_level": "L3",
+        # provider가 바뀌면 PG-A 쪽 pg_latency_ratio 표본이 사라진다 — "복구됐다"가
+        # "PG-A가 나아졌다"가 아니라 "PG-A를 안 쓴다"는 뜻임을 판정에서 구분해야 한다.
+        "diagnostic_contamination": True,
+        "diagnostic_contamination_note": "PG-A 표본이 끊겨 pg_latency_ratio가 빈다 — provider 성공 이벤트로 대신 확인할 것",
+        "rollback_method": "immediate_delete",
+        "rollback_call": {"endpoint": "$PG_PROVIDER_SWITCH_URL", "action": "clear"},
+        "verification_metrics": ["latency_p95", "overall_failure_rate", "pg_latency_ratio"],
+        "preconditions": [
+            {"check": "external_payment_pg_evidence_present"},
         ],
     },
     {

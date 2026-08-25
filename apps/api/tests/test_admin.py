@@ -8,10 +8,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes import admin as admin_route
+from app.core import cache
 from app.core.config import settings
 from app.main import app
+from app.services import payment
 
 URL = "/api/admin/read-path-degraded"
+PG_PROVIDER_URL = "/api/admin/pg-provider-switch"
 
 client = TestClient(app)
 
@@ -23,11 +26,14 @@ class _FakeValkey:
     def get(self, key):
         return self.store.get(key)
 
-    def set(self, key, value):
+    def set(self, key, value, ex=None):
         self.store[key] = value
 
     def delete(self, key):
         self.store.pop(key, None)
+
+    def mget(self, keys):
+        return [self.store.get(key) for key in keys]
 
 
 @pytest.fixture
@@ -134,3 +140,34 @@ def test_malformed_broadcast_id_rejected(fake_valkey, admin_key):
         headers={"x-admin-key": admin_key},
     )
     assert res.status_code == 400
+
+
+# ── S3 PG-A→PG-B 전환 (pg-provider-switch) ───────────────────────────
+
+
+@pytest.fixture
+def fake_pg_valkey(monkeypatch):
+    fake = _FakeValkey()
+    monkeypatch.setattr(payment, "valkey", fake)
+    cache.clear()
+    yield fake
+    cache.clear()
+
+
+def test_pg_provider_switch_requires_admin_key(fake_pg_valkey):
+    res = client.post(PG_PROVIDER_URL, json={"action": "set"}, headers={"x-admin-key": "wrong"})
+    assert res.status_code == 403
+
+
+def test_pg_provider_switch_set_then_clear(fake_pg_valkey, admin_key):
+    res = client.post(PG_PROVIDER_URL, json={"action": "set"}, headers={"x-admin-key": admin_key})
+    assert res.status_code == 200
+    assert res.json() == {"action": "set", "previous_provider": "PG-A", "provider": "PG-B"}
+    assert fake_pg_valkey.get(payment.PG_ACTIVE_PROVIDER_KEY) == "PG-B"
+
+    res = client.post(PG_PROVIDER_URL, json={"action": "clear"}, headers={"x-admin-key": admin_key})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["previous_provider"] == "PG-B"
+    assert body["provider"] == "PG-A"
+    assert fake_pg_valkey.get(payment.PG_ACTIVE_PROVIDER_KEY) is None

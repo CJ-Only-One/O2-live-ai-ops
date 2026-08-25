@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 PG_DELAY_KEY = "cfg:pg:delay_ms"
 PG_FAIL_RATE_KEY = "cfg:pg:fail_rate"
+# S3 조치 — PG-A 장애를 우리가 못 고치니 PG-B로 우회한다(2026-08-25 회의 결정,
+# S3는 방어 조치만으로 끝나지 않고 실제로 해결되는 시나리오로 간다). 이 키가
+# 있는 동안은 process_payment가 PG_DELAY_KEY/PG_FAIL_RATE_KEY 주입을 완전히
+# 무시한다 — "이미 다른 게이트웨이로 갔다"는 전제라 PG-A 장애가 안 보여야 한다.
+PG_ACTIVE_PROVIDER_KEY = "cfg:pg:active_provider"
+PROVIDERS = ("PG-A", "PG-B")
 
 # 직접 Valkey를 수정해도 한 파드에서 최대 1초 뒤에는 반영된다. 평시 주문마다
 # Valkey 왕복 두 건을 추가하지 않으면서 재배포 없는 장애 주입을 유지하는 경계다.
@@ -43,6 +49,7 @@ MAX_DELAY_MS = 30_000
 class PgStubConfig:
     delay_ms: int = 0
     fail_rate: float = 0.0
+    active_provider: str = "PG-A"
 
     @property
     def active(self) -> bool:
@@ -79,14 +86,41 @@ def _parse_config(values) -> PgStubConfig:
     return PgStubConfig(delay_ms=delay_ms, fail_rate=fail_rate)
 
 
+def _parse_provider(value) -> str:
+    provider = _text(value) or "PG-A"
+    if provider not in PROVIDERS:
+        raise ValueError(f"active_provider must be one of {PROVIDERS}")
+    return provider
+
+
 def _load_config() -> PgStubConfig:
     try:
-        return _parse_config(valkey.mget([PG_DELAY_KEY, PG_FAIL_RATE_KEY]))
+        delay_raw, fail_rate_raw, provider_raw = valkey.mget(
+            [PG_DELAY_KEY, PG_FAIL_RATE_KEY, PG_ACTIVE_PROVIDER_KEY]
+        )
+        base = _parse_config([delay_raw, fail_rate_raw])
+        return PgStubConfig(
+            delay_ms=base.delay_ms,
+            fail_rate=base.fail_rate,
+            active_provider=_parse_provider(provider_raw),
+        )
     except Exception:
         # 이 노브는 장애 실험용이다. Valkey 장애나 잘못된 수동 입력이 실제 주문
         # 장애를 추가로 만들지 않도록 평시 설정으로 fail-open 한다.
         logger.exception("PG 스텁 설정 조회 실패, 평시 설정으로 간주합니다")
         return PgStubConfig()
+
+
+def set_active_provider(provider: str) -> PgStubConfig:
+    valkey.set(PG_ACTIVE_PROVIDER_KEY, _parse_provider(provider))
+    cache.delete(_CONFIG_CACHE_KEY)
+    return get_config(authoritative=True)
+
+
+def clear_active_provider() -> PgStubConfig:
+    valkey.delete(PG_ACTIVE_PROVIDER_KEY)
+    cache.delete(_CONFIG_CACHE_KEY)
+    return get_config(authoritative=True)
 
 
 def get_config(*, authoritative: bool = False) -> PgStubConfig:
@@ -144,10 +178,14 @@ def process_payment(
     config = get_config()
     started = time.perf_counter()
 
-    if config.delay_ms:
-        time.sleep(config.delay_ms / 1000)
-
-    failed = _fails(idempotency_key, config.fail_rate)
+    if config.active_provider == "PG-B":
+        # 사람이 승인해 PG-A에서 전환한 뒤다 — 이미 다른 게이트웨이로 갔다는
+        # 전제이므로 PG-A용으로 주입된 delay_ms/fail_rate를 재현하지 않는다.
+        failed = False
+    else:
+        if config.delay_ms:
+            time.sleep(config.delay_ms / 1000)
+        failed = _fails(idempotency_key, config.fail_rate)
     pg_latency_ms = int((time.perf_counter() - started) * 1000)
     result = "FAILED" if failed else "SUCCESS"
     failure_code = "PG_TIMEOUT" if failed else None
@@ -166,9 +204,10 @@ def process_payment(
             result=result,
             failure_code=failure_code,
             failure_stage="PG_CALL" if failed else None,
-            # 이벤트에 MOCK·SCENARIO 같은 정답 표식을 넣지 않는다. Agent가
-            # 판단할 근거는 provider 이름이 아니라 PG 구간 지연과 실패 코드다.
-            pg_provider="PG-A",
+            # PG-B 전환 후에는 provider 이름 자체가 판단 근거다(Agent 조치의
+            # 성공 여부를 provider별 성공 이벤트로 확인해야 하므로) — PG-A일
+            # 때는 여전히 PG 구간 지연·실패 코드가 우선 근거다.
+            pg_provider=config.active_provider,
             pg_response_code="TIMEOUT" if failed else "OK",
             pg_latency_ms=pg_latency_ms,
             total_latency_ms=pg_latency_ms,
