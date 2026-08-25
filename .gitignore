@@ -59,6 +59,10 @@ loadtest/results/
 # ── 로컬 환경 ────────────────────────────────────────────
 .env
 .env.local
+# 워크플로별 실제 시크릿 값 파일(예: dify/.env.o2-aiops-workflow)도 여기 걸린다.
+# .env.example 류는 시크릿이 없으므로 예외로 둔다.
+.env.*
+!.env.*.example
 kubeconfig*
 
 # Dify DSL의 environment_variables 실제 값. infra/06-agent/dify/*.yml 은
