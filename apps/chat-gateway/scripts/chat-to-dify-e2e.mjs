@@ -80,6 +80,14 @@ function aws(config, args) {
   });
 }
 
+function awsMaybe(config, args) {
+  try {
+    return aws(config, args);
+  } catch {
+    return null;
+  }
+}
+
 function terraformApply(stack, variables, targets) {
   const args = [`-chdir=${path.join(REPO_ROOT, 'infra', stack)}`, 'apply', '-auto-approve'];
   for (const [name, value] of Object.entries(variables)) args.push(`-var=${name}=${value}`);
@@ -240,6 +248,16 @@ function preflight(config) {
     throw new Error('Chat Signal Worker event source must already be Enabled');
   }
 
+  const agentEnvironment = lambdaEnvironment(config, config.agentWorker);
+  const history = {
+    bucket: agentEnvironment.HISTORY_BUCKET,
+    vectorBucket: agentEnvironment.VECTOR_BUCKET,
+    vectorIndex: agentEnvironment.VECTOR_INDEX,
+  };
+  if (!history.bucket || !history.vectorBucket || !history.vectorIndex) {
+    throw new Error('Agent Entry Worker history storage configuration is incomplete');
+  }
+
   const disabledGates = [
     [
       config.chatAdapter,
@@ -287,7 +305,7 @@ function preflight(config) {
   if (findChatState(config).length > 0) {
     throw new Error('CHAT_E2E_BROADCAST_ID already has synthetic state');
   }
-  return { account, queues, queueBaselines };
+  return { account, queues, queueBaselines, history };
 }
 
 function openSocket(config, userNumber) {
@@ -413,6 +431,119 @@ function getLedger(config, incidentId, revision) {
   return getItem(config, config.ledgerTable, {
     idempotency_key: { S: `incident:${incidentId}:revision:${revision}` },
   });
+}
+
+export function historyLocation(snapshot) {
+  if (!snapshot?.incident_id || !/^\d{4}-\d{2}-\d{2}/.test(snapshot.opened_at ?? '')) {
+    throw new Error('Incident snapshot cannot resolve a history location');
+  }
+  return {
+    key: `incidents/dt=${snapshot.opened_at.slice(0, 10)}/${snapshot.incident_id}.json`,
+    vectorKey: snapshot.incident_id,
+  };
+}
+
+function findHistory(config, history, snapshot) {
+  const location = historyLocation(snapshot);
+  const object = awsMaybe(config, [
+    's3api',
+    'head-object',
+    '--bucket',
+    history.bucket,
+    '--key',
+    location.key,
+  ]);
+  if (!object) return null;
+
+  const response = aws(config, [
+    's3vectors',
+    'get-vectors',
+    '--vector-bucket-name',
+    history.vectorBucket,
+    '--index-name',
+    history.vectorIndex,
+    '--keys',
+    location.vectorKey,
+    '--return-metadata',
+  ]);
+  const vector = (response.vectors ?? []).find((item) => item.key === location.vectorKey);
+  if (!vector) return null;
+  if (vector.metadata?.s3_key !== location.key || vector.metadata?.source !== 'agent_entry') {
+    throw new Error('Stored history vector metadata does not match the Agent Entry record');
+  }
+  if (Number(vector.metadata?.revision) !== snapshot.revision) {
+    throw new Error('Stored history revision does not match the Incident snapshot');
+  }
+  return {
+    s3_key: location.key,
+    vector_key: location.vectorKey,
+    vector_source: vector.metadata.source,
+    revision: Number(vector.metadata.revision),
+  };
+}
+
+function cleanupHistory(config, history, snapshot) {
+  if (!history || !snapshot?.incident_id) return { deleted: false };
+  const location = historyLocation(snapshot);
+  aws(config, [
+    's3vectors',
+    'delete-vectors',
+    '--vector-bucket-name',
+    history.vectorBucket,
+    '--index-name',
+    history.vectorIndex,
+    '--keys',
+    location.vectorKey,
+  ]);
+
+  const listed = aws(config, [
+    's3api',
+    'list-object-versions',
+    '--bucket',
+    history.bucket,
+    '--prefix',
+    location.key,
+  ]);
+  const objects = [...(listed.Versions ?? []), ...(listed.DeleteMarkers ?? [])]
+    .filter((item) => item.Key === location.key)
+    .map((item) => ({ Key: item.Key, VersionId: item.VersionId }));
+  if (objects.length > 0) {
+    aws(config, [
+      's3api',
+      'delete-objects',
+      '--bucket',
+      history.bucket,
+      '--delete',
+      JSON.stringify({ Objects: objects, Quiet: true }),
+    ]);
+  }
+
+  const objectStillPresent = awsMaybe(config, [
+    's3api',
+    'head-object',
+    '--bucket',
+    history.bucket,
+    '--key',
+    location.key,
+  ]);
+  const vectors = aws(config, [
+    's3vectors',
+    'get-vectors',
+    '--vector-bucket-name',
+    history.vectorBucket,
+    '--index-name',
+    history.vectorIndex,
+    '--keys',
+    location.vectorKey,
+  ]).vectors ?? [];
+  if (objectStillPresent || vectors.some((item) => item.key === location.vectorKey)) {
+    throw new Error('Synthetic history cleanup did not finish');
+  }
+  return {
+    deleted: true,
+    s3_versions_deleted: objects.length,
+    vector_deleted: true,
+  };
 }
 
 function enableChatAdapter(config, cutoffEpoch) {
@@ -661,6 +792,9 @@ async function main() {
   let claim = null;
   let queues = null;
   let queueBaselines = null;
+  let history = null;
+  let historyVerification = null;
+  let historyCleanup = null;
   let result;
   let cleanupVerification;
   let failure;
@@ -669,6 +803,7 @@ async function main() {
     const preflightResult = preflight(config);
     queues = preflightResult.queues;
     queueBaselines = preflightResult.queueBaselines;
+    history = preflightResult.history;
     const cutoffEpoch = Math.floor(Date.now() / 1000) - 2;
 
     console.error('[1/6] enabling the synthetic Chat Candidate adapter');
@@ -700,6 +835,9 @@ async function main() {
     });
 
     assertSuccess({ candidate, claim, ledger });
+    historyVerification = await poll('History object and vector storage', config.timeoutSeconds, () =>
+      findHistory(config, history, claim.snapshot),
+    );
     result = {
       schema_version: '1.0',
       suite: 'chat-input-to-dify-contract-workflow',
@@ -720,6 +858,7 @@ async function main() {
         attempt_count: ledger.attempt_count,
         workflow_run_id: ledger.workflow_run_id,
       },
+      history: historyVerification,
       preflight: {
         work_queues_empty: true,
         existing_dlq_messages_preserved: Object.fromEntries(
@@ -750,6 +889,9 @@ async function main() {
 
     console.error('[6/6] removing only the discovered synthetic state');
     try {
+      if (history && claim?.snapshot?.incident_id) {
+        historyCleanup = cleanupHistory(config, history, claim.snapshot);
+      }
       cleanupState(config, candidate, claim);
       if (queues) {
         cleanupVerification = await verifyRestored(
@@ -770,7 +912,7 @@ async function main() {
   }
 
   if (failure) throw failure;
-  result.cleanup = cleanupVerification;
+  result.cleanup = { ...cleanupVerification, history: historyCleanup };
   console.log(JSON.stringify(result, null, 2));
 }
 

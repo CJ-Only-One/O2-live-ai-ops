@@ -33,6 +33,7 @@
 | M-018 | Agent Invocation Worker 첫 Shadow E2E와 fail-closed | Worker IAM·ledger finalize·Dify 계약·Queue 설정 변경 |
 | M-019 | 파드 Ready 시간 (사전 확장 리드타임) | `readinessProbe` 설정 변경 · 이미지 크기 변경 · 인스턴스 타입 변경 · 노드 여유 부족으로 Karpenter 개입 시 |
 | M-020 | 실제 Chat·Datadog → 동일 Incident → Dify Shadow E2E | Source Adapter·Correlator·Worker·Dify 계약·monitor 평가 주기 변경 |
+| M-021 | 실제 Chat → Dify → 유사 장애 이력 조회·저장 E2E | Agent Entry Worker·Dify `past_cases` 계약·Bedrock 모델·S3 Vectors 설정 변경 |
 
 
 기록 형식은 **날짜 · 조건 · 값** 이다. 다시 쟀으면 절을 새로 만들지 말고
@@ -1583,3 +1584,39 @@ visible/in-flight/delayed 0, Incident State·ledger·Candidate·window state는 
 
 **다시 재야 할 때** — Source Adapter·Correlator·Worker 코드, Dify workflow 계약, Datadog
 monitor 평가 주기, Queue 설정 또는 environment canonicalization 정책을 바꿀 때.
+
+---
+
+## M-021. 실제 Chat → Dify → 유사 장애 이력 조회·저장 E2E
+
+**조건 (2026-08-25)** — dev 외부 WebSocket에 합성 사용자 4명이 같은 15초 창에서
+READ_PATH 체감 장애 문구를 한 건씩 보냈다. Chat Adapter·Correlator·Agent Worker는
+각 단계에서 발견한 단일 broadcast/Candidate/Incident만 allowlist에 넣은 동안 순차적으로
+열었다. 공통 Worker는 Bedrock Titan V2 임베딩과 O2 전용 S3 Vectors 검색을 거친 뒤,
+게시된 전용 Dify workflow에 `custom_alert_json`과 optional `past_cases`를 보냈다.
+
+| 관측 지점 | 결과 |
+|---|---|
+| WebSocket 입력·fanout | 전송 4건, 4 client 총 수신 16건 |
+| Chat Candidate | `READ_PATH`, messages 4, unique users 4, raw chat 없음 |
+| Incident | revision 1 |
+| History lookup | `MATCHED`, match count 0, 검색 실패 없음 |
+| Dify ledger | `SUCCEEDED`, attempt 1, workflow run 1건 |
+| Agent Worker | 8,200.75ms, cold init 146.22ms, max memory 96MB |
+| History S3 | `incidents/dt=2026-08-25/<incident_id>.json` 객체 확인 |
+| History S3 Vectors | 같은 `incident_id`, `source=agent_entry`, revision 1 확인 |
+| 종료 gate | Adapter·Correlator·Agent Worker 실행 `false`, event source `Disabled` |
+| Queue | Chat Signal·Signal·Invocation work queue 모두 0 |
+| DLQ | Signal·Invocation 기존 0 유지, Adapter 기존 3 유지·현재 broadcast 없음 |
+| 합성 데이터 정리 | DynamoDB 상태, S3 object version 1개, vector 1개 삭제 확인 |
+
+이 측정으로 채팅 입력부터 공통 Incident, 유사 장애 조회가 포함된 Dify 호출, 새 이력의
+S3 원본·Vector 저장까지 하나의 경로로 연결됐음을 확인했다. 이 입력에 임계값 안으로
+매칭된 기존 사례는 0건이었다. 검색 결과 내용이나 거리값은 출력하지 않았다.
+이력 조회 실패 시 빈 `past_cases`로 계속 실행하는 fail-open 경계는 단위 테스트로 검증한다.
+
+이번 실행은 production handoff 활성화가 아니다. 모든 소비자는 다시 비활성 상태이며,
+합성 이력은 이후 검색을 오염시키지 않도록 정확한 incident key만 정리했다.
+
+**다시 재야 할 때** — Agent Entry Worker의 검색·저장 코드, Dify `past_cases` 계약,
+Bedrock embedding 모델, S3 Vectors index 또는 거리·top-k 정책을 바꿀 때.
