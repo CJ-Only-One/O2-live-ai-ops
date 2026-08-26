@@ -19,6 +19,11 @@ require_inputs() {
   : "${CANARY_CPU_LIMIT:?CANARY_CPU_LIMIT이 필요합니다. 예: 실측으로 정한 125m}"
   : "${CANARY_READINESS_TIMEOUT_SECONDS:?CANARY_READINESS_TIMEOUT_SECONDS가 필요합니다.}"
   : "${CANARY_READINESS_FAILURE_THRESHOLD:?CANARY_READINESS_FAILURE_THRESHOLD가 필요합니다.}"
+  # 2026-08-26 real test로 재현: readinessProbe만 넓히면 livenessProbe는 기본
+  # 타임아웃 그대로라, CPU 스로틀 아래서 liveness가 먼저 타임아웃돼 kubelet이
+  # 파드를 통째로 재시작시킨다("Unready"가 아니라 "죽었다 살아난다") — 그때마다
+  # Service에서 빠졌다 들어왔다 하며 지연이 요동친다. readiness와 같은 여유를 준다.
+  : "${CANARY_LIVENESS_TIMEOUT_SECONDS:?CANARY_LIVENESS_TIMEOUT_SECONDS가 필요합니다.}"
 
   [[ "${CANARY_CPU_LIMIT}" =~ ^[1-9][0-9]*m$|^[0-9]+([.][0-9]+)?$ ]] ||
     die "CANARY_CPU_LIMIT 형식이 잘못됐습니다: ${CANARY_CPU_LIMIT}"
@@ -26,6 +31,8 @@ require_inputs() {
     die "CANARY_READINESS_TIMEOUT_SECONDS는 양의 정수여야 합니다."
   [[ "${CANARY_READINESS_FAILURE_THRESHOLD}" =~ ^[1-9][0-9]*$ ]] ||
     die "CANARY_READINESS_FAILURE_THRESHOLD는 양의 정수여야 합니다."
+  [[ "${CANARY_LIVENESS_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]] ||
+    die "CANARY_LIVENESS_TIMEOUT_SECONDS는 양의 정수여야 합니다."
 }
 
 render() {
@@ -66,6 +73,9 @@ render() {
         \"readinessProbe\": {
           \"timeoutSeconds\": ${CANARY_READINESS_TIMEOUT_SECONDS},
           \"failureThreshold\": ${CANARY_READINESS_FAILURE_THRESHOLD}
+        },
+        \"livenessProbe\": {
+          \"timeoutSeconds\": ${CANARY_LIVENESS_TIMEOUT_SECONDS}
         }
       }]}}}
     }"

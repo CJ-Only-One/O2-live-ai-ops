@@ -240,15 +240,16 @@ def validate_source(payload: Any) -> tuple[dict[str, Any], int]:
     transition = payload["alert_transition"]
     if transition not in TRANSITIONS:
         raise ContractError("ALERT_TRANSITION")
-    _validate_assessment_input(payload["assessment_input"])
+    observed_at = _validate_assessment_input(payload["assessment_input"])
 
     occurred_at, occurred_at_epoch = _normalize_occurred_at(payload["occurred_at"])
     normalized = dict(payload)
     normalized["occurred_at"] = occurred_at
+    normalized["assessment_input"] = dict(payload["assessment_input"], observed_at=observed_at)
     return normalized, occurred_at_epoch
 
 
-def _validate_assessment_input(value: Any) -> None:
+def _validate_assessment_input(value: Any) -> str:
     fields = {
         "evidence_type", "observed_at", "sample_count", "data_state",
         "signal_strength", "scope", "measurements",
@@ -262,7 +263,12 @@ def _validate_assessment_input(value: Any) -> None:
         "COMPOSITE_CONDITION",
     }:
         raise ContractError("ASSESSMENT_EVIDENCE_TYPE")
-    _normalize_occurred_at(value["observed_at"])
+    # $DATE_POSIX 웹훅 변수는 epoch 숫자 문자열이다. 여기서 검증만 하고 안
+    # 바꾸면 그 원본 문자열이 그대로 Correlator까지 가는데, Correlator의
+    # _parse_datetime()은 ISO8601만 받아 매번 CONTRACT_REJECTED:
+    # ASSESSMENT_OBSERVED_AT로 죽는다(2026-08-26 real test로 재현). occurred_at과
+    # 같은 정규화를 여기서도 적용해 호출자가 정규화된 값을 쓰게 한다.
+    observed_at, _ = _normalize_occurred_at(value["observed_at"])
     if not isinstance(value["sample_count"], int) or isinstance(value["sample_count"], bool) or value["sample_count"] < 0:
         raise ContractError("ASSESSMENT_SAMPLE_COUNT")
     if value["data_state"] not in {"PRESENT", "NO_DATA", "STALE"}:
@@ -303,6 +309,7 @@ def _validate_assessment_input(value: Any) -> None:
     }.get(evidence_type)
     if value["data_state"] == "PRESENT" and required_measurement and required_measurement not in measurements:
         raise ContractError("ASSESSMENT_REQUIRED_MEASUREMENT")
+    return observed_at
 
 
 def _allowed_monitor_ids() -> set[str]:

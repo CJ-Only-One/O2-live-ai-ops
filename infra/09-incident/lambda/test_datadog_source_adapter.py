@@ -136,6 +136,22 @@ class DatadogSourceAdapterTest(unittest.TestCase):
         envelope = json.loads(self.sqs.messages[0]["MessageBody"])
         self.assertEqual(envelope["occurred_at"], "2026-08-23T00:00:16.000Z")
 
+    def test_posix_assessment_observed_at_is_normalized_to_rfc3339(self):
+        # 2026-08-26 real test로 재현: 웹훅 payload 템플릿이 assessment_input.
+        # observed_at에 $DATE_POSIX(epoch 문자열)를 채우는데, 검증만 하고
+        # 정규화된 값으로 안 바꾸면 원본이 그대로 Correlator까지 가서
+        # CONTRACT_REJECTED:ASSESSMENT_OBSERVED_AT로 매번 죽는다.
+        assessment = source_payload()["assessment_input"]
+        assessment["observed_at"] = "1787443216"
+        result = self.invoke(function_event(source_payload(assessment_input=assessment)))
+
+        self.assertEqual(result["statusCode"], 200)
+        envelope = json.loads(self.sqs.messages[0]["MessageBody"])
+        self.assertEqual(
+            envelope["evidence"]["assessment_input"]["observed_at"],
+            "2026-08-23T00:00:16.000Z",
+        )
+
     def test_duplicate_payload_builds_same_trigger_and_idempotency_keys(self):
         payload, _ = adapter.validate_source(source_payload())
         first = adapter.build_envelope(payload)
