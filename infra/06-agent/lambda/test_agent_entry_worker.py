@@ -187,6 +187,25 @@ class AgentEntryWorkerTest(unittest.TestCase):
         request_body = json.loads(call.call_args.args[0].data)
         self.assertEqual(request_body["inputs"]["past_cases"], "- case")
 
+    def test_dify_accepts_production_workflow_outputs(self):
+        workflow_incident_id = "INC-" + self.chat_first["incident_id"].removeprefix("inc_")
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({
+            "data": {
+                "status": "succeeded", "id": "run-production",
+                "outputs": {
+                    "incident_id": workflow_incident_id,
+                    "status": "MANUAL_REQUIRED",
+                    "result": "payment diagnosis",
+                    "final_report_json": json.dumps({"incident_id": workflow_incident_id}),
+                },
+            }
+        }).encode()
+        rendered = worker._serialize_payload(self.chat_first)
+        with mock.patch.object(worker, "_api_key", return_value="app-test"):
+            with mock.patch.object(worker.urllib.request, "urlopen", return_value=response):
+                self.assertEqual(worker._call_dify(self.chat_first, rendered, ""), "run-production")
+
     def test_history_store_uses_incident_id_and_never_stores_hypothesis(self):
         s3 = mock.Mock()
         vectors = mock.Mock()

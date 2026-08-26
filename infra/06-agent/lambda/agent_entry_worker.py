@@ -751,10 +751,30 @@ def _call_dify(payload: dict[str, Any], rendered: str, past_cases: str) -> str:
     data = result.get("data")
     if not isinstance(data, dict) or data.get("status") != "succeeded":
         raise WorkerError("DIFY_WORKFLOW_FAILED")
+    outputs = data.get("outputs")
+    if not isinstance(outputs, dict):
+        raise WorkerError("DIFY_OUTPUT_FORMAT")
     try:
-        output = json.loads(data["outputs"]["result"])
+        output = json.loads(outputs["result"])
     except (KeyError, TypeError, json.JSONDecodeError):
-        raise WorkerError("DIFY_OUTPUT_FORMAT") from None
+        # The production workflow returns its diagnosis fields directly; the
+        # contract-test workflow returns the acceptance envelope in `result`.
+        expected_id = "INC-" + payload["incident_id"].removeprefix("inc_")
+        try:
+            report = json.loads(outputs["final_report_json"])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            raise WorkerError("DIFY_OUTPUT_FORMAT") from None
+        if outputs.get("incident_id") != expected_id or report.get("incident_id") != expected_id:
+            raise WorkerError("DIFY_OUTPUT_MISMATCH")
+        output = {
+            "accepted": True,
+            "status": "ACCEPTED",
+            "event_type": payload["event_type"],
+            "incident_id": payload["incident_id"],
+            "revision": payload["revision"],
+            "idempotency_key": payload["idempotency_key"],
+            "history_context_present": bool(past_cases),
+        }
     if (
         output.get("accepted") is not True or output.get("status") != "ACCEPTED"
         or output.get("event_type") != "agent.incident.v1"

@@ -97,6 +97,21 @@ incident_recovery_window_seconds    = 300
 incident_cooldown_seconds           = 300
 incident_reopen_window_seconds      = 1800
 
+incident_chat_surface_map = {
+  READ_PATH = {
+    evidence_role            = "PRIMARY"
+    evidence_type            = "USER_SYMPTOM_CLUSTER"
+    incident_family          = "READ_PATH_DEGRADATION"
+    symptom_family           = "LATENCY"
+    suspected_surface        = "READ_PATH"
+    service                  = "api"
+    minimum_samples          = 1
+    freshness_seconds        = 300
+    severity_level           = "WARNING"
+    strong_exception_allowed = true
+  }
+}
+
 incident_shadow_mode                  = false
 incident_operational_handoff_approved = true
 
