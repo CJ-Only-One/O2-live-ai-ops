@@ -82,7 +82,9 @@ resource "datadog_dashboard" "scenarios" {
           title       = "Warm 카나리 — 1분마다 0.1 RPS가 있어야 함"
           show_legend = true
           request {
-            q            = "avg:${var.metric_prefix}rps{service:o2-canary,env:$env}"
+            # 카나리 생존 신호는 UI의 $env 선택값에 의존하지 않는다.
+            # Terraform 배포 환경과 동일한 env로 고정해 대시보드가 조용히 비지 않게 한다.
+            q            = "avg:${var.metric_prefix}rps{service:o2-canary,env:${var.environment}}"
             display_type = "line"
           }
         }
