@@ -8,9 +8,11 @@
 ###############################################################################
 
 locals {
-  scenario_chat_scope = "service:chat-gateway,env:$env"
-  scenario_api_scope  = "service:api,env:$env"
-  scenario_kube_scope = "kube_cluster_name:$kube_cluster_name,kube_namespace:$kube_namespace"
+  # S1~S3는 대시보드에서 런타임 템플릿 변수가 비어도 결측으로 보이지 않게
+  # Terraform이 배포한 환경·클러스터 값으로 조회 범위를 고정한다.
+  scenario_chat_scope = "service:chat-gateway,env:${var.environment}"
+  scenario_api_scope  = "service:api,env:${var.environment}"
+  scenario_kube_scope = "kube_cluster_name:${var.kube_cluster_name},kube_namespace:${var.kube_namespace}"
 }
 
 resource "datadog_dashboard" "scenarios" {
@@ -23,24 +25,6 @@ resource "datadog_dashboard" "scenarios" {
     "S1은 chat-gateway, S2·S3는 api를 고정 조회하며 env와 Kubernetes 범위만 템플릿 변수로 바꾼다.",
     "복구 판정은 반드시 Warm PRE/POST snapshot과 함께 수행한다.",
   ])
-
-  template_variable {
-    name     = "env"
-    prefix   = "env"
-    defaults = [var.environment]
-  }
-
-  template_variable {
-    name     = "kube_cluster_name"
-    prefix   = "kube_cluster_name"
-    defaults = [var.kube_cluster_name]
-  }
-
-  template_variable {
-    name     = "kube_namespace"
-    prefix   = "kube_namespace"
-    defaults = [var.kube_namespace]
-  }
 
   widget {
     note_definition {
@@ -122,7 +106,7 @@ resource "datadog_dashboard" "scenarios" {
           title       = "서비스별 지표 신뢰도"
           show_legend = true
           request {
-            q            = "avg:${var.metric_prefix}confidence{env:$env} by {service}"
+            q            = "avg:${var.metric_prefix}confidence{env:${var.environment}} by {service}"
             display_type = "line"
           }
         }
@@ -521,11 +505,11 @@ resource "datadog_dashboard" "scenarios" {
           title       = "APM 읽기 경로 RPS · 5xx"
           show_legend = true
           request {
-            q            = "sum:trace.fastapi.request.hits{service:api,env:$env} by {resource_name}.as_rate()"
+            q            = "sum:trace.fastapi.request.hits{service:api,env:${var.environment}} by {resource_name}.as_rate()"
             display_type = "line"
           }
           request {
-            q            = "sum:trace.fastapi.request.hits.by_http_status{service:api,env:$env,http.status_code:5*}.as_count()"
+            q            = "sum:trace.fastapi.request.hits.by_http_status{service:api,env:${var.environment},http.status_code:5*}.as_count()"
             display_type = "bars"
           }
         }
