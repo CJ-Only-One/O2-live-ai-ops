@@ -57,8 +57,22 @@ class WarmClient:
         return out
 
     def latest(self, service: str, now: float | None = None) -> dict | None:
-        w = self.windows(service, 1, now=now)
-        return w[-1] if w else None
+        """가장 최근의 **닫힌** 윈도우.
+
+        ★ 열려 있는 윈도우를 주면 안 된다. 집계 Lambda 가 이벤트를 받는 대로
+          DynamoDB 를 갱신하므로, 방금 시작한 창은 부분 집계 상태다. 그 값이
+          Agent 의 복구 판정으로 그대로 간다 — 아직 실패가 안 담긴 창에서
+          `channel_limited_rate = 0`, `failure_codes = {}` 가 나와 "정상 복귀"
+          로 읽힌 사례가 있다(T-040).
+
+          `window_end` 가 아직 안 지났으면 그 창은 진행 중이다. 닫힌 창이
+          하나도 없으면 `None` 이다 — 부분값을 주느니 없다고 말한다.
+        """
+        now = now or time.time()
+        for item in reversed(self.windows(service, DEFAULT_WINDOWS, now=now)):
+            if item.get("window_end", 0) <= now:
+                return item
+        return None
 
     def range(self, service: str, start: int, end: int, now: float | None = None) -> list[dict]:
         now = now or time.time()
@@ -91,7 +105,11 @@ class WarmClient:
         if "metrics" in include:
             series = self.windows(service, count, now=now)
             bundle["windows"] = series
-            bundle["latest"] = series[-1] if series else None
+            # windows 는 열린 창까지 그대로 준다(추세를 보려면 필요하다).
+            # latest 는 판정에 쓰이므로 닫힌 창만 고른다 — 위 latest() 참고.
+            bundle["latest"] = next(
+                (it for it in reversed(series) if it.get("window_end", 0) <= now), None
+            )
             bundle["trend"] = _trend(series)
 
         if "deploy" in include:
