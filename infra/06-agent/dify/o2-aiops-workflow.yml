@@ -2209,9 +2209,9 @@ workflow:
       width: 241
       zIndex: 1001
     - data:
-        code: "import json\n\ndef main() -> dict:\n    return {'event_json':json.dumps({'type':'REDIAGNOSE','reason':'CANDIDATES_EXHAUSTED'},separators=(',',':'))}\n"
+        code: "import json\n\n# \ud6c4\ubcf4\uac00 \ube48 \uc774\uc720\ub294 \ub458\uc774\ub2e4. \uc774 \uc6d0\uc778\uc5d0 active \ub7f0\ubd81\uc774 \uc544\uc608 \uc5c6\uc5b4\uc11c\uc778\uac00,\n# active \ub7f0\ubd81\uc740 \uc788\ub294\ub370 \uc774\ubc88 \uc778\uc2dc\ub358\ud2b8\uc5d0\uc11c \ud6c4\ubcf4\ub97c \ub2e4 \uc18c\uc9c4\ud574\uc11c\uc778\uac00.\n# \uc55e\uc5d0\uc11c\ub294 \uc7ac\uc9c4\ub2e8\ud574\ub3c4 \ub098\uc62c \uc870\uce58\uac00 \uc5c6\ub2e4 \u2014 \uc7ac\uc2dc\ub3c4\uac00 \uc544\ub2c8\ub77c \uc2e4\ud589 \uac00\ub2a5\ud55c\n# \uc9c0\uc2dd\uc774 \uc5c6\uc5b4 \uba48\ucd98 \uac83\uc774\ubbc0\ub85c \uc9c4\ub2e8\uacfc \ud544\uc694 \uc870\uce58\ub9cc \ubcf4\uace0\ud558\uace0 ESCALATED\ub85c\n# \ub05d\ub0b8\ub2e4(scenario-experiment.md 0.7 Phase 2, S3 1\ucc28 \uc2e4\ud589).\n# experiment\ub294 draft\ub97c \ud55c\uc815 \ud5c8\uc6a9\ud55c \uc0c1\ud0dc\ub77c \ub7f0\ubd81\uc774 \uc788\ub294 \ucabd\uc73c\ub85c \ubcf8\ub2e4(S2 \uc2dc\uc5f0).\nHAS_RUNBOOK = {'active', 'experiment'}\n\n\ndef main(runbook_json: str) -> dict:\n    try:\n        rb = json.loads(runbook_json or '{}')\n    except Exception:\n        rb = {}\n    if rb.get('runbook_status') not in HAS_RUNBOOK:\n        event = {'type': 'MANUAL_REQUIRED', 'reason': 'NO_ACTIVE_RUNBOOK'}\n    else:\n        event = {'type': 'REDIAGNOSE', 'reason': 'CANDIDATES_EXHAUSTED'}\n    return {'event_json': json.dumps(event, separators=(',', ':'))}\n"
         code_language: python3
-        desc: ''
+        desc: 조치 후보가 비었을 때 종료 사유를 가른다. active(또는 S2 experiment) 런북이 있으면 종전대로 REDIAGNOSE, 없으면 MANUAL_REQUIRED + NO_ACTIVE_RUNBOOK으로 ESCALATED 종료. 임의 조치 대신 멈추는 것이 S3 1차의 정의다.
         isInIteration: false
         isInLoop: true
         loop_id: main_loop
@@ -2220,9 +2220,13 @@ workflow:
             children: null
             type: string
         selected: false
-        title: 13-A. Event — Candidates Exhausted
+        title: 13-A. Event — No Candidate Action
         type: code
-        variables: []
+        variables:
+        - value_selector:
+          - runbook_shape
+          - runbook_json
+          variable: runbook_json
       height: 50
       id: ev_candidates_exhausted
       parentId: main_loop
@@ -4521,9 +4525,9 @@ workflow:
       width: 241
       zIndex: 1001
     - data:
-        code: "import json\n\ndef main(rca_category: str, http_body: str) -> dict:\n    try:\n        r=json.loads(http_body or '{}')\n    except Exception:\n        r={}\n    actions=r.get('actions') if isinstance(r.get('actions'), list) else []\n    success_criteria=r.get('success_criteria')\n    payload={'store':'RUNBOOK_LOOKUP_API','rca_category':rca_category,'actions':actions,'success_criteria':success_criteria}\n    return {'runbook_json':json.dumps(payload,ensure_ascii=False,separators=(',',':'))}\n"
+        code: "import json\n\ndef main(rca_category: str, http_body: str) -> dict:\n    try:\n        r=json.loads(http_body or '{}')\n    except Exception:\n        r={}\n    actions=r.get('actions') if isinstance(r.get('actions'), list) else []\n    success_criteria=r.get('success_criteria')\n    # runbook_status(active|experiment|draft|retired|missing)를 버리면 하류가\n    # '조치 후보가 없다'와 '검증된 런북 자체가 없다'를 구분할 수 없다.\n    runbook_status=r.get('runbook_status') or 'missing'\n    payload={'store':'RUNBOOK_LOOKUP_API','rca_category':rca_category,'runbook_status':runbook_status,'actions':actions,'success_criteria':success_criteria}\n    return {'runbook_json':json.dumps(payload,ensure_ascii=False,separators=(',',':'))}\n"
         code_language: python3
-        desc: Runbook Lookup 응답을 excluded_filter가 기대하는 형태로 정리. actions 없으면 빈 배열.
+        desc: Runbook Lookup 응답을 excluded_filter가 기대하는 형태로 정리. actions 없으면 빈 배열. runbook_status를 같이 실어 13-A가 '후보 소진'과 'active 런북 없음'을 가른다.
         outputs:
           runbook_json:
             children: null
