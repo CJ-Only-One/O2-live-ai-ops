@@ -217,12 +217,63 @@ def _template(value: str | dict[str, str] | None, service: str) -> str | None:
     return value.get(service) if isinstance(value, dict) else value
 
 
+def _points(series: dict[str, Any], to_ts: int | None) -> list[tuple[int, float]]:
+    """이 series 의 유효한 점들. **아직 안 닫힌 마지막 버킷은 뺀다.**
+
+    Datadog 은 창 끝의 버킷을 집계 중인 상태로도 돌려주는데, 그때 값이
+    `null` 이 아니라 **0** 으로 온다. 그 0 을 그대로 지표 값으로 쓰면
+    "처리량이 0" 이나 "실패율 1.0" 같은 극단값이 나온다(T-040).
+
+    `interval` 은 Datadog 응답이 series 마다 주는 롤업 간격이다. 버킷 시작
+    시각에 그 간격을 더해 `to_ts` 를 넘으면 아직 안 닫힌 것으로 본다 —
+    매직넘버를 쓰지 않는 이유다.
+    """
+    interval = series.get("interval")
+    cutoff_ms: float | None = None
+    if to_ts is not None and isinstance(interval, (int, float)) and interval > 0:
+        cutoff_ms = (to_ts - float(interval)) * 1000
+
+    out: list[tuple[int, float]] = []
+    for point in series.get("pointlist") or []:
+        if not (isinstance(point, list) and len(point) == 2 and point[1] is not None):
+            continue
+        timestamp_ms = int(point[0])
+        if cutoff_ms is not None and timestamp_ms > cutoff_ms:
+            continue
+        out.append((timestamp_ms, float(point[1])))
+    return out
+
+
+def _all_points(result: dict[str, Any], to_ts: int | None) -> list[tuple[int, float]]:
+    return [pt for series in result.get("series") or [] for pt in _points(series, to_ts)]
+
+
+def _reduce(points: list[tuple[int, float]], value_type: str) -> float | None:
+    """창 전체를 하나의 값으로 줄인다. **점 하나를 고르지 않는다.**
+
+    `_latest()` 는 300초 창에서 몇 초짜리 점 하나를 썼다. 그 버킷이
+    완성됐더라도 창의 1% 도 안 되는 표본이라, 조치 효과를 판정하는 자리에
+    쓰기에는 통계적으로 부족했다. 창을 길게 잡은 이유가 노이즈를 평균내기
+    위해서인데 마지막에 점 하나로 되돌아갔다.
+
+    `ratio` 는 여기 오지 않는다 — 비율의 평균은 비율이 아니라서
+    `_observed_ratio()` 가 분자·분모를 각각 합산한 뒤 나눈다.
+    """
+    if not points:
+        return None
+    values = [v for _, v in points]
+    if value_type == "count":
+        return sum(values)
+    if value_type == "gauge":
+        # 백분위는 평균낼 수 없다. 복구 판정에서는 **최댓값**이 보수적이다 —
+        # 운 좋은 버킷 하나로 "복구" 를 선언하지 않는다.
+        return max(values)
+    # rate: 창 평균이 "지금 처리량" 이다.
+    return sum(values) / len(values)
+
+
 def _latest(result: dict[str, Any]) -> tuple[float | None, int | None]:
-    candidates: list[tuple[int, float]] = []
-    for series in result.get("series") or []:
-        for point in series.get("pointlist") or []:
-            if isinstance(point, list) and len(point) == 2 and point[1] is not None:
-                candidates.append((int(point[0]), float(point[1])))
+    candidates = _all_points(result, None)
     if not candidates:
         return None, None
     timestamp_ms, value = max(candidates, key=lambda item: item[0])
@@ -237,28 +288,57 @@ def _observed(
     scale: float = 1,
     *,
     sum_points: bool = False,
+    value_type: str = "gauge",
 ) -> dict[str, Any]:
     result = query_fn(query_text, from_ts, to_ts)
-    value, timestamp_ms = _latest(result)
+    points = _all_points(result, to_ts)
+    timestamp_ms = max((ts for ts, _ in points), default=None)
     if sum_points:
-        values = [
-            float(point[1])
-            for series in result.get("series") or []
-            for point in series.get("pointlist") or []
-            if isinstance(point, list) and len(point) == 2 and point[1] is not None
-        ]
-        value = sum(values) if values else None
+        value = sum(v for _, v in points) if points else None
+    else:
+        value = _reduce(points, value_type)
     value = value * scale if value is not None else None
     groups = []
     for series in result.get("series") or []:
-        group_value, group_timestamp = _latest({"series": [series]})
+        series_points = _points(series, to_ts)
+        group_value = _reduce(series_points, value_type)
         if group_value is not None:
             groups.append({
                 "scope": series.get("scope"),
                 "value": group_value * scale,
-                "timestamp_ms": group_timestamp,
+                "timestamp_ms": max(ts for ts, _ in series_points),
             })
     return {"query": query_text, "value": value, "timestamp_ms": timestamp_ms, "groups": groups}
+
+
+def _observed_ratio(
+    query_fn,
+    numerator_text: str,
+    denominator_text: str,
+    from_ts: int,
+    to_ts: int,
+    scale: float = 1,
+) -> dict[str, Any]:
+    """비율은 **합의 비율**로 낸다. 비율의 평균이 아니다.
+
+    카탈로그의 `primary` 가 `분자 / 분모` 한 문자열이라 Datadog 이 버킷마다
+    나눠 준다. 그 점들을 평균내면 분모가 버킷마다 다를 때 틀린 값이 된다.
+    창 끝에서 분자·분모 버킷이 어긋나면 0 이나 1.0 같은 극단값도 나온다(T-040).
+
+    그래서 쿼리를 ` / ` 로 쪼개 각각 창 전체를 합산한 뒤 나눈다. 카탈로그
+    스키마는 안 바꾼다 — 여섯 ratio 지표가 모두 정확히 두 조각이다.
+    """
+    numerator = _observed(query_fn, numerator_text, from_ts, to_ts, sum_points=True)
+    denominator = _observed(query_fn, denominator_text, from_ts, to_ts, sum_points=True)
+    top, bottom = numerator["value"], denominator["value"]
+    value = (top / bottom) * scale if top is not None and bottom else None
+    timestamps = [t for t in (numerator["timestamp_ms"], denominator["timestamp_ms"]) if t is not None]
+    return {
+        "query": f"{numerator_text} / {denominator_text}",
+        "value": value,
+        "timestamp_ms": min(timestamps) if timestamps else None,
+        "groups": [],
+    }
 
 
 def read_metric(
@@ -275,13 +355,28 @@ def read_metric(
     sample_template = _template(catalog["sample"], service)
     if primary_template is None:
         raise MetricRequestError("metric is not available for service")
-    primary = _observed(
-        query_fn,
-        _render(primary_template, scope, group),
-        from_ts,
-        to_ts,
-        catalog["primary_scale"],
-    )
+    value_type = catalog["value_type"]
+    primary_query = _render(primary_template, scope, group)
+    if value_type == "ratio" and " / " in primary_query:
+        # 비율은 분자·분모를 각각 창 전체로 합산한 뒤 나눈다(_observed_ratio).
+        numerator_text, denominator_text = primary_query.split(" / ", 1)
+        primary = _observed_ratio(
+            query_fn,
+            numerator_text,
+            denominator_text,
+            from_ts,
+            to_ts,
+            catalog["primary_scale"],
+        )
+    else:
+        primary = _observed(
+            query_fn,
+            primary_query,
+            from_ts,
+            to_ts,
+            catalog["primary_scale"],
+            value_type=value_type,
+        )
     sample = (
         _observed(
             query_fn,
@@ -300,6 +395,7 @@ def read_metric(
             from_ts,
             to_ts,
             catalog["fallback_scale"],
+            value_type=value_type,
         )
         if catalog["fallback"]
         else {"query": None, "value": None, "timestamp_ms": None, "groups": []}
