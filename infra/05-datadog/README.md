@@ -64,12 +64,29 @@ terraform apply tfplan
 US1 기본값으로 보내면 403이 나고, `datadog.py` 가 그것을 삼켜 집계를 막지
 않기 때문이다(의도된 설계).
 
-## 대시보드 둘
+## 대시보드
 
-| 파일 | 제목 | 데이터 출처 | 축 |
-|---|---|---|---|
-| `dashboard.tf` | O2 라이브커머스 — 비즈니스 관측 | `06-datastream` 집계 Lambda (`o2.warm.*`) | `service` · `env` |
-| `dashboard_infra.tf` | O2 라이브커머스 — 인프라 · 쿠버네티스 운영 | `04-platform` 의 Datadog Agent (kubelet·kube-state-metrics·APM) | `kube_cluster_name` · `kube_namespace` (HTTP 그룹만 `service`·`env`) |
+**출처별 운영 화면**과 **목적별 합성 화면**이 섞여 있다. 어느 쪽인지가 곧
+"빈 위젯을 어떻게 읽어야 하는가" 를 정한다 — 운영 화면의 빈 위젯은 그 출처가
+죽은 것이고, 합성 화면의 빈 위젯은 그 목적에 필요한 계측이 없는 것이다.
+
+| 파일 | 제목 | 성격 | 데이터 출처 | 축 |
+|---|---|---|---|---|
+| `dashboard.tf` | O2 라이브커머스 — 비즈니스 관측 | 출처별 | `06-datastream` 집계 Lambda (`o2.warm.*`) | `service` · `env` |
+| `dashboard_infra.tf` | O2 라이브커머스 — 인프라 · 쿠버네티스 운영 | 출처별 | `04-platform` 의 Datadog Agent (kubelet·kube-state-metrics·APM) | `kube_cluster_name` · `kube_namespace` (HTTP 그룹만 `service`·`env`) |
+| `dashboard_eks_monitoring.tf` | AWS Infrastructure — EKS 상세 | 출처별 | Datadog AWS 통합 · kube-state-metrics | `availability_zone` 등 |
+| `pipeline_native.tf` | 파이프라인 구간별 상태 | 출처별 | `aws.lambda.*` · `aws.kinesis.*` · `aws.firehose.*` · `aws.sqs.*` | 함수·스트림·큐 |
+| `dashboard_scenarios.tf` | O2 AI Agent — S1·S2·S3 이상 탐지 | 합성 (**실험 진행자용**) | 위 전부 | `env` · `kube_*` |
+| `dashboard_demo.tf` | O2 — 실시간 서비스 관측·자동 대응 | 합성 (**발표용**) | 위 전부 | `env` · `service` · `kube_namespace` |
+
+두 합성 화면은 **이름 규칙이 반대다.** 헷갈리면 대상을 보고 고른다.
+
+- `dashboard_scenarios.tf` 는 실험 대본을 아는 사람이 본다. "S1", "결제 처리
+  지연" 처럼 **대본의 언어**로 부르고, 실험 순서대로 배치한다.
+- `dashboard_demo.tf` 는 대본을 모르는 사람에게 보여준다. 위젯 제목에
+  **시나리오 번호·이름을 쓰지 않고** 증상의 이름으로만 부른다 — 특정 시나리오용
+  계측이 아니라 어느 서비스에나 있는 신호를 읽고 있다는 것이 요점이기 때문이다.
+  시나리오가 늘거나 바뀌어도 이 파일은 고칠 것이 없어야 한다.
 
 `dashboard_infra.tf` 는 Agent 가 이미 보내는 원시 지표(`kubernetes.*`,
 `kubernetes_state.*`, `trace.http.request.*`)만 쓴다 — 이쪽은 집계 Lambda를
