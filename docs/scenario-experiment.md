@@ -497,6 +497,11 @@ Argo 는 `selfHeal` 이 켜져 있어(`04-platform/argocd.tf`) 매니페스트�
 대상에 **HPA·KEDA 를 붙이지 않는다** — 되돌리는 주체가 하나 더 늘어난다.
 지금 ScaledObject 는 `order-worker` 에만 있고 api 에는 없다.
 
+**되돌리는 주체는 HPA·KEDA 만이 아니다.** `cue-warmer` 가 큐시트 사전 확장을 위해
+`api` 의 `spec.replicas` 를 폴링해서 기준값으로 되돌린다 — 그래서 S2 는 실행 전에
+워머를 세운다(4.3, T-043). **파드 수를 조치 수단으로 쓰는 시나리오를 만들 때는 그
+필드를 쓰는 컨트롤러를 먼저 세어본다.**
+
 > Agent 가 replica 수를 **자유롭게 만들어 적용하지 않는다**(D-041).
 > 증설은 런북이 지정한 **한 단계**이고, 상한과 예산은 노브 카탈로그 조회로 정해진다.
 
@@ -547,6 +552,32 @@ curl -fsS -X POST "$CHAT_GATEWAY_ADMIN_URL" \
 
 ### 4.3 S2 — CPU 제한 canary
 
+**시작 전에 `cue-warmer` 를 먼저 세운다.** 이걸 빼먹으면 실험이 조용히 무의미해진다 —
+Agent 가 `api` 를 증설해도 워머가 3~5초 만에 기준값으로 되돌리고, 조치 실행기는 그
+사실을 모른 채 200 을 돌려준다. 검증은 증설 전 상태를 보고 "효과 없음"으로 판정한다
+(T-043). 워머는 `api` 의 `spec.replicas` 를 10초마다 폴링해서 기준값과 다르면
+되돌리는데, **누가 바꿨는지는 구분하지 않는다.**
+
+`cue-warmer` 는 Argo 의 `ignoreDifferences` 목록에 없어서 그냥 `kubectl scale` 만
+하면 selfHeal 이 같은 초에 되살린다. **selfHeal 을 먼저 끄고 내린다.**
+
+```bash
+kubectl patch application o2-dev -n argocd --type merge \
+  -p '{"spec":{"syncPolicy":{"automated":{"selfHeal":false,"prune":true}}}}'
+kubectl scale deploy/cue-warmer -n o2-dev --replicas=0
+
+# 파드가 실제로 사라졌는지 확인하고 나서 진행한다.
+kubectl get deploy cue-warmer -n o2-dev
+```
+
+`ignoreDifferences` 에 `cue-warmer` 를 추가하는 방법은 쓰지 않는다 — 그 값의 주인이
+Git 이 아니라 사람 손이 되어, 실험 뒤 0 인 채로 잊히면 사전 확장이 조용히 죽는다.
+selfHeal 토글은 되돌리는 일이 눈에 보인다는 점에서 낫다. **근본 해결은 워머가 자기가
+설정한 값일 때만 되돌리게 고치는 것이고, 그러면 이 절차 자체가 없어진다.**
+
+측정 결과를 남길 때 **"cue-warmer 정지 상태에서 측정"을 함께 적는다.** 운영에서는
+워머가 켜져 있으므로 이 조건을 빼면 결과가 운영을 대표하지 못한다.
+
 canary는 **클러스터에 배포된 현재 main Deployment**를 원본으로 읽으므로 이미지·
 환경변수·ServiceAccount가 main과 같다. 로컬 `O2-live-deploy` 파일은 Argo가 먼저
 새 버전을 배포하면 뒤처질 수 있어 실행 원본으로 쓰지 않는다. CPU와 probe 값은
@@ -556,6 +587,7 @@ canary는 **클러스터에 배포된 현재 main Deployment**를 원본으로 �
 CANARY_CPU_LIMIT='<측정값>' \
 CANARY_READINESS_TIMEOUT_SECONDS='<측정값>' \
 CANARY_READINESS_FAILURE_THRESHOLD='<측정값>' \
+CANARY_LIVENESS_TIMEOUT_SECONDS='<측정값>' \
 loadtest/s2-canary.sh render > /tmp/o2-s2-api-canary.yaml
 
 kubectl diff -f /tmp/o2-s2-api-canary.yaml
@@ -570,6 +602,10 @@ kubectl rollout status deploy/api-canary -n o2-dev --timeout=180s
 loadtest/s2-canary.sh remove
 kubectl scale deploy/api -n o2-dev --replicas=2
 kubectl rollout status deploy/api -n o2-dev --timeout=180s
+
+kubectl scale deploy/cue-warmer -n o2-dev --replicas=1
+kubectl patch application o2-dev -n argocd --type merge \
+  -p '{"spec":{"syncPolicy":{"automated":{"selfHeal":true,"prune":true}}}}'
 ```
 
 ### 4.4 S3 — 외부 결제 PG 지연, 지식화 전후 두 번 실행
@@ -654,6 +690,10 @@ curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
 test "$(kubectl get deploy api -n o2-dev -o jsonpath='{.spec.replicas}')" = '2'
 test -z "$(kubectl get deploy api-canary -n o2-dev --ignore-not-found -o name)"
 kubectl get endpointslice -n o2-dev -l kubernetes.io/service-name=api -o wide
+
+# S2 를 돌렸으면 여기서 반드시 확인한다 (4.3).
+test "$(kubectl get deploy cue-warmer -n o2-dev -o jsonpath='{.spec.replicas}')" = '1'
+test "$(kubectl get application o2-dev -n argocd -o jsonpath='{.spec.syncPolicy.automated.selfHeal}')" = 'true'
 ```
 
 마지막으로 Datadog 모니터가 `OK`인지, k6 `dropped_iterations`가 허용 범위인지,

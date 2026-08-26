@@ -56,7 +56,9 @@
 | T-038 | 조치 실행기가 증설했는데 10초 뒤 원래 replicas로 돌아간다 | cue-warmer, 조치 소유권 충돌, 실험 잠금, RoleBinding 원복 |
 | T-040 | 지표는 있는데 조회 값이 `0` 이나 `1.0` 으로 튄다 | `_latest()`, 미완성 버킷, 창 전체 합산 |
 | T-041 | 부하 테스트 p95 가 서버 지표보다 6배 크다 | k6 이벤트 루프, 클라이언트측 계측, 부하 생성기 포화 |
-| T-042 | `latency_p95_by_pod`가 실부하를 걸어도 계속 비어 있다 | 표본이 지금 파드가 아니라 오래된 파드 이름으로 들어옴 — SQS→Warm 집계 지연 또는 유실 |
+| T-042 | `latency_p95_by_pod`가 실부하를 걸어도 계속 비어 있다 | `read_path_degraded` 노브가 켜져 있어 `inventory.check` 발행 자체가 꺼짐 |
+| T-043 | Agent 가 늘린 파드가 몇 초 만에 원래대로 돌아간다 | cue-warmer 가 남의 조치를 자기 잔여물로 보고 되돌림 |
+| T-044 | S2 Dify 워크플로가 매번 `status code 400` 으로 죽는다 | 방송 축 없는 알림에서 `broadcast_id` 가 `LIVE-001` 로 fallback |
 
 
 ---
@@ -1803,3 +1805,96 @@ CloudWatch로 직접 확인해(최대 3.8초, 문제 사례인 102초와 비교 
 (`broadcast.py`)에 있는 조건문 하나였고, `GET /api/admin/read-path-degraded`로
 라이브 상태를 직접 찍어보고 나서야 드러났다. 문서·주석에서 그럴듯한 설명을 찾는 것과
 라이브 상태를 직접 조회하는 것 중 후자를 먼저 했어야 더 빨리 찾았을 것이다.
+---
+
+## T-043. Agent 가 늘린 파드가 몇 초 만에 원래대로 돌아간다
+
+**증상** — S2 E2E 에서 Agent 가 1차 조치로 `api` 를 2 → 3 으로 늘렸다. patch 는
+성공했고 `ScalingReplicaSet` 이벤트도 남았는데, 3~5초 뒤 3 → 2 로 되돌아갔다.
+두 번의 조치 시도에서 모두 같았다. 조치 실행기는 patch 뒤 `STABILIZATION_SECONDS`
+만큼 자고 200 을 돌려주므로, **실행기가 성공을 보고하는 시점에는 이미 조치가
+사라져 있다.** 검증 노드는 증설 전 상태를 보고 "효과 없음"으로 판정한다.
+
+```
+21:07:1x  Scaled up   api 2 -> 3     (Agent)
+21:07:22  Scaled down api 3 -> 2     (5초 뒤)
+21:10:4x  Scaled up   api 2 -> 3     (Agent, 재시도)
+21:10:53  Scaled down api 3 -> 2     (3초 뒤)
+```
+
+**원인** — `cue-warmer` 다. 큐시트 기반 사전 확장기가 10초마다 `api` 의 scale 을
+폴링해서, **현재값이 기준값과 다르면 기준값으로 되돌린다.**
+
+```
+2026-08-26 12:07:22 INFO cue-warmer 원복: api 3 -> 2
+2026-08-26 12:10:53 INFO cue-warmer 원복: api 3 -> 2
+```
+
+워머는 `api=3` 을 보고 자기가 사전 확장으로 올려둔 잔여물이라고 판단한다.
+**누가 올렸는지 구분하지 않는다.** Agent 와 워머가 같은 `spec.replicas` 를
+소유하고 있고, 폴링 주기가 짧은 워머가 항상 이긴다.
+
+**해결** — 실험 중에는 워머를 세운다. 조치 수단이 파드 수일 때 되돌리는 주체를
+줄인다는 원칙은 `scenario-experiment.md` 3절에 이미 있다(거기서는 HPA·KEDA 를
+대상으로 적었는데, 워머가 같은 역할을 한다).
+
+```bash
+kubectl scale deploy/cue-warmer -n o2-dev --replicas=0
+# 실험이 끝나면
+kubectl scale deploy/cue-warmer -n o2-dev --replicas=1
+```
+
+**이것은 임시 조치다.** 운영에서는 워머가 켜져 있으므로, 지금 구조로는 Agent 의
+증설 조치가 운영에서 성립하지 않는다. 워머가 **자기가 설정한 값일 때만** 되돌리게
+바꿔야 공존한다. 측정 결과를 남길 때는 "워머 정지 상태에서 측정"을 함께 적는다.
+
+**왜 늦게 찾았나** — Argo CD 를 먼저 의심했다. `argocd.tf` 에 api `/spec/replicas`
+ignore 와 `RespectIgnoreDifferences=true` 가 있다는 것을 알고 있었고, 그 설정이
+안 먹는 사례를 아는 탓에 거기부터 팠다. 라이브 Application 을 찍어보니 설정은
+정상이었고 **마지막 sync 가 전날 16:08** 이라 무죄였다. 되돌리는 주체 후보를
+`replicas` 를 쓰는 워크로드로 넓히고 나서야 워머가 나왔다. 이벤트에 "누가"
+되돌렸는지가 안 남는다는 것이 핵심 어려움이다 — `kubectl get events` 는
+`deployment-controller` 만 보여준다. **그 값을 쓰는 컨트롤러를 먼저 세어봤어야
+했다.**
+
+---
+
+## T-044. S2 Dify 워크플로가 매번 `status code 400` 으로 죽는다
+
+**증상** — S2 E2E 에서 진입·진단·런북 조회·조치 실행까지 정상으로 간 뒤,
+워크플로가 끝까지 못 가고 죽는다. Worker 로그에는 실패한 노드가 안 나온다.
+
+```
+[ERROR] RuntimeError: dify workflow failed: Request failed with status code 400
+```
+
+**원인** — 워크플로 안의 `read-path-degraded` 상태 조회 노드가 **존재할 수 없는
+`broadcast_id`** 로 호출한다.
+
+```
+GET /api/admin/read-path-degraded?broadcast_id=LIVE-001  ->  400 Bad Request
+```
+
+`LIVE-001` 은 Dify normalize 의 fallback 값이다. S2 진입 monitor 는 서비스 단위
+쿼리(`p99:trace.fastapi.request{service:api,env:dev}`)라 알림 태그에 방송 축이
+없고, 그러면 normalize 가 `LIVE-001` 을 채운다. api 쪽 `BroadcastId` 는
+`apps/api/app/schemas/common.py` 에서 `^bc_[0-9]+$` 로 제약돼 있어 `LIVE-001` 은
+검증에서 떨어진다. 노드 하나의 400 이 워크플로 전체를 죽인다.
+
+**S1 이 같은 뿌리의 문제를 먼저 밟았다.** 거기서는 팬아웃 총량(서비스 합계)으로
+진입할 때 방송 축이 없어 **없는 방송에 채널 제한을 거는** 형태로 나타났고,
+진입을 `by {broadcast_id}` multi-alert 로 옮겨 해결했다. S2 는 서비스 전체 꼬리
+지연이 주제라 같은 해법을 쓸 수 없다.
+
+**해결** — 아직 안 고쳤다. 방향은 둘을 같이 가는 것이다.
+
+1. 방송 축이 없으면 `read-path-degraded` 노드를 **건너뛴다.** 이 조회는 S3 용이고
+   S2 에는 필요 없다.
+2. `LIVE-001` fallback 을 없앤다. 없는 값을 지어내면 그 값이 조회에 그치지 않고
+   **조치 대상으로도 쓰인다**(S1 사례).
+
+**왜 늦게 찾았나** — Worker 로그의 오류 문구가 Dify 가 만든 일반 문구라 어느 노드가
+400 인지 안 나온다. Dify 는 VPC 내부 사설 IP 라 콘솔 실행 로그를 밖에서 못 본다.
+**부르는 쪽이 아니라 불리는 쪽 로그로 좁혀서** 찾았다 — 워크플로가 부르는 대상을
+DSL 환경변수에서 열거하고(`WARM_API_URL`, `HOT_PROXY_URL`, `API_ADMIN_URL` …)
+각각의 로그를 훑으니 api 파드 접근 로그에 400 이 그대로 찍혀 있었다.
