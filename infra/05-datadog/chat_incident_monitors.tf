@@ -53,7 +53,14 @@ resource "datadog_monitor" "chat_block_rate" {
   # CHANNEL_LIMITED failures and the denominator counts every chat.send attempt.
   # This evidence also requires a broadcast scope, so both numerator and
   # denominator are grouped by the same broadcast_id.
-  query = "avg(last_5m):sum:o2.app.failure{env:${local.monitor_env},service:chat-gateway,event:chat.send,failure_code:CHANNEL_LIMITED} by {broadcast_id}.as_count() / sum:o2.app.business_event{env:${local.monitor_env},service:chat-gateway,event:chat.send} by {broadcast_id}.as_count() >= ${var.chat_block_rate_critical}"
+  #
+  # `failure_code` 는 **소문자로 조회한다.** 앱은 `CHANNEL_LIMITED` 를 그대로
+  # 보내지만 Datadog 은 메트릭 태그 값을 소문자로 정규화해 저장한다. 대문자로
+  # 조회하면 metric 은 있는데 분자가 영구 0 이라 차단률이 0 으로 고정되고,
+  # 조치가 정상 사용자를 과도하게 잘라도 알림이 뜨지 않는다. 2026-08-25 실측에서
+  # 소문자 조회가 0.49 를 반환해 확인했다(T-040 · M-010 관측 3).
+  # Hot 카탈로그(`o2hot/metric_catalog.py` 의 `block_rate`)도 소문자를 쓴다.
+  query = "avg(last_5m):sum:o2.app.failure{env:${local.monitor_env},service:chat-gateway,event:chat.send,failure_code:channel_limited} by {broadcast_id}.as_count() / sum:o2.app.business_event{env:${local.monitor_env},service:chat-gateway,event:chat.send} by {broadcast_id}.as_count() >= ${var.chat_block_rate_critical}"
 
   message = <<-EOT
     Chat 정상 사용자 차단률이 ${var.chat_block_rate_critical}를 초과했습니다.
