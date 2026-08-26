@@ -216,10 +216,22 @@ RUNBOOKS = [
         # items/s를 실측으로 붙였다. p95_ms/error_rate만으로는 fanout 자체가
         # 막힌 채로도 RESOLVED 오판정이 날 수 있어(예: 요청이 아예 안 들어와
         # error_rate가 낮아지는 경우) items_per_sec을 OR 조건에 추가한다.
+        #
+        # 2026-08-26: channel_block_rate를 success_criteria에서 뺐다. 부하테스트
+        # 관측(분당 1,200건, limit=500)으로 차단률 58%가 나왔는데, limit_channel_volume은
+        # "정상 사용자 발화를 일부러 거부"하는 게 조치의 작동 원리 자체다 — 조치가
+        # 설계대로 잘 동작할수록 차단률은 오히려 올라간다. 그래서 <=0.05를 성공
+        # 기준으로 두면 이 조치가 성공 조건과 구조적으로 싸운다(같은 축에서
+        # 자기 자신과 모순). S1 서사("값은 되돌려도 떠난 시청자는 안 돌아온다")도
+        # 차단률이 사람이 알고 감수해야 할 "대가"지 자동 판정이 재는 회복 지표가
+        # 아니라는 뜻이다. 그래서 이건 SLO 판정(success_criteria)이 아니라 L3
+        # Slack 승인 시 사람에게 보여줄 정보 쪽으로 옮겨야 한다 — 지금은 승인
+        # 메시지(slack_approval_request.py)에 차단률이 전혀 안 보이는 것도 같은
+        # 문제다. 실제 차단률 수치를 승인 메시지에 실측값으로 붙이는 건 부하테스트
+        # 결과(M-010)가 나온 뒤에 한다 — 안 잰 숫자를 지어내 보여주지 않는다.
         "success_criteria": {
             "conditions": [
                 {"metric": "chat_propagation_p95_ms", "comparison": "<=", "threshold": 800},
-                {"metric": "channel_block_rate", "comparison": "<=", "threshold": Decimal("0.05")},
                 {"metric": "p95_ms", "comparison": "<=", "threshold": 500},
                 {"metric": "error_rate", "comparison": "<=", "threshold": Decimal("0.05")},
                 {"metric": "items_per_sec", "comparison": "<=", "threshold": 20000},
