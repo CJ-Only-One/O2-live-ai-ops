@@ -41,3 +41,18 @@ agent_entry_allowed_incident_ids         = []
 
 # Agent Worker가 Valkey 원본 상태를 읽는 인증 GET. 키 값은 SSM SecureString에 둔다.
 agent_read_path_status_url = "http://k8s-o2dev-frontend-0af27d967f-1008618203.ap-northeast-2.elb.amazonaws.com/api/admin/read-path-degraded"
+
+# ── S2 실험 게이트 ────────────────────────────────────────────────
+# RB-API-LATENCY-001(1차 증설)과 RB-API-POD-RESOURCE-SKEW(격리)는 승격 증거가
+# 아직 없어 draft 다. Lookup 은 draft 를 안 돌려주므로, S2 시연 동안에만 정확히
+# 이 두 개를 조회 예외로 연다. Lambda 가 매 호출마다 만료를 검사한다.
+#
+# 2026-08-26 20:4x 기록 — 값 자체는 그날 09:59:44 에 라이브 Lambda 에 이미
+# 들어가 있었는데 tfvars 에는 없었다. 그 상태에서 누가 06-agent 를 apply 하면
+# terraform 이 "코드에 없으니 지운다"로 판단해 실험 도중에 게이트를 끈다
+# (실제로 plan 이 그 변경을 냈다). 라이브를 코드에 받아적어 드리프트를 없앤다.
+#
+# 실험이 끝나면 enabled = false 로 내리고 나머지 둘을 기본값으로 되돌린다.
+s2_experiment_runbook_enabled  = true
+s2_experiment_id               = "s2-20260826T095944-live"
+s2_experiment_expires_at_epoch = 1787781584 # 2026-08-27 06:59:44 KST
