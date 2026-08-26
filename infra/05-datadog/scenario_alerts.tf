@@ -106,7 +106,6 @@ resource "datadog_monitor" "s1_chat_fanout_volume" {
     겪고 있습니다. 조치 후보는 채널 총량 상한(`limit_channel_volume`)이고,
     **비가역입니다** — 거부된 발화와 떠난 시청자는 안 돌아옵니다. 승인을 받으세요.
 
-    @webhook-o2-incident-entry
   EOT
 
   monitor_thresholds {
@@ -130,7 +129,7 @@ resource "datadog_monitor" "s1_chat_fanout_dropped" {
   name = "[O2][S1] 채팅 전파 유실"
   type = "metric alert"
 
-  query = "avg(last_${var.scenario_early_window_minutes}m):sum:o2.app.fanout.items{service:chat-gateway,env:${local.monitor_env},result:dropped}.as_rate() > ${var.s1_fanout_dropped_critical}"
+  query = "max(last_${var.scenario_early_window_minutes}m):sum:o2.app.fanout.items{service:chat-gateway,env:${local.monitor_env},result:dropped}.as_rate() > ${var.s1_fanout_dropped_critical}"
 
   message = <<-EOT
     채팅 전파가 초당 ${var.s1_fanout_dropped_critical} 건 넘게 버려지고 있습니다.
@@ -180,7 +179,7 @@ resource "datadog_monitor" "s2_api_tail_latency" {
   name = "[O2][S2] API 꼬리 지연 — p99 조기 감지"
   type = "metric alert"
 
-  query = "avg(last_${var.scenario_early_window_minutes}m):p99:trace.fastapi.request{service:${var.default_service},env:${local.monitor_env}} >= ${var.s2_tail_latency_p99_critical_ms / 1000}"
+  query = "max(last_${var.scenario_early_window_minutes}m):p99:trace.fastapi.request{service:${var.default_service},env:${local.monitor_env}} >= ${var.s2_tail_latency_p99_critical_ms / 1000}"
 
   message = <<-EOT
     API 응답 p99 가 ${var.s2_tail_latency_p99_critical_ms}ms 를 넘었습니다.
@@ -195,7 +194,7 @@ resource "datadog_monitor" "s2_api_tail_latency" {
     **증설로 p50 만 좋아지고 p99 가 그대로면 그것이 새 증거입니다.** 같은 조치를
     반복하지 말고 파드별로 쪼개 다시 보세요(`o2.apm.request.duration by pod_name`).
 
-    @webhook-o2-incident-entry
+    @webhook-o2-dify
   EOT
 
   monitor_thresholds {
@@ -239,7 +238,7 @@ resource "datadog_monitor" "s3_pg_latency_p95" {
   name = "[O2][S3] 결제 처리 지연 — PG 왕복 p95"
   type = "metric alert"
 
-  query = "avg(last_${var.scenario_entry_window_minutes}m):p95:o2.app.operation.duration{service:${var.default_service},env:${local.monitor_env},operation:payment.process} >= ${var.s3_pg_latency_p95_critical_ms}"
+  query = "max(last_${var.scenario_entry_window_minutes}m):p95:o2.app.operation.duration{service:${var.default_service},env:${local.monitor_env},operation:payment.process} >= ${var.s3_pg_latency_p95_critical_ms}"
 
   message = <<-EOT
     결제 처리(`payment.process`) p95 가 ${var.s3_pg_latency_p95_critical_ms}ms 를 넘었습니다.
@@ -280,7 +279,7 @@ resource "datadog_monitor" "s3_payment_failure_rate" {
   # 이미 배포돼 있다. `query alert` 는 `outliers()`·`anomalies()` 쪽에서 쓴다.
   type = "metric alert"
 
-  query = "avg(last_${var.scenario_entry_window_minutes}m):sum:o2.app.failure{service:${var.default_service},env:${local.monitor_env},event:payment.process}.as_count() / sum:o2.app.business_event{service:${var.default_service},env:${local.monitor_env},event:payment.process}.as_count() >= ${var.s3_payment_failure_rate_critical}"
+  query = "max(last_${var.scenario_entry_window_minutes}m):sum:o2.app.failure{service:${var.default_service},env:${local.monitor_env},event:payment.process}.as_count() / sum:o2.app.business_event{service:${var.default_service},env:${local.monitor_env},event:payment.process}.as_count() >= ${var.s3_payment_failure_rate_critical}"
 
   message = <<-EOT
     결제 실패율이 ${var.s3_payment_failure_rate_critical} 를 넘었습니다.
