@@ -621,6 +621,11 @@ ORDER_RATE='<주문 RPS>'
 ORDER_DURATION='<알림 창보다 길게>'
 ORDER_PRE_ALLOCATED_VUS='<실측값>'
 ORDER_MAX_VUS='<실측값>'
+CHAT_BASE_RPS='<타임세일 전 일반 채팅 RPS>'
+CHAT_SALE_RPS='<타임세일 후 증가한 일반 채팅 RPS>'
+CHAT_INCIDENT_RPS='<타임세일 후 결제 장애 채팅 RPS>'
+CHAT_PRE_ALLOCATED_VUS='<채팅 실측값>'
+CHAT_MAX_VUS='<채팅 실측값>'
 
 # 1차 장애 주입
 curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
@@ -629,10 +634,15 @@ curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
   -d "{\"action\":\"set\",\"delay_ms\":${PG_DELAY_MS},\"fail_rate\":${PG_FAIL_RATE}}"
 
 # 1차 주문 부하
-BASE_URL='https://<현재-ALB>' RATE="$ORDER_RATE" DURATION="$ORDER_DURATION" \
+BASE_URL='https://<현재-ALB>' WS_URL='wss://<현재-ALB>' \
+RATE="$ORDER_RATE" DURATION="$ORDER_DURATION" \
 PRE_ALLOCATED_VUS="$ORDER_PRE_ALLOCATED_VUS" MAX_VUS="$ORDER_MAX_VUS" \
-k6 run -e BASE_URL -e RATE -e DURATION -e PRE_ALLOCATED_VUS -e MAX_VUS \
-  loadtest/order-path.js
+CHAT_BASE_RPS="$CHAT_BASE_RPS" CHAT_SALE_RPS="$CHAT_SALE_RPS" \
+CHAT_INCIDENT_RPS="$CHAT_INCIDENT_RPS" \
+CHAT_PRE_ALLOCATED_VUS="$CHAT_PRE_ALLOCATED_VUS" CHAT_MAX_VUS="$CHAT_MAX_VUS" \
+k6 run -e BASE_URL -e WS_URL -e RATE -e DURATION -e PRE_ALLOCATED_VUS \
+  -e MAX_VUS -e CHAT_BASE_RPS -e CHAT_SALE_RPS -e CHAT_INCIDENT_RPS \
+  -e CHAT_PRE_ALLOCATED_VUS -e CHAT_MAX_VUS loadtest/s3-payment.js
 
 # 사람 해결·History/Runbook 검증이 끝난 뒤 실험 환경 초기화
 curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
@@ -647,10 +657,15 @@ curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
   -d "{\"action\":\"set\",\"delay_ms\":${PG_DELAY_MS},\"fail_rate\":${PG_FAIL_RATE}}"
 
 # 2차 주문 부하 — 1차와 같은 프로필
-BASE_URL='https://<현재-ALB>' RATE="$ORDER_RATE" DURATION="$ORDER_DURATION" \
+BASE_URL='https://<현재-ALB>' WS_URL='wss://<현재-ALB>' \
+RATE="$ORDER_RATE" DURATION="$ORDER_DURATION" \
 PRE_ALLOCATED_VUS="$ORDER_PRE_ALLOCATED_VUS" MAX_VUS="$ORDER_MAX_VUS" \
-k6 run -e BASE_URL -e RATE -e DURATION -e PRE_ALLOCATED_VUS -e MAX_VUS \
-  loadtest/order-path.js
+CHAT_BASE_RPS="$CHAT_BASE_RPS" CHAT_SALE_RPS="$CHAT_SALE_RPS" \
+CHAT_INCIDENT_RPS="$CHAT_INCIDENT_RPS" \
+CHAT_PRE_ALLOCATED_VUS="$CHAT_PRE_ALLOCATED_VUS" CHAT_MAX_VUS="$CHAT_MAX_VUS" \
+k6 run -e BASE_URL -e WS_URL -e RATE -e DURATION -e PRE_ALLOCATED_VUS \
+  -e MAX_VUS -e CHAT_BASE_RPS -e CHAT_SALE_RPS -e CHAT_INCIDENT_RPS \
+  -e CHAT_PRE_ALLOCATED_VUS -e CHAT_MAX_VUS loadtest/s3-payment.js
 
 # 2차 검증까지 끝난 뒤 주입 해제
 curl -fsS -X POST "$PG_STUB_ADMIN_URL" \

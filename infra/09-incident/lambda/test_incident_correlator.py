@@ -300,6 +300,74 @@ class IncidentCorrelatorTest(unittest.TestCase):
         self.assertEqual(len(sender.snapshots), 1)
         self.assertEqual(sender.snapshots[0]["revision"], 2)
 
+    def test_strong_chat_candidate_can_invoke_read_only_agent_without_metric(self):
+        repository = FakeRepository()
+        sender = Sender()
+        self.settings["chat_surface_map"]["READ_PATH"].update({
+            "evidence_type": "USER_SYMPTOM_CLUSTER",
+            "minimum_samples": 1,
+            "freshness_seconds": 300,
+            "severity_level": "WARNING",
+            "strong_exception_allowed": True,
+        })
+
+        result = self.process(self.chat, repository, sender)
+
+        self.assertEqual(result["status"], "MATERIAL_REVISION")
+        self.assertEqual(result["snapshot"]["correlation"]["reason_code"], "STRONG_EXCEPTION")
+        self.assertEqual(result["snapshot"]["evidence_assessment"]["verification_state"], "VERIFIED")
+        self.assertTrue(result["snapshot"]["evidence_assessment"]["strong_exception_applied"])
+        self.assertFalse(result["snapshot"]["guardrails"]["automatic_remediation_allowed"])
+        self.assertEqual(len(sender.snapshots), 1)
+
+    def test_strong_chat_candidate_promotes_existing_provisional_incident(self):
+        repository = FakeRepository()
+        sender = Sender()
+        self.process(self.chat, repository, sender)
+        self.settings["chat_surface_map"]["READ_PATH"].update({
+            "evidence_type": "USER_SYMPTOM_CLUSTER",
+            "minimum_samples": 1,
+            "freshness_seconds": 300,
+            "severity_level": "WARNING",
+            "strong_exception_allowed": True,
+        })
+        second = copy.deepcopy(self.chat)
+        second["trigger_id"] = "trg_01ARZ3NDEKTSV4RRFFQ69G5FAB"
+        second["idempotency_key"] = "chat:cand_01ARZ3NDEKTSV4RRFFQ69G5FAB"
+        second["evidence"]["candidate_id"] = "cand_01ARZ3NDEKTSV4RRFFQ69G5FAB"
+        self.settings["allowed_idempotency_keys"].add(second["idempotency_key"])
+
+        result = self.process(second, repository, sender, now_epoch=1787443276)
+
+        self.assertEqual(result["status"], "MATERIAL_REVISION")
+        self.assertEqual(result["snapshot"]["revision"], 2)
+        self.assertEqual(result["snapshot"]["analysis_reason"], "STRONG_EXCEPTION_APPLIED")
+        self.assertEqual(result["snapshot"]["evidence_assessment"]["verification_state"], "VERIFIED")
+        self.assertEqual(len(sender.snapshots), 1)
+
+    def test_new_strong_chat_candidate_reinvokes_agent_for_demo_rerun(self):
+        repository = FakeRepository()
+        sender = Sender()
+        self.settings["chat_surface_map"]["READ_PATH"].update({
+            "evidence_type": "USER_SYMPTOM_CLUSTER",
+            "minimum_samples": 1,
+            "freshness_seconds": 300,
+            "severity_level": "WARNING",
+            "strong_exception_allowed": True,
+        })
+        self.process(self.chat, repository, sender)
+        second = copy.deepcopy(self.chat)
+        second["trigger_id"] = "trg_01ARZ3NDEKTSV4RRFFQ69G5FAB"
+        second["idempotency_key"] = "chat:cand_01ARZ3NDEKTSV4RRFFQ69G5FAB"
+        second["evidence"]["candidate_id"] = "cand_01ARZ3NDEKTSV4RRFFQ69G5FAB"
+        self.settings["allowed_idempotency_keys"].add(second["idempotency_key"])
+
+        result = self.process(second, repository, sender, now_epoch=1787443276)
+
+        self.assertEqual(result["status"], "MATERIAL_REVISION")
+        self.assertEqual(result["snapshot"]["revision"], 2)
+        self.assertEqual(len(sender.snapshots), 2)
+
     def test_datadog_first_then_chat_uses_same_incident_and_revision_two(self):
         repository = FakeRepository()
         sender = Sender()

@@ -385,10 +385,10 @@ def _mapping(raw: str, code: str) -> dict[str, dict[str, str]]:
             raise CorrelatorError(code)
         if not isinstance(item["strong_exception_allowed"], bool):
             raise CorrelatorError(code)
-        if item["strong_exception_allowed"] and (
-            item["incident_family"] != "DATA_INTEGRITY_SECURITY_RISK"
-            or item["evidence_type"] != "INTEGRITY_VIOLATION"
-        ):
+        if item["strong_exception_allowed"] and item["evidence_type"] not in {
+            "INTEGRITY_VIOLATION",
+            "USER_SYMPTOM_CLUSTER",
+        }:
             raise CorrelatorError(code)
         if item["symptom_family"] not in {
             "LATENCY",
@@ -576,12 +576,22 @@ def normalize_trigger(trigger: dict[str, Any], settings: dict[str, Any]) -> dict
         "age_seconds": age_seconds,
         "scope": scope,
         "severity_level": mapping.get("severity_level", "WARNING"),
-        "strong_exception": (
-            quality_state == "VALID"
-            and signal_strength == "STRONG"
-            and mapping.get("strong_exception_allowed", False)
-            and mapping["incident_family"] == "DATA_INTEGRITY_SECURITY_RISK"
-            and evidence_type == "INTEGRITY_VIOLATION"
+        "strong_exception": quality_state == "VALID"
+        and mapping.get("strong_exception_allowed", False)
+        and (
+            (
+                signal_strength == "STRONG"
+                and mapping["incident_family"] == "DATA_INTEGRITY_SECURITY_RISK"
+                and evidence_type == "INTEGRITY_VIOLATION"
+            )
+            or (
+                trigger["source"] == "CHAT_INCIDENT_CANDIDATE"
+                and evidence_type == "USER_SYMPTOM_CLUSTER"
+                and evidence["confidence"] == "MEDIUM"
+                and evidence["strong_signal_count"] >= 3
+                and evidence["unique_users"] >= 4
+                and evidence["matched_messages"] >= 4
+            )
         ),
         "event_epoch": occurred_at_epoch,
         "context": context,
@@ -807,11 +817,26 @@ def _snapshot(
             incoming_level = normalized.get("severity_level", "UNKNOWN") if normalized.get("quality_state") == "VALID" else "UNKNOWN"
             severity_increased = SEVERITY_LEVELS[incoming_level] > SEVERITY_LEVELS[current_severity.get("level", "UNKNOWN")]
             quality_material = normalized.get("quality_state") in {"NO_DATA", "STALE", "INSUFFICIENT_SAMPLES", "TYPE_MISMATCH"}
+            previous_candidate_ids = {
+                signal["evidence"].get("candidate_id")
+                for signal in current["signals"]
+                if signal["source"] == "CHAT_INCIDENT_CANDIDATE"
+            }
+            strong_exception_added = normalized.get("strong_exception", False) and (
+                not previous_assessment.get("strong_exception_applied", False)
+                or (
+                    trigger["source"] == "CHAT_INCIDENT_CANDIDATE"
+                    and trigger["evidence"]["candidate_id"] not in previous_candidate_ids
+                )
+            )
             if trigger["source"] in sources:
                 incoming_role = normalized["evidence_role"]
                 role_field = incoming_role.lower() if incoming_role else None
                 role_is_new = role_field is not None and not previous_assessment[role_field]
-                if (
+                if strong_exception_added:
+                    analysis_reason = "STRONG_EXCEPTION_APPLIED"
+                    lifecycle = current["lifecycle"]
+                elif (
                     trigger["source"] == "DATADOG_MONITOR"
                     and trigger["evidence"]["transition"] == "Recovered"
                 ):
