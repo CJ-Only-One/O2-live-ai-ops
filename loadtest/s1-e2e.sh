@@ -110,21 +110,28 @@ check_window() {
 # 복구 판정. 규칙 둘 다 만족해야 한다 (scenario-experiment.md 1.1).
 #   ① 계약 기준 복귀 AND 조치 직전 기준선 대비 개선 — 자연 회복을 조치
 #      효과로 기록하지 않기 위해서다.
-#   ② 빨라졌나 + 안 망가뜨렸나 — 정상 사용자를 절반 차단해서 빨라진 것이
-#      성공이 되면 안 된다.
-# 조건 셋은 런북 success_criteria 와 같은 축이다(전파 p95 · 차단률 · 채널
-# 처리량). 축이 다르면 Agent 판정과 대조가 안 된다.
-judge() { # p95_post p95_pre_apply block_post items_post / 기준은 환경변수
-  awk -v p="$1" -v pre="$2" -v b="$3" -v it="$4" \
-      -v pmax="${RECOVERY_P95_MAX_MS}" -v bmax="${BLOCK_RATE_MAX}" -v imax="${ITEMS_PER_SEC_MAX}" '
+#   ② 조치가 실제로 부하를 낮췄나 — 처리량이 감당선 안으로 들어와야 한다.
+#
+# **차단률은 판정 축이 아니다.** `limit_channel_volume` 은 정상 사용자 발화를
+# 일부러 거부하는 것이 작동 원리라, 조치가 설계대로 들을수록 차단률은 오히려
+# 오른다. 성공 기준에 두면 조치가 자기 성공 조건과 싸운다. 사람이 승인할 때
+# 알고 감수하는 **대가**이지 자동 판정이 재는 회복 지표가 아니다.
+# 런북도 2026-08-26 에 success_criteria 에서 빼고 승인 정보로 옮겼다.
+# 여기서는 계속 **측정해서 기록**한다 — 승인 화면이 사람에게 제시한 예상
+# 영향과 실제가 같았는지 대조하려면 숫자가 남아 있어야 한다.
+#
+# 런북은 `logic: OR` 이다(부하 없이 데모해도 죽지 않게 하는 안전망). 측정용인
+# 이 스크립트는 **AND** 로 본다 — 하나만 맞아도 통과시키면 잰 의미가 없다.
+judge() { # p95_post p95_pre_apply items_post / 기준은 환경변수
+  awk -v p="$1" -v pre="$2" -v it="$3" \
+      -v pmax="${RECOVERY_P95_MAX_MS}" -v imax="${ITEMS_PER_SEC_MAX}" '
     BEGIN {
-      slo   = (p <= pmax)
-      gain  = (p < pre)
-      harm  = (b <= bmax)
-      cap   = (it <= imax)
-      printf "p95 %.1fms (기준 %.1f, 조치직전 %.1f) 차단률 %.4f (상한 %.4f) 처리량 %.0f item/s (상한 %.0f)\n", p, pmax, pre, b, bmax, it, imax
-      printf "  SLO복귀=%s 기준선개선=%s 부작용허용=%s 처리량복귀=%s\n", slo?"O":"X", gain?"O":"X", harm?"O":"X", cap?"O":"X"
-      exit (slo && gain && harm && cap) ? 0 : 1
+      slo  = (p <= pmax)
+      gain = (p < pre)
+      cap  = (it <= imax)
+      printf "p95 %.1fms (기준 %.1f, 조치직전 %.1f) 처리량 %.0f item/s (상한 %.0f)\n", p, pmax, pre, it, imax
+      printf "  SLO복귀=%s 기준선개선=%s 처리량복귀=%s\n", slo?"O":"X", gain?"O":"X", cap?"O":"X"
+      exit (slo && gain && cap) ? 0 : 1
     }'
 }
 
@@ -329,7 +336,7 @@ mark)
 verify)
   run_dir
   need VERIFY_WINDOW_S "예: 300 — 60 미만이면 warm 집계 창 하나가 튄 것으로 판정이 뒤집힌다"
-  need RECOVERY_P95_MAX_MS; need BLOCK_RATE_MAX; need ITEMS_PER_SEC_MAX; need BROADCAST_ID
+  need RECOVERY_P95_MAX_MS; need ITEMS_PER_SEC_MAX; need BROADCAST_ID
   check_window "${VERIFY_WINDOW_S}" VERIFY_WINDOW_S
   applied="$(at apply)"
   [ -n "${applied}" ] || die "apply 시각이 없습니다. watch 를 먼저 돌리세요."
@@ -341,8 +348,9 @@ verify)
   block="$(hot_value block_rate "${VERIFY_WINDOW_S}")"
   items="$(hot_value items_per_sec "${VERIFY_WINDOW_S}")"
   pre="$(python3 -c 'import json;print(json.load(open("'"${RUN_DIR}"'/apply.json"))["p95_pre_apply_ms"])')"
-  [ -n "${p95}" ] && [ -n "${block}" ] && [ -n "${items}" ] && [ "${pre}" != "None" ] ||
-    die "표본이 비었습니다(p95=${p95:-없음} block=${block:-없음} items=${items:-없음} pre=${pre}). 결측을 0 으로 바꿔 판정하지 않습니다."
+  # 차단률은 판정에 안 쓰지만 기록한다 — 비어도 판정은 계속한다.
+  [ -n "${p95}" ] && [ -n "${items}" ] && [ "${pre}" != "None" ] ||
+    die "표본이 비었습니다(p95=${p95:-없음} items=${items:-없음} pre=${pre}). 결측을 0 으로 바꿔 판정하지 않습니다."
 
   # 런북 반복 금지. 검증에 실패했는데 같은 조치가 다시 나가면 그것 자체가
   # 불변조건 위반이라 실행 전체를 실패로 본다.
@@ -356,7 +364,11 @@ verify)
 
   # judge 의 종료 코드가 판정이다. 파이프로 tee 에 넘기면 파이프라인
   # 종료 코드가 tee 것이 되어 무조건 통과한다 — 그래서 먼저 받아 적는다.
-  verdict="$(judge "${p95}" "${pre}" "${block}" "${items}")" && ok=0 || ok=1
+  verdict="$(judge "${p95}" "${pre}" "${items}")" && ok=0 || ok=1
+  # 사용자 영향은 판정 축이 아니라 기록이다. 승인 화면이 사람에게 제시한
+  # 예상 영향과 실제가 같았는지 나중에 대조하려면 남아 있어야 한다.
+  verdict="${verdict}
+  실제 차단률 ${block:-표본없음} (판정 축 아님 · 승인 시 감수한 대가)"
   printf '%s\n' "${verdict}" | tee "${RUN_DIR}/verdict.txt"
   if [ "${ok}" -eq 0 ]; then
     mark recovered; echo "판정: RESOLVED"
@@ -445,13 +457,15 @@ PY
 
 selftest)
   # 판정 규칙만 검사한다. 클러스터도 부하도 필요 없다.
-  RECOVERY_P95_MAX_MS=800 BLOCK_RATE_MAX=0.05 ITEMS_PER_SEC_MAX=20000
-  export RECOVERY_P95_MAX_MS BLOCK_RATE_MAX ITEMS_PER_SEC_MAX
-  judge 500 1200 0.01 18000 >/dev/null   || die "정상 복구가 통과해야 합니다"
-  ! judge 900 1200 0.01 18000 >/dev/null || die "SLO 미복귀가 통과했습니다"
-  ! judge 500 400 0.01 18000 >/dev/null  || die "기준선 대비 악화가 통과했습니다(자연 회복 오인)"
-  ! judge 500 1200 0.20 18000 >/dev/null || die "차단률 초과가 통과했습니다(사용자를 잘라 빨라진 것)"
-  ! judge 500 1200 0.01 40000 >/dev/null || die "처리량 미복귀가 통과했습니다"
+  RECOVERY_P95_MAX_MS=800 ITEMS_PER_SEC_MAX=20000
+  export RECOVERY_P95_MAX_MS ITEMS_PER_SEC_MAX
+  judge 500 1200 18000 >/dev/null   || die "정상 복구가 통과해야 합니다"
+  ! judge 900 1200 18000 >/dev/null || die "SLO 미복귀가 통과했습니다"
+  ! judge 500 400 18000 >/dev/null  || die "기준선 대비 악화가 통과했습니다(자연 회복 오인)"
+  ! judge 500 1200 40000 >/dev/null || die "처리량 미복귀가 통과했습니다"
+  # 차단률이 높아도 판정은 통과해야 한다 — 조치가 잘 들수록 오르는 값이라
+  # 성공 조건에 두면 조치가 자기 성공과 싸운다(런북 2026-08-26 변경과 같은 축).
+  judge 500 1200 18000 >/dev/null   || die "차단률과 무관하게 판정돼야 합니다"
   # verify 가 판정을 받아 적는 방식 그대로. 파이프로 넘기면 종료 코드가
   # 마지막 명령 것이 되어 미달이 통과로 뒤집힌다 — 그 회귀를 여기서 막는다.
   v="$(judge 900 1200 0.01 18000)" && rc=0 || rc=1
