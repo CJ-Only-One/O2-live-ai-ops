@@ -21,6 +21,8 @@
 """
 
 import argparse
+import pathlib
+import re
 from decimal import Decimal
 
 import _history as H
@@ -316,50 +318,40 @@ RUNBOOKS = [
                 # (namespace/deployment/replicas 파라미터만 다르고 같은
                 # Lambda). 신규 실행기를 안 만든 이유는 action-design-
                 # s1-s2-s3.md 공통 원칙 2번과 같다.
+                #
+                # 2026-08-26 4 -> 3. S2 는 서비스 지연이라는 같은 증상에서
+                # 이 런북과 RB-API-LATENCY-001 중 어느 쪽으로 진단돼도
+                # 1차 조치가 실행돼야 성립한다 — "조치는 됐는데 p95 가 안
+                # 잡힌다"가 재진단의 근거이고, 실행 실패는 원인 가설에 대해
+                # 아무것도 말해주지 않는다. 4 는 실행기 allowlist
+                # (lambda/scale_deployment.py ALLOWED_SCALE_TARGETS 의
+                # api: {2, 3}) 밖이라 400 으로 죽는다. 3 으로 맞추면 노드
+                # 여유도 실측 범위 안이고(M-008 이 확인한 것은 api 3 파드 +
+                # canary 1 까지다), 2026-08-25 리허설과 같은 구성이라 그때
+                # 숫자와 직접 비교된다.
                 "action_id": "autoscale_bump",
                 "risk_level": "L2",
-                "expected_effect": "api Deployment replicas를 4로 늘려 HPA 반응 전에 여유를 확보(scale-executor 재사용, 실제 patch)",
+                "expected_effect": "api Deployment replicas를 3으로 늘려 HPA 반응 전에 여유를 확보(scale-executor 재사용, 실제 patch)",
                 "blast_radius": "service pod count",
                 "parameters_schema": {
                     "namespace": {"type": "string", "required": True, "source": "static:o2-dev"},
                     "deployment": {"type": "string", "required": True, "source": "static:api"},
-                    "replicas": {"type": "int", "required": True, "source": "static:4"},
+                    "replicas": {"type": "int", "required": True, "source": "static:3"},
                 },
                 "execution_target": {
                     "method": "POST",
                     "endpoint": "$SCALE_EXECUTOR_URL",
                 },
             },
-            {
-                # TEMP: Action Handler 없어 mock. 실제 큐 서비스가 생기면
-                # 그쪽 엔드포인트로 교체.
-                "action_id": "queue_shed_low_priority",
-                "risk_level": "L2",
-                "expected_effect": "drop or defer low-priority queued work to protect latency-sensitive paths",
-                "blast_radius": "background job queue",
-                "parameters_schema": {
-                    "queue": {"type": "string", "required": True, "source": "static:low_priority"},
-                },
-                "execution_target": {
-                    "method": "POST",
-                    "endpoint": "/actions/queue-shed",
-                },
-            },
-            {
-                # TEMP: 위와 같은 이유로 mock.
-                "action_id": "rate_limit_noncritical",
-                "risk_level": "L1",
-                "expected_effect": "throttle low-priority endpoints to protect checkout path",
-                "blast_radius": "non-critical API traffic",
-                "parameters_schema": {
-                    "limit_rps": {"type": "int", "required": True, "source": "static:50"},
-                    "scope": {"type": "string", "required": True, "source": "static:non_critical"},
-                },
-                "execution_target": {
-                    "method": "POST",
-                    "endpoint": "/actions/rate-limit",
-                },
-            },
+        ],
+        # 둘 다 Action Handler 가 없다 — `/actions/queue-shed`,
+        # `/actions/rate-limit` 를 받는 실행기가 저장소에 없어서 고르는
+        # 순간 실행 실패로 끝난다. 삭제하지 않고 retired 로 표시해 조회에서
+        # 뺀다(같은 파일 RB-API-LATENCY-001 의 옛 액션 처리와 같은 방식).
+        # 실제 큐·레이트리밋 실행기가 생기면 되살린다.
+        "retired_action_ids": [
+            "queue_shed_low_priority",
+            "rate_limit_noncritical",
         ],
     },
     {
@@ -726,7 +718,7 @@ KNOBS = [
         # traffic_spike_overload의 실제 조치. scale-executor 재사용(같은
         # Lambda, namespace/deployment/replicas만 다름) — 신규 실행기 없음.
         "action_id": "autoscale_bump",
-        "target": "o2-dev/api Deployment -> 4",
+        "target": "o2-dev/api Deployment -> 3",
         "knob_reversible": True,
         "user_effect_reversible": True,
         "max_blast_radius": "api deployment only · pod count",
@@ -828,6 +820,44 @@ def validate_catalog():
             f"런북이 참조하는데 노브 카탈로그에 없다: {sorted(missing)} — "
             "게이트 진입을 판정할 근거가 없어진다."
         )
+
+    _validate_scale_targets()
+
+
+# 실행기 allowlist 는 다른 파일(lambda/scale_deployment.py)에 있고, 런북이
+# 지시하는 replicas 는 여기 있다. 둘을 잇는 검사가 없어서 2026-08-26 까지
+# traffic_spike_overload 가 allowlist 밖의 api -> 4 를 지시하고 있었고,
+# 그 조치가 뽑히면 400 으로 죽었다. 에러가 시딩 때 안 나고 인시던트 한복판에
+# 나서 찾는 데 오래 걸린다 — 그래서 seed 시점에 막는다.
+def _validate_scale_targets():
+    src = pathlib.Path(__file__).resolve().parent.parent / "lambda" / "scale_deployment.py"
+    block = re.search(r"ALLOWED_SCALE_TARGETS = \{(.*?)\n\}", src.read_text(), re.S)
+    if block is None:
+        raise SystemExit(
+            f"{src} 에서 ALLOWED_SCALE_TARGETS 를 못 찾았다 — 실행기가 바뀌었으면 "
+            "이 검사도 같이 고쳐야 한다."
+        )
+    allowed = {
+        deployment: {int(n) for n in re.findall(r"\d+", values)}
+        for deployment, values in re.findall(r'"([\w-]+)":\s*\{([^}]*)\}', block.group(1))
+    }
+
+    for entry in RUNBOOKS:
+        if entry["status"] == "retired":
+            continue
+        for action in entry["actions"]:
+            schema = action.get("parameters_schema", {})
+            if "replicas" not in schema:
+                continue
+            deployment = schema["deployment"]["source"].removeprefix("static:")
+            replicas = int(schema["replicas"]["source"].removeprefix("static:"))
+            if replicas not in allowed.get(deployment, set()):
+                raise SystemExit(
+                    f"'{entry['rca_type']}' 의 {action['action_id']} 가 "
+                    f"{deployment} -> {replicas} 를 지시하는데 실행기 allowlist 밖이다 "
+                    f"(허용: {sorted(allowed.get(deployment, set())) or '없음'}). "
+                    "실행 시점에 400 으로 죽는다."
+                )
 
 
 def parse_args():
