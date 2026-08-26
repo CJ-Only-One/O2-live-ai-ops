@@ -11,6 +11,16 @@
 #   (T-017, scenario-readiness.md 5절).
 #
 #   에이전트를 깨우는 것은 `scenario_alerts.tf` 의 시나리오 진입 Monitor 뿐이다.
+#
+# ★ 대신 **사람에게는 보낸다**(`@webhook-o2-human`, 2026-08-26).
+#   에이전트가 못 받는 축이라 사람도 못 받으면 아무도 모른다 — 특히 DLQ 와
+#   파이프라인 결측이 그렇다. `monitor.tf` locals 주석이 비워 뒀던
+#   "수신자 핸들" 자리가 이것이다.
+#
+#   webhook 자체는 Terraform 이 만들지 않는다 — Slack 봇 토큰이 들어가는데
+#   `datadog_webhook` 으로 만들면 그 값이 state 에 평문으로 남는다
+#   (versions.tf 가 API 키에 대해 같은 이유로 금지한 것). `o2-dify` 와 같이
+#   Datadog API 로 만들고 여기서는 이름만 참조한다.
 ###############################################################################
 
 variable "pipeline_dlq_names" {
@@ -51,6 +61,8 @@ resource "datadog_monitor" "pipeline_dlq_not_empty" {
   message = <<-EOT
     `${each.value}`에 재시도를 소진한 메시지가 있습니다. 원인을 확인한 뒤
     원본 큐 계약에 맞춰 redrive 하십시오. DLQ 메시지를 확인하기 전에 삭제하지 않습니다.
+
+    @webhook-o2-human
   EOT
 
   query = "max(last_5m):max:aws.sqs.approximate_number_of_messages_visible{queuename:${each.value}} > 0"
@@ -66,7 +78,7 @@ resource "datadog_monitor" "firehose_delivery_failure" {
 
   name    = "[O2][Firehose] ${each.value} S3 전달 실패"
   type    = "metric alert"
-  message = "`${each.value}`의 S3 전달 실패가 발생했습니다. error output prefix와 Firehose IAM을 확인합니다."
+  message = "`${each.value}`의 S3 전달 실패가 발생했습니다. error output prefix와 Firehose IAM을 확인합니다. @webhook-o2-human"
   query   = "min(last_5m):min:aws.firehose.delivery_to_s_3success{deliverystreamname:${each.value}} < 1"
 
   monitor_thresholds { critical = 1 }
@@ -78,7 +90,7 @@ resource "datadog_monitor" "firehose_delivery_failure" {
 resource "datadog_monitor" "deployment_rollout_stalled" {
   name    = "[O2][Kubernetes] Deployment rollout 정체"
   type    = "metric alert"
-  message = "10분 동안 unavailable replica가 남아 있습니다. rollout status와 Kubernetes 이벤트를 확인합니다."
+  message = "10분 동안 unavailable replica가 남아 있습니다. rollout status와 Kubernetes 이벤트를 확인합니다. @webhook-o2-human"
   query   = "min(last_10m):max:kubernetes_state.deployment.replicas_unavailable{kube_namespace:${var.kube_namespace}} by {kube_deployment} > 0"
 
   monitor_thresholds { critical = 0 }
