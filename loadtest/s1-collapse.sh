@@ -57,8 +57,7 @@ try: d=json.load(open(sys.argv[1]))
 except Exception: raise SystemExit(0)
 try: b=json.loads(d.get("body") or "{}")
 except Exception: raise SystemExit(0)
-print(b.get("value") if b.get("status")=="OK" and b.get("value") is not None else "", end="")
-print("\t"+str(b.get("sample_count") or 0), end="")
+print((b.get("value") if b.get("status")=="OK" and b.get("value") is not None else ""), str(b.get("sample_count") or 0), sep="\t")
 ' "${out}"
   rm -f "${out}"
 }
@@ -99,7 +98,9 @@ r.get("cfg:channel_limit:"+process.argv[1]).then(v=>{console.log(v??"");process.
   # 계단 끝 SAMPLE_WINDOW_S 만 남기고 기다린다.
   sleep $(( RAMP_S + HOLD_S - SAMPLE_WINDOW_S ))
   cpu="$(cg_cpu)"
-  read -r p95 samples < <(hot_p95 "${SAMPLE_WINDOW_S}")
+  # read 는 개행 없이 끝나면 종료 코드 1 이다. set -e 아래에서 그게 스크립트를
+  # 죽이고 trap 이 k6 까지 죽인다 — 값은 이미 담겼는데 실행만 사라진다.
+  read -r p95 samples < <(hot_p95 "${SAMPLE_WINDOW_S}") || true
 
   wait "${K6_PID}" 2>/dev/null && rc=0 || rc=$?
   K6_PID=""
