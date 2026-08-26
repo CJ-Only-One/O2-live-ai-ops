@@ -110,7 +110,7 @@
 | **`cfg:pg:*` 노브** | `/api/admin/pg-stub`이 별도 admin key로 `delay_ms`·`fail_rate`를 함께 SET·DEL한다. 단위 테스트가 있고 배포 Secret 값은 별도 주입 필요 | **구현됨** |
 | **주문 부하 스크립트** | `loadtest/order-path.js`가 고정 도착률 주문을 만들며 RATE·DURATION·VU 수를 필수 입력으로 받는다. 시나리오 식별 헤더는 없다 | **구현됨** |
 | Dify History 유무 분기 | Worker가 S3 Vectors 검색 결과 중 `verified=true`인 사례만 `past_cases`로 넘기고 DSL이 진단 프롬프트에 포함한다. History 없음/있음 자체를 별도 상태로 표시하는 DSL 분기는 아직 없다 | **부분 구현** |
-| 1차 실행: active Runbook 없음 → 실패 보고 | draft Runbook은 Lookup에서 제외되지만, active action 0건을 즉시 `ESCALATED`로 끝내는 전용 분기와 종료 사유는 없다. 현재 DSL은 후보 소진·재진단 루프로 갈 수 있다 | **고쳐야** |
+| 1차 실행: active Runbook 없음 → 실패 보고 | 11-B가 `runbook_status`를 하류로 넘기고, 13-A가 `active`·`experiment`가 아니면 `MANUAL_REQUIRED` + `NO_ACTIVE_RUNBOOK`을 내 `ESCALATED`로 끝낸다. 런북이 있는데 후보만 소진된 경우만 종전대로 재진단한다. `dify/test_no_candidate_action.py`가 DSL 원본에서 코드를 꺼내 확인한다. **저장소 DSL 기준이고 실환경 반영은 3절 2번 드리프트 해소 뒤다** | **구현됨 · 미반영** |
 | 사람 해결 사례 → verified History | History 저장 기반은 있지만 PG-A→PG-B 수동 해결 사례를 검토·verified 처리하고 반복 시연용으로 격리하는 입력 경로는 없다 | **없음** |
 | PG Failover Runbook 생명주기 | `pg_external_failure` draft는 PG-A→PG-B 우회 L3만 후보로 둔다. draft는 Lookup에서 제외되며, verified History·실측·원복·운영자 승인 증거가 있어야만 active 승격할 수 있다 | **부분 구현** |
 | PG-B 상태·전환·원복 제어면 | `/api/admin/pg-provider-switch`가 PG-B ready 확인 후 PG-A→PG-B 전환하고, PG-A 주입 해제 뒤에만 원복한다. 전환·안전한 원복 재시도는 멱등 처리한다. 로컬 통합 테스트가 PG-A 주입 실패 → PG-B 성공 이벤트 → 주입 중 원복 차단 → 안전 원복을 검증한다. 배포·실측 전 | **구현됨** |
