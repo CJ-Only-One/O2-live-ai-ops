@@ -111,13 +111,13 @@
 | **주문 부하 스크립트** | `loadtest/order-path.js`가 고정 도착률 주문을 만들며 RATE·DURATION·VU 수를 필수 입력으로 받는다. 시나리오 식별 헤더는 없다 | **구현됨** |
 | Dify History 유무 분기 | Worker가 S3 Vectors 검색 결과 중 `verified=true`인 사례만 `past_cases`로 넘기고 DSL이 진단 프롬프트에 포함한다. History 없음/있음 자체를 별도 상태로 표시하는 DSL 분기는 아직 없다 | **부분 구현** |
 | 1차 실행: active Runbook 없음 → 실패 보고 | draft Runbook은 Lookup에서 제외되지만, active action 0건을 즉시 `ESCALATED`로 끝내는 전용 분기와 종료 사유는 없다. 현재 DSL은 후보 소진·재진단 루프로 갈 수 있다 | **고쳐야** |
-| 사람 해결 사례 → verified History | History 저장 기반은 있지만 PG-A→PG-B 수동 해결 사례를 검토·verified 처리하고 반복 시연용으로 격리하는 입력 경로는 없다 | **없음** |
+| 사람 해결 사례 → verified History | `scripts/verify.py`가 미검증 벡터를 훑어 사람이 `labels.txt`에서 원인을 고르게 하고, S3 원본 JSON에 `verified=true`를 쓴 뒤 임베딩은 그대로 두고 메타데이터만 갈아 끼운다. Worker는 `verified is not True`인 사례를 `past_cases`에서 뺀다. **반복 시연용 격리 데이터셋·벡터 인덱스는 아직 없다** | **구현됨 · 격리 미비** |
 | PG Failover Runbook 생명주기 | `pg_external_failure` draft는 PG-A→PG-B 우회 L3만 후보로 둔다. draft는 Lookup에서 제외되며, verified History·실측·원복·운영자 승인 증거가 있어야만 active 승격할 수 있다 | **부분 구현** |
 | PG-B 상태·전환·원복 제어면 | `/api/admin/pg-provider-switch`가 PG-B ready 확인 후 PG-A→PG-B 전환하고, PG-A 주입 해제 뒤에만 원복한다. 전환·안전한 원복 재시도는 멱등 처리한다. 로컬 통합 테스트가 PG-A 주입 실패 → PG-B 성공 이벤트 → 주입 중 원복 차단 → 안전 원복을 검증한다. 배포·실측 전 | **구현됨** |
-| PG-A→PG-B Action Handler | Guardrail 이후 호출할 실행기가 없다. 결제 경로 전환은 `L3`로 등록하고 Slack 승인 뒤에만 실행해야 한다 | **없음** |
+| PG-A→PG-B Action Handler | 별도 Lambda 없이 Dify가 직접 친다. Guardrail이 `L3`를 `APPROVAL`로 보내고, 19-A가 `$PG_PROVIDER_SWITCH_URL`을 `x-admin-key`와 함께 풀면 19-B가 admin 갈래로, 19-D2가 `/api/admin/pg-provider-switch`를 POST한다. `$CHAT_GATEWAY_ADMIN_URL`·`$API_ADMIN_URL`과 같은 패턴이다. **라이브 Dify의 `PG_PROVIDER_SWITCH_URL`이 비어 있으면 19-A가 `is_real=false`로 떨어져 mock으로 조용히 샌다** | **구현됨** |
 | `pg_latency_ratio` 집계 | `o2warm/sketch.py`·`metrics.py` 에 있다. `pg_latency_ms` 가 안 들어와서 지금은 표본이 0 | **있음** |
 | `pg_external_failure` 복구 판정 | `recovery_judge`에 p95·error 폴백은 있지만 실측 기준이 아니며 PG-B 성공 이벤트와 채팅 불만 감소를 확인하지 않는다 | **고쳐야** |
-| 병합 키에서 `broadcast_id` 제외 | Correlator 가 source·service 로 묶는다. **S3 만 방송 축을 빼는 분기가 없다**(D-076) | **고쳐야** |
+| 병합 키에서 `broadcast_id` 제외 | `correlation_key`는 `environment#incident_family#symptom_family#service#suspected_surface`라 방송 축이 처음부터 없다(`incident_correlator.py:524`). `find_open`도 이 키만으로 조회한다. 방송은 `context.broadcast_ids` 목록으로만 남아 S3가 요구하는 모양 그대로다 | **있음** |
 | ~~읽기 요청당 CPU 감소 노브~~ | `/api/admin/read-path-degraded`(D-062) — **S3 에서 빠졌지만 지우지 않는다**(D-076). 읽기 경로 보호로는 유효 | **있음 · 미사용** |
 | ~~사람/자동화 두 패턴 부하~~ | `read-path.js` 의 `human`·`ambiguous` — **S3 에서 빠졌지만 지우지 않는다**(D-076) | **있음 · 미사용** |
 | 부하 생성기에 표식 없을 것 | 커스텀 헤더 없음 (`scenario-experiment.md` 2.1) | **있음** |
