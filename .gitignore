@@ -11,6 +11,10 @@ crash.log
 # 비밀이 필요해지면 tfvars가 아니라 Secrets Manager를 쓸 것.
 !infra/*/terraform.tfvars
 tfplan
+# 이름을 붙여 저장한 plan 도 잡는다 — `tfplan` 만으로는 s1-chat-monitors.tfplan
+# 같은 파일이 그대로 커밋된다. plan 파일은 state 전체를 담고 있어 비밀값이
+# 들어갈 수 있다(D-009 가 plan 출력에 평문이 찍히는 것을 이미 지적했다).
+*.tfplan
 plan.txt
 # 락 파일은 커밋한다. 프로바이더 버전을 팀 전체가 공유해야 한다.
 !.terraform.lock.hcl
