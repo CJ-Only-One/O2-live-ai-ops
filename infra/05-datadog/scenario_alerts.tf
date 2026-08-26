@@ -209,7 +209,15 @@ resource "datadog_monitor" "s2_api_tail_latency" {
   require_full_window = true
   renotify_interval   = 0
 
-  tags = concat(local.monitor_tags, ["env:${local.monitor_env}", "scenario:s2", "service:${var.default_service}", "role:entry"])
+  # broadcast_id 를 태그로 실어 보낸다. S2 진입은 서비스 단위 쿼리라 그룹 태그가
+  # 없고, 그러면 Dify normalize 가 broadcast_id 를 'LIVE-001' 로 지어낸다(T-044).
+  # 지어낸 값은 read-path-degraded 조회에 그대로 실려 400 을 내고 워크플로 전체를
+  # 죽인다 — api 의 BroadcastId 가 ^bc_[0-9]+$ 라서다. 실험 부하가 도는 방송을
+  # 태그로 못박아 fallback 자체를 막는다.
+  #
+  # 이것은 우회다. 근본 해결은 normalize 가 없는 값을 지어내지 않고, 방송 축이
+  # 없으면 read-path-degraded 노드를 건너뛰는 것이다(T-044).
+  tags = concat(local.monitor_tags, ["env:${local.monitor_env}", "scenario:s2", "service:${var.default_service}", "role:entry", "broadcast_id:${var.s2_experiment_broadcast_id}"])
 }
 
 ###############################################################################

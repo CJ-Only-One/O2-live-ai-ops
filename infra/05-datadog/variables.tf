@@ -432,6 +432,20 @@ variable "s1_fanout_dropped_critical" {
   default     = 0
 }
 
+variable "s2_experiment_broadcast_id" {
+  description = <<-EOT
+    S2 실험 부하가 도는 방송 ID. 진입 Monitor 태그로 실려 Dify normalize 가
+    broadcast_id 를 지어내지 않게 한다(T-044). 실험 방송이 바뀌면 같이 바꾼다.
+  EOT
+  type        = string
+  default     = "bc_1042"
+
+  validation {
+    condition     = can(regex("^bc_[0-9]+$", var.s2_experiment_broadcast_id))
+    error_message = "api 의 BroadcastId 계약과 같은 ^bc_[0-9]+$ 형식이어야 한다."
+  }
+}
+
 variable "s2_tail_latency_p99_warning_ms" {
   description = <<-EOT
     S2 API 꼬리 지연 경고 임계 (ms, 서버측 p99).
