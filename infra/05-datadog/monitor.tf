@@ -1,4 +1,22 @@
 ###############################################################################
+# Monitor — 이름 접두사가 곧 상태다
+#
+#   [O2][S1] · [O2][S2] · [O2][S3]   확정 시나리오 세트. 실험 대상
+#   [O2][보류]                        확정 세트 밖. **알림을 보내지 않는다**
+#   [O2][파이프라인] · [DLQ] · ...    운영 관측. 사람만 본다(D-088)
+#
+# 2026-08-26: 옛 번호 체계(트랜스크립트 5개 시나리오 1·2·4·5·6)를 접두사에서
+# 뺐다. 확정 세트가 S1·S2·S3 로 정해졌는데 대시보드에 옛 번호가 섞여 있어,
+# 어느 Monitor 가 지금 실험 대상인지 이름만으로 갈리지 않았다.
+#
+# **지우지는 않는다(D-056).** "확정 세트에 없다" 가 "그 장애가 안 일어난다" 를
+# 뜻하지 않고, 메시지에 담긴 판별 실험 안내는 Monitor 정의보다 만들기 어려운
+# 자산이다. 알림 경로는 D-088 에서 이미 끊었으므로 남아 있는 비용은 목록 줄뿐이다.
+#
+# 아래는 옛 번호 체계로 쓰인 원본 주석이다. `[보류]` 로 바뀐 Monitor 들이
+# 어느 시나리오를 위해 만들어졌는지는 여기서 읽는다.
+#
+# ── 원본 ──────────────────────────────────────────────────────────────
 # Monitor — failure-scenarios-transcript.md 의 5개 장애 시나리오
 #
 # 근거와 범위는 Confluence "Datadog 장애 대응 Alert 시스템 제안서"(2026-08-19,
@@ -77,7 +95,7 @@ resource "datadog_monitor" "chat_ingest_surge" {
   # S1 진입은 `scenario_alerts.tf` 의 `s1_chat_fanout_volume` 이다. 같은 채팅 폭주에 둘 다 울면 에이전트가 두 번 깨어난다.
   count = var.enable_chat_ingest_monitor ? 1 : 0
 
-  name    = "[O2][시나리오 2] 채팅 인입 급증 — 캐스케이드 조기 경보"
+  name    = "[O2][보류] 채팅 인입 급증 — 캐스케이드 조기 경보"
   type    = "metric alert"
   message = <<-EOT
     채팅 인입(`chat.send`)이 평시 대비 ${var.chat_rps_ratio_warning}배를 넘었습니다.
@@ -113,16 +131,20 @@ resource "datadog_monitor" "chat_ingest_surge" {
 }
 
 ###############################################################################
-# 시나리오 2 (실제 트리거) + 시나리오 5 (재사용) — 주문 응답 p95 지연
+# S2 — API 응답 p95 지연 (Incident 보강 증거)
 #
-# 트랜스크립트에서 "여기서 알림이 옴"이라 표시된 지점이다. dashboard.tf 그룹1
-# 이 이미 이 지표를 "알림 근거가 될 수 있는 넷" 중 하나로 지정해 뒀으므로,
-# 같은 var(latency_p95_warning/critical)를 그대로 재사용한다 — 대시보드
-# 색깔과 alert 임계가 갈리지 않게 하기 위해서다(variables.tf 원래 주석).
+# 2026-08-26 개명: 옛 이름은 "[시나리오 2·5]" 였다. 그 번호 체계(트랜스크립트
+# 5개 시나리오)는 확정 세트 S1·S2·S3 로 대체됐다. 이 Monitor 는 지금
+# **S2 Incident 의 CORROBORATING 증거**로 쓰인다 — 09-incident 의
+# monitor_map 에 21940248 로 등록돼 있고, PRIMARY 는 `s2_api_tail_latency`
+# (p99, scenario_alerts.tf) 다.
+#
+# 임계는 `latency_p95_warning/critical` 을 그대로 쓴다 — 대시보드 색깔과
+# alert 임계가 갈리지 않게 하기 위해서다(variables.tf 원래 주석).
 ###############################################################################
 
 resource "datadog_monitor" "order_latency_p95" {
-  name    = "[O2][시나리오 2·5] 주문 응답 p95 지연"
+  name    = "[O2][S2] API 응답 p95 지연 — 보강 증거"
   type    = "metric alert"
   message = <<-EOT
     주문 응답 p95(`trace.fastapi.request{service:api}`)가
@@ -140,12 +162,30 @@ resource "datadog_monitor" "order_latency_p95" {
       기준값 기록·재확인·원복 로직은 이 Monitor가 아니라 에이전트
       오케스트레이션(D-028, `06-agent`) 쪽에 있습니다.
 
-    @webhook-o2-incident-entry
   EOT
 
   # trace.fastapi.request 의 Datadog API 단위는 second다. 사용자 계약과 변수는
   # ms를 유지하므로 비교 임계만 1000으로 나눈다(2026-08-24 recent point 확인).
-  query = "min(last_${var.scenario_entry_window_minutes}m):p95:trace.fastapi.request{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical / 1000}"
+  #
+  # ★ `min` 이 아니라 `avg` 다(2026-08-26).
+  #
+  #   `min(last_5m)` 은 창의 **최솟값**이 임계를 넘어야 운다 — 5분 내내 한 번도
+  #   안 떨어져야 한다는 뜻이다. 이 Monitor 는 S2 Incident 의 CORROBORATING
+  #   증거인데(09-incident 의 monitor_map, 21940248), corroborating 은 "같은
+  #   사건을 다른 각도에서도 봤다" 는 확인이지 두 번째 진입 조건이 아니다.
+  #   그 자리에 창 전체를 요구하는 집계는 맞지 않는다.
+  #
+  #   그리고 S2 는 **파드 하나만 느린** 시나리오다. 그 파드의 몫이 전체의 5%
+  #   미만이면 service 단위 p95 는 거의 안 움직인다(o2warm/metrics.py 의 같은
+  #   지적). 잠깐 오르는 것을 `min` 이 통째로 지운다.
+  #
+  #   PRIMARY(22078624, `s2_api_tail_latency`)가 `avg(last_2m)` 이므로 집계
+  #   축도 맞춘다.
+  #
+  #   ★ 임계값(1000ms)은 **아직 안 고쳤다.** `latency_p95_critical` 은 시나리오 4
+  #     서브 Monitor 와 대시보드 3곳이 같이 쓰는 공유 변수이고, 부하 구간의
+  #     실제 p95 분포를 안 쟀다(measurements.md). S2 실험에서 재고 정한다.
+  query = "avg(last_${var.scenario_entry_window_minutes}m):p95:trace.fastapi.request{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical / 1000}"
 
   monitor_thresholds {
     warning  = var.latency_p95_warning / 1000
@@ -163,7 +203,7 @@ resource "datadog_monitor" "order_latency_p95" {
   require_full_window = true
   renotify_interval   = 0
 
-  tags = concat(local.monitor_tags, ["scenario:2", "scenario:5", "service:api", "role:page"])
+  tags = concat(local.monitor_tags, ["scenario:s2", "service:api", "role:corroborating"])
 }
 
 ###############################################################################
@@ -181,7 +221,7 @@ resource "datadog_monitor" "order_latency_p95" {
 ###############################################################################
 
 resource "datadog_monitor" "cache_hit_rate_low" {
-  name    = "[O2][시나리오 4] 캐시 히트율 낮음 (서브 모니터)"
+  name    = "[O2][보류] 캐시 히트율 낮음 (서브 모니터)"
   type    = "metric alert"
   query   = "min(last_${var.scenario_entry_window_minutes}m):sum:o2.app.cache_access{service:${var.default_service},env:${local.monitor_env},result:hit}.as_count() / sum:o2.app.cache_access{service:${var.default_service},env:${local.monitor_env}}.as_count() < ${var.cache_hit_rate_critical}"
   message = "캐시 히트율이 임계치 미만입니다. 복합 모니터의 하위 조건으로 작동합니다."
@@ -198,7 +238,7 @@ resource "datadog_monitor" "cache_hit_rate_low" {
 }
 
 resource "datadog_monitor" "latency_p95_high" {
-  name    = "[O2][시나리오 4] 응답 p95 지연 높음 (서브 모니터)"
+  name    = "[O2][보류] 응답 p95 지연 높음 (서브 모니터)"
   type    = "metric alert"
   query   = "min(last_${var.scenario_entry_window_minutes}m):p95:trace.fastapi.request{service:${var.default_service},env:${local.monitor_env}} >= ${var.latency_p95_critical / 1000}"
   message = "응답 p95 지연 시간이 임계치를 초과했습니다. 복합 모니터의 하위 조건으로 작동합니다."
@@ -255,7 +295,7 @@ resource "datadog_monitor" "cache_absorption_failure" {
   # 확정 S1·S2·S3 셋 밖(옛 시나리오 4)이다. 길 B webhook 도 뗀다 — 09-incident 의 datadog_source_adapter_allowed_monitor_ids 에 이 monitor 가 없어 Adapter 가 거부하고, 그 거부가 Adapter 실패 알람으로 되돌아온다.
   count = var.enable_cache_absorption_monitor ? 1 : 0
 
-  name    = "[O2][시나리오 4] 캐시 흡수 실패"
+  name    = "[O2][보류] 캐시 흡수 실패"
   type    = "composite"
   query   = "${datadog_monitor.cache_hit_rate_low.id} && ${datadog_monitor.latency_p95_high.id}"
   message = <<-EOT
@@ -336,7 +376,7 @@ resource "datadog_monitor" "cache_hit_rate_pod_outlier" {
   # 확정 셋 밖(옛 시나리오 1)이다.
   count = var.enable_pod_cache_outlier_monitor ? 1 : 0
 
-  name    = "[O2][시나리오 1] 파드 단위 캐시 히트율 이상치"
+  name    = "[O2][보류] 파드 단위 캐시 히트율 이상치"
   type    = "query alert"
   message = <<-EOT
     캐시 히트율이 유독 낮은 파드가 있습니다 — 전체 평균은 정상으로 보일 수
@@ -422,7 +462,7 @@ variable "pod_latency_outlier_tolerance" {
 resource "datadog_monitor" "latency_p95_pod_outlier" {
   count = var.enable_pod_latency_outlier_monitor ? 1 : 0
 
-  name    = "[O2][시나리오 5] 파드 단위 응답 지연 이상치"
+  name    = "[O2][S2] 파드 단위 응답 지연 이상치 — 2차 재진단 재료"
   type    = "query alert"
   message = <<-EOT
     응답 지연이 유독 다른 파드 하나가 있습니다 — service 단위 p95 는 나머지
@@ -466,7 +506,7 @@ resource "datadog_monitor" "latency_p95_pod_outlier" {
   require_full_window = true
   renotify_interval   = 0
 
-  tags = concat(local.monitor_tags, ["scenario:5", "service:api", "role:page", "phase:2"])
+  tags = concat(local.monitor_tags, ["scenario:s2", "service:api", "role:diagnostic", "phase:2"])
 }
 
 ###############################################################################
@@ -489,7 +529,7 @@ resource "datadog_monitor" "order_confirm_backlog_age" {
   # 확정 셋 밖(옛 시나리오 6)이다. 부하 실험 중 큐가 밀리면 시나리오와 무관하게 울린다.
   count = var.enable_queue_backlog_monitor ? 1 : 0
 
-  name    = "[O2][시나리오 6] 주문 확정 큐 적체"
+  name    = "[O2][보류] 주문 확정 큐 적체"
   type    = "metric alert"
   message = <<-EOT
     주문 확정 큐(`${var.order_confirm_queue_name}`)의 가장 오래된 미처리
@@ -586,7 +626,7 @@ variable "enable_order_confirm_stall_monitor" {
 }
 
 resource "datadog_monitor" "order_create_active" {
-  name    = "[O2][시나리오 6] 주문 생성 진행 중 (서브 모니터)"
+  name    = "[O2][보류] 주문 생성 진행 중 (서브 모니터)"
   type    = "metric alert"
   query   = "min(last_10m):sum:o2.app.order_create{service:${var.default_service},env:${local.monitor_env}}.as_rate() > 0"
   message = "주문 생성이 발생하고 있습니다. 복합 모니터의 하위 조건으로 작동합니다."
@@ -603,7 +643,7 @@ resource "datadog_monitor" "order_create_active" {
 }
 
 resource "datadog_monitor" "order_confirm_inactive" {
-  name    = "[O2][시나리오 6] 주문 확정 정지됨 (서브 모니터)"
+  name    = "[O2][보류] 주문 확정 정지됨 (서브 모니터)"
   type    = "metric alert"
   query   = "max(last_10m):sum:o2.app.business_event{service:order-worker,env:${local.monitor_env},event:order.confirm}.as_rate() <= 0"
   message = "주문 확정이 발생하지 않고 있습니다. 복합 모니터의 하위 조건으로 작동합니다."
@@ -624,7 +664,7 @@ resource "datadog_monitor" "order_confirm_stall" {
   # 확정 셋 밖(옛 시나리오 6)이다.
   count = var.enable_order_confirm_stall_monitor ? 1 : 0
 
-  name    = "[O2][시나리오 6] 주문 확정 정지"
+  name    = "[O2][보류] 주문 확정 정지"
   type    = "composite"
   query   = "${datadog_monitor.order_create_active.id} && ${datadog_monitor.order_confirm_inactive.id}"
   message = <<-EOT

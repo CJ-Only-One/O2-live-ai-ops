@@ -23,14 +23,14 @@ resource "datadog_monitor" "chat_propagation_p95" {
   #   팬아웃 총량(`s1_chat_fanout_volume`)은 반대로 **합계로 둔다** — M-010 의
   #   붕괴점은 chat-gateway 파드 용량이고 파드는 방송들이 공유한다. 방송별로
   #   쪼개면 "각각은 안전선 아래인데 합쳐서 무너지는" 상황을 놓친다.
-  query = "avg(last_5m):p95:o2.chat.propagation{env:${local.monitor_env},service:chat-gateway} by {broadcast_id} >= ${var.chat_propagation_p95_critical_ms}"
+  query = "max(last_${var.scenario_entry_window_minutes}m):p95:o2.chat.propagation{env:${local.monitor_env},service:chat-gateway} by {broadcast_id} >= ${var.chat_propagation_p95_critical_ms}"
 
   message = <<-EOT
     방송 `{{broadcast_id.name}}` 의 Chat fanout propagation p95가 ${var.chat_propagation_p95_critical_ms}ms를 초과했습니다.
     `CHAT_PROPAGATION_P95` evidence로 S1 Chat Degradation 판단에 사용합니다.
 
     조치 대상은 **이 방송 하나**입니다. 다른 방송이 함께 나쁘면 각자 알림이 옵니다.
-    @webhook-o2-incident-entry
+    @webhook-o2-dify
   EOT
 
   monitor_thresholds {
@@ -60,13 +60,12 @@ resource "datadog_monitor" "chat_block_rate" {
   # 조치가 정상 사용자를 과도하게 잘라도 알림이 뜨지 않는다. 2026-08-25 실측에서
   # 소문자 조회가 0.49 를 반환해 확인했다(T-040 · M-010 관측 3).
   # Hot 카탈로그(`o2hot/metric_catalog.py` 의 `block_rate`)도 소문자를 쓴다.
-  query = "avg(last_5m):sum:o2.app.failure{env:${local.monitor_env},service:chat-gateway,event:chat.send,failure_code:channel_limited} by {broadcast_id}.as_count() / sum:o2.app.business_event{env:${local.monitor_env},service:chat-gateway,event:chat.send} by {broadcast_id}.as_count() >= ${var.chat_block_rate_critical}"
+  query = "max(last_${var.scenario_entry_window_minutes}m):sum:o2.app.failure{env:${local.monitor_env},service:chat-gateway,event:chat.send,failure_code:channel_limited} by {broadcast_id}.as_count() / sum:o2.app.business_event{env:${local.monitor_env},service:chat-gateway,event:chat.send} by {broadcast_id}.as_count() >= ${var.chat_block_rate_critical}"
 
   message = <<-EOT
     Chat 정상 사용자 차단률이 ${var.chat_block_rate_critical}를 초과했습니다.
     `CHAT_NORMAL_USER_BLOCK_RATE` evidence로 S1 Chat Degradation 판단에 사용합니다.
     방송 `{{broadcast_id.name}}`의 차단률입니다.
-    @webhook-o2-incident-entry
   EOT
 
   monitor_thresholds {
