@@ -70,6 +70,10 @@ production_migration_blockers:
 
 2026-08-23에 저장소와 실환경을 함께 확인했다.
 
+> **이 표는 그날의 스냅숏이다.** 아래 `agent_handoff_status=NOT_CONFIGURED` 처럼
+> 이후 바뀐 값이 있으니, 현재 상태는 문서 앞의 `implementation_state` 를 본다.
+> 스냅숏은 이력이라 값을 덮어쓰지 않는다.
+
 | 항목 | 확인 결과 |
 |---|---|
 | Dify 배치 | EKS 밖 private EC2, SSM 접속, Dify 1.16.1 |
