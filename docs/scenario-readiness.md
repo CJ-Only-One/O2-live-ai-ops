@@ -67,6 +67,7 @@
 | Runbook 위험도 척도 | ACTION의 L1/L2는 AUTO, L3는 APPROVAL로 라우팅되지만 등급 부여 기준은 없다. ACTION-KNOB 중복값도 일치 검사가 없다(D-079) | **없음** |
 | 상태 머신 · 검증 대기 타이머 · 재분석 1회 분기 | 별도 서비스가 아니라 Dify 워크플로 안에 있다 — `dify/o2-aiops-workflow.yml`의 상태 dict(`diagnosis_retry`·`remediation_retry`·`excluded_actions`·`skip_diagnosis`), `stabilization` 노드, `GLOBAL_LOOP_MAX_10` 한도. 멱등 키는 Correlator 쪽 signal claim(`09-incident/incident_correlation.tf`)에 있다. **재진단 한도가 2회라 `scenario-experiment.md` 0.4의 "재분석 1회"와 어긋난다** | **고쳐야** |
 | `Deduped` 병합 (Incident Correlator) | `infra/09-incident/terraform.tfvars` 에서 실행·event source 게이트 둘 다 `true`, `incident_shadow_mode=false`, 병합 window 420초와 Datadog monitor mapping(S1 셋 + READ_PATH)이 적용됐다. 채팅·Datadog 양방향 live E2E 도 한 인시던트로 병합돼 Dify 를 한 번만 깨웠다(`agent-entrypoint.md` `phase4c_live_source_to_dify_e2e`). 오병합률·복구 실측은 실제 인시던트 표본 뒤로 남았다 | **있음** |
+| Datadog Monitor → Correlator 진입 라우팅 | `scenario_alerts.tf` 헤더 규칙과 `incident_datadog_monitor_map` 은 새 경로(`@webhook-o2-incident-entry` → Datadog Source Adapter → Signal Queue → Correlator)를 전제한다. 그런데 **저장소 Terraform 의 어떤 Monitor 문구에도 그 handle 이 없다** — 등록된 다섯 중 셋(팬아웃 총량·차단률·결제 실패율)은 webhook 자체가 없고, 둘(전파 p95·S2 꼬리 지연)과 S3 진입은 옛 `@webhook-o2-dify` 다. live 에서는 M-020·phase4c 가 통과했으므로 콘솔 쪽 설정이 있을 가능성이 크고, 그렇다면 Terraform 드리프트다. 어느 쪽인지 live 확인이 먼저다 | **고쳐야** |
 | Slack 승인 왕복 | `infra/06-agent/slack_approval.tf` — Lambda 둘 + DynamoDB | **있음** |
 | 런북 카탈로그 + 조회 | `runbook.tf` + `runbook_lookup.tf` (Lambda + Function URL, `x-api-key`) | **있음** |
 | Runbook source-live 일치 | 2026-08-25 scan에서 source에 없는 구형 DEF 4개가 status 없이 남아 Lookup fallback상 active였다. live active ACTION에는 KNOB가 없다 | **고쳐야** |
@@ -79,12 +80,12 @@
 | 요구 | 현재 | 판정 |
 |---|---|---|
 | 채널 총량 제한 노브 | `main.ts`의 `overChannelLimit()`과 `/ws/admin/channel-limit`, `cfg:channel_limit:*`이 구현되고 테스트됐다(D-061) | **구현됨** |
-| 전파 지연 지표 (서버측) | `o2.chat.propagation` distribution을 Datadog에 등록하고 S1 p95 Monitor(`[O2][S1] Chat 전파 p95 지연`, 22076983)를 운영 생성했다. 방송별 `broadcast_id` 입력은 아직 필요하다 | **Monitor 구현됨 · Incident 연결 대기** |
-| 정상 사용자 차단률 | `o2.warm.channel_limited_rate`를 S1 차단률 Monitor(`[O2][S1] Chat 정상 사용자 차단률`, 22076982)로 운영 생성했다. 상한 실측과 방송별 `broadcast_id` 입력은 남음 | **Monitor 구현됨 · Incident 연결 대기** |
+| 전파 지연 지표 (서버측) | `o2.chat.propagation` distribution 을 등록하고 S1 p95 Monitor(`[O2][S1] Chat 전파 p95 지연`, 22076983)를 운영 생성했다. `by {broadcast_id}` multi-alert 로 방송축까지 실린다(D-086). 다만 알림 문구가 옛 `@webhook-o2-dify` 라 Correlator 가 아니라 옛 직결 경로로 간다 — 아래 라우팅 행 참조 | **고쳐야** |
+| 정상 사용자 차단률 | `o2.warm.channel_limited_rate` 를 S1 차단률 Monitor(`[O2][S1] Chat 정상 사용자 차단률`, 22076982)로 운영 생성했다. `incident_datadog_monitor_map` 에 CORROBORATING 으로 등록됐지만 알림 문구에 webhook 이 하나도 없어 Source Adapter 까지 갈 길이 없다 | **고쳐야** |
 | 채팅 전파 계약 기준값 | 없다. `architecture.md` 12.1 의 `p95 < 800ms` 는 읽기 경로용이다 | **없음** |
 | 넓은 발화자 분포 | `broadcast.js`의 `PROFILE=s1`은 `SENDERS`를 필수로 받고 발화자당 분당 한도 이상이면 시작 전에 실패한다 | **구현됨** |
 | 파형 (첫 파동 → 지속 고원) | `SPIKE_RPS`·`SPIKE_S`·`PLATEAU_RPS`를 모두 필수 입력으로 받아 두 구간을 만든다 | **구현됨** |
-| 인입 급증 알림 | `infra/05-datadog/monitor.tf:73` `rps_ratio{service:chat-gateway}`, `min(last_2m)` | **있음** |
+| 인입 급증 알림 | S1 진입은 `scenario_alerts.tf` 의 `s1_chat_fanout_volume`(`[O2][S1] 채팅 팬아웃 총량`, 22078626, `last_1m`, `role:entry`)이다. 발화 수만 보던 옛 `chat_ingest_surge` 는 webhook 을 떼고 사람용 `[O2][보류]` 로 남겼다(D-088) | **있음** |
 
 ### 2.3 S2 — 느린 파드 / 자기 교정 게이트
 
