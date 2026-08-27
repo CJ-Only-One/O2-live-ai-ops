@@ -109,16 +109,17 @@
 | Candidate → Agent 호출 handoff | `chat_source_adapter_operational_handoff_approved=true` 이고 `agent-entrypoint.md` `implementation_state.production_agent_handoff=ENABLED` 다. 0절 표의 `agent_handoff_status=NOT_CONFIGURED` 는 2026-08-23 스냅숏이라 현재 상태가 아니다. 결제 불만 채팅은 `READ_PATH` surface 로 분류돼(`chat-incident-candidate.md` 4절) `incident_chat_surface_map` 에 매핑돼 있다 | **있음** |
 | **목업 PG 스텁** | `apps/api/app/services/payment.py`가 주문 예약 뒤 `cfg:pg:*` 지연·결정론적 실패를 적용하고 `payment.process`를 발행한다. PG 실패 시 재고·멱등키를 보상한다(D-078). 아직 배포·실측 전 | **구현됨** |
 | **`cfg:pg:*` 노브** | `/api/admin/pg-stub`이 별도 admin key로 `delay_ms`·`fail_rate`를 함께 SET·DEL한다. 단위 테스트가 있고 배포 Secret 값은 별도 주입 필요 | **구현됨** |
-| **주문 부하 스크립트** | `loadtest/order-path.js`가 고정 도착률 주문을 만들며 RATE·DURATION·VU 수를 필수 입력으로 받는다. 시나리오 식별 헤더는 없다 | **구현됨** |
+| S3 Datadog 후속 증거 Monitor | `scenario_alerts.tf` 에 진입 `s3_pg_latency_p95`(`last_1m`, `@webhook-o2-dify`)와 증거 `s3_payment_failure_rate`(webhook 없음)가 있다. 그런데 **둘 다 `incident_datadog_monitor_map` 에 없다** — 등록이 없으면 Datadog Source Adapter 가 신호를 만들지 않으므로 0.7 Phase 1 의 "채팅 다음에 Datadog 증거가 병합된다" 가 성립하지 않는다 | **고쳐야** |
+| **주문 부하 스크립트** | S3 가 쓰는 것은 `loadtest/s3-payment.js` 다 — 결제 불만 채팅을 `CHAT_LEAD_SECONDS`(최소 17초) 먼저 흘리고 주문 부하를 얹는다. `CHAT_ONLY=true` 로 채팅만 돌려 Candidate 생성 최소 강도를 따로 잴 수 있다. 주문 축만 있는 `order-path.js` 는 그 하위 자산이다. 시나리오 식별 헤더는 없다(의도) | **구현됨** |
 | Dify History 유무 분기 | Worker가 S3 Vectors 검색 결과 중 `verified=true`인 사례만 `past_cases`로 넘기고 DSL이 진단 프롬프트에 포함한다. History 없음/있음 자체를 별도 상태로 표시하는 DSL 분기는 아직 없다 | **부분 구현** |
 | 1차 실행: active Runbook 없음 → 실패 보고 | 11-B가 `runbook_status`를 하류로 넘기고, 13-A가 `active`·`experiment`가 아니면 `MANUAL_REQUIRED` + `NO_ACTIVE_RUNBOOK`을 내 `ESCALATED`로 끝낸다. 런북이 있는데 후보만 소진된 경우만 종전대로 재진단한다. `dify/test_no_candidate_action.py`가 DSL 원본에서 코드를 꺼내 확인한다. **저장소 DSL 기준이고 실환경 반영은 3절 2번 드리프트 해소 뒤다** | **구현됨 · 미반영** |
-| 사람 해결 사례 → verified History | History 저장 기반은 있지만 PG-A→PG-B 수동 해결 사례를 검토·verified 처리하고 반복 시연용으로 격리하는 입력 경로는 없다 | **없음** |
+| 사람 해결 사례 → verified History | 입력 경로는 `06-agent/scripts/verify.py` 다 — 미검증 인시던트를 하나씩 보여주고 `human_fixed` 와 `labels.txt` 의 원인을 사람이 확정해야 verified 가 된다. 없는 것은 **반복 시연용 격리** 뿐이다. 공유 append-only History 를 쓰면 1차 재촬영 때 verified 사례를 되돌려야 한다 | **부분 구현** |
 | PG Failover Runbook 생명주기 | `pg_external_failure` draft는 PG-A→PG-B 우회 L3만 후보로 둔다. draft는 Lookup에서 제외되며, verified History·실측·원복·운영자 승인 증거가 있어야만 active 승격할 수 있다 | **부분 구현** |
 | PG-B 상태·전환·원복 제어면 | `/api/admin/pg-provider-switch`가 PG-B ready 확인 후 PG-A→PG-B 전환하고, PG-A 주입 해제 뒤에만 원복한다. 전환·안전한 원복 재시도는 멱등 처리한다. 로컬 통합 테스트가 PG-A 주입 실패 → PG-B 성공 이벤트 → 주입 중 원복 차단 → 안전 원복을 검증한다. 배포·실측 전 | **구현됨** |
-| PG-A→PG-B Action Handler | Guardrail 이후 호출할 실행기가 없다. 결제 경로 전환은 `L3`로 등록하고 Slack 승인 뒤에만 실행해야 한다 | **없음** |
+| PG-A→PG-B Action Handler | 새 실행기는 필요 없다 — `switch_pg_provider` 가 `L3` 로 등록돼 Slack 승인 경로를 타고, DSL 실행기 노드가 `$PG_PROVIDER_SWITCH_URL` 특수 타깃으로 api admin 라우트를 직접 부른다(auth 는 `READ_PATH_DEGRADED_ADMIN_KEY` 재사용). 저장소 DSL 의 그 환경변수 값이 빈 문자열이라 live 주입 전에는 mock 으로 떨어진다 | **구현됨 · 미주입** |
 | `pg_latency_ratio` 집계 | `o2warm/sketch.py`·`metrics.py` 에 있다. `pg_latency_ms` 가 안 들어와서 지금은 표본이 0 | **있음** |
-| `pg_external_failure` 복구 판정 | `recovery_judge`에 p95·error 폴백은 있지만 실측 기준이 아니며 PG-B 성공 이벤트와 채팅 불만 감소를 확인하지 않는다 | **고쳐야** |
-| 병합 키에서 `broadcast_id` 제외 | Correlator 가 source·service 로 묶는다. **S3 만 방송 축을 빼는 분기가 없다**(D-076) | **고쳐야** |
+| `pg_external_failure` 복구 판정 | 런북 `success_criteria` 가 있으면 `recovery_judge` 가 그것을 먼저 쓴다 — `overall_failure_rate <= 0.05` 절대 조건과 기준선 대비 두 조건의 AND(장애 한복판을 기준선으로 잡아 통과하던 문제 때문에 절대 조건을 같이 뒀다). 옛 하드코딩 폴백(`p95<=400`·`error<=0.05`)은 런북이 없을 때만이다. 여전히 **PG-B 성공 이벤트와 채팅 불만 감소는 판정에 안 들어간다** — 그 둘은 사람이 확인한다 | **고쳐야** |
+| 병합 키에서 `broadcast_id` 제외 | `incident_correlator.py:524` 의 `correlation_key` 는 `environment#incident_family#symptom_family#service#suspected_surface` 다 — 방송 축이 아예 없다. `broadcast_ids` 는 context 에만 실린다(D-086). S3 전용 분기가 필요 없다 | **있음** |
 | ~~읽기 요청당 CPU 감소 노브~~ | `/api/admin/read-path-degraded`(D-062) — **S3 에서 빠졌지만 지우지 않는다**(D-076). 읽기 경로 보호로는 유효 | **있음 · 미사용** |
 | ~~사람/자동화 두 패턴 부하~~ | `read-path.js` 의 `human`·`ambiguous` — **S3 에서 빠졌지만 지우지 않는다**(D-076) | **있음 · 미사용** |
 | 부하 생성기에 표식 없을 것 | 커스텀 헤더 없음 (`scenario-experiment.md` 2.1) | **있음** |
