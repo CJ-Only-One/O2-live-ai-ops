@@ -39,12 +39,12 @@ const DEFAULT_BROADCAST: BroadcastPresentation = {
 
 const BROADCASTS: Record<string, BroadcastPresentation> = {
   bc_1042: {
-    title: '문이는 못말려: 집안 살림 다 팝니다.',
+    title: '무니는 못말려! 집안 살림 다 팝니다',
     brand: '올리브영 단독',
     thumbnail: '/live/bc_1042.jpg',
     teaser: '1등 수분세럼 리필 기획 1시간 라이브 특가!',
     badges: ['라이브 특가', '리필 증정'],
-    segment: '토리든 다이브인 세럼 리필 기획 소개 중',
+    segment: '',
   },
   bc_1043: {
     title: '이니스프리 비타민C 세럼 · 에스네이처 수분크림 기획전',
