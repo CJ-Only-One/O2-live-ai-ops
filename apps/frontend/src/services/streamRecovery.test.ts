@@ -259,6 +259,20 @@ describe('조용한 정지', () => {
     assert.equal(h.counts.attach, 2)
   })
 
+  it('재생 위치가 흐르면 재부착하지 않는다 — playing 이 다시 안 와도', async () => {
+    // 라이브 엣지에서 세그먼트가 늦으면 stalled 가 뜨지만 재생은 버퍼로
+    // 이어진다. 비디오가 멈춘 적이 없어 playing 은 다시 오지 않으므로,
+    // 진행 신호가 없으면 멀쩡한 재생을 8초마다 끊게 된다.
+    const h = harness()
+    h.c.update(SRC, true)
+    h.c.onPlaying()
+    h.c.onStalled()
+    await h.tick(STALL_TIMEOUT_MS - 2000)
+    h.c.onProgress()
+    await h.tick(60000)
+    assert.equal(h.counts.attach, 1, '재생이 흐르면 재부착이 없어야 한다')
+  })
+
   it('정지 중 재생이 돌아오면 예약이 취소된다', async () => {
     const h = harness()
     h.c.update(SRC, true)

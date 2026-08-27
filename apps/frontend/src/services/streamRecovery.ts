@@ -188,10 +188,29 @@ export class StreamRecoveryController {
   }
 
   /**
+   * 재생 위치가 실제로 흘렀다. 감시 타이머만 푼다.
+   *
+   * `onPlaying` 을 대신 부르면 안 된다 — 그쪽은 `stableTimer` 를 다시 걸어서,
+   * 진행 신호가 STABLE_MS 보다 자주 오는 한 재부착 카운터가 영영 안 풀린다.
+   */
+  onProgress() {
+    if (this.state === 'idle' || this.state === 'open') return
+    this.clearStall()
+    if (this.state === 'recovering') this.setState('attached')
+  }
+
+  /**
    * 재생이 멈췄다 (버퍼링·오류). 아직 회복 시도 단계다.
    *
    * `waiting` 은 짧은 버퍼링에도 뜨므로 이벤트마다 재부착하면 안 된다.
-   * 감시 타이머만 걸고, 그 안에 `onPlaying` 이 오면 취소한다.
+   * 감시 타이머만 걸고, 그 안에 재생 진행(`onProgress`)이나 `onPlaying` 이
+   * 오면 취소한다.
+   *
+   * **진행 신호가 필요한 이유.** `stalled` 는 3초간 새 데이터가 안 들어오면
+   * 뜨는데, 그동안에도 재생은 버퍼로 계속된다. 비디오가 멈춘 적이 없으니
+   * `playing` 은 다시 오지 않는다. 그래서 `playing` 만 기다리면 멀쩡히
+   * 재생 중인 플레이어를 STALL_TIMEOUT_MS 뒤에 죽인다 (2026-08-28 실측:
+   * stalled 뒤 정확히 8.0초마다 재부착이 반복됐다).
    */
   onStalled() {
     this.clearStable()
