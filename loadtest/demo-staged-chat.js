@@ -24,6 +24,7 @@
 
 import { sleep } from 'k6';
 import { WebSocket } from 'k6/websockets';
+import exec from 'k6/execution';
 import { setTimeout } from 'k6/timers';
 import { Counter } from 'k6/metrics';
 
@@ -133,8 +134,16 @@ function uuidV4() {
   });
 }
 
+// 문구를 무작위로 고르면 같은 줄이 연달아 뜬다 — 리허설 로그에서 세 번 연속
+// 나오는 것을 봤다. VU별로 직전 값을 피하는 것으로는 안 된다(연속으로 보이는
+// 두 줄은 대개 다른 VU 가 쓴 것이다). 시나리오 전체 이터레이션 번호로 풀을
+// 순서대로 훑으면 같은 문구 사이에 풀 크기만큼 간격이 보장된다.
+//
+// 보폭을 두는 방법도 써봤는데 보폭과 풀 크기가 서로소가 아니면 조용히 몇 개만
+// 돌고 만다(7과 28이면 넷만 쓴다). 풀 크기가 바뀌면 깨지는 조건이라 안 쓴다.
+// 발화 직전 무작위 지연이 있어 화면에 뜨는 순서는 어차피 조금씩 섞인다.
 function pick(pool) {
-  return pool[Math.floor(Math.random() * pool.length)];
+  return pool[exec.scenario.iterationInTest % pool.length];
 }
 
 export function sendGeneral() {
