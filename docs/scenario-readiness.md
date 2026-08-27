@@ -66,7 +66,7 @@
 | 게이트 진입 결정론적 판정 | 판정 입력인 노브 카탈로그 조회는 구현됐지만, 상태 머신/Dify가 이 값으로 분기하는 경로는 없다. 현재 Guardrail은 ACTION `risk_level`만 읽는다 | **설계만** |
 | Runbook 위험도 척도 | ACTION의 L1/L2는 AUTO, L3는 APPROVAL로 라우팅되지만 등급 부여 기준은 없다. ACTION-KNOB 중복값도 일치 검사가 없다(D-079) | **없음** |
 | 상태 머신 · 검증 대기 타이머 · 재분석 1회 분기 | 없음. 정의는 `scenario-experiment.md` 0.4 에 있다 | **없음** |
-| `Deduped` 병합 (Incident Correlator) | Signal Queue 직접 합성 E2E에서 양방향 모두 같은 Incident revision 2로 병합. 실제 Adapter 지연도 source별 2회 측정했지만 운영 window·Datadog monitor mapping은 미설정이고 실행 gate는 다시 껐다 | **비활성** |
+| `Deduped` 병합 (Incident Correlator) | `infra/09-incident/terraform.tfvars` 에서 실행·event source 게이트 둘 다 `true`, `incident_shadow_mode=false`, 병합 window 420초와 Datadog monitor mapping(S1 셋 + READ_PATH)이 적용됐다. 채팅·Datadog 양방향 live E2E 도 한 인시던트로 병합돼 Dify 를 한 번만 깨웠다(`agent-entrypoint.md` `phase4c_live_source_to_dify_e2e`). 오병합률·복구 실측은 실제 인시던트 표본 뒤로 남았다 | **있음** |
 | Slack 승인 왕복 | `infra/06-agent/slack_approval.tf` — Lambda 둘 + DynamoDB | **있음** |
 | 런북 카탈로그 + 조회 | `runbook.tf` + `runbook_lookup.tf` (Lambda + Function URL, `x-api-key`) | **있음** |
 | Runbook source-live 일치 | 2026-08-25 scan에서 source에 없는 구형 DEF 4개가 status 없이 남아 Lookup fallback상 active였다. live active ACTION에는 KNOB가 없다 | **고쳐야** |
