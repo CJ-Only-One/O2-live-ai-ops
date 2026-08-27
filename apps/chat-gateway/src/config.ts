@@ -15,6 +15,20 @@ function positiveNum(name: string, fallback: number): number {
   return value > 0 ? Math.floor(value) : fallback;
 }
 
+/**
+ * 채널 총량 제한(분당 상한)을 전송 창 하나가 받아줄 건수로 환산한다.
+ *
+ * 카운터 창을 1분으로 두면 창이 열리는 순간 상한만큼이 한꺼번에 통과한다.
+ * 총량은 지켜지는데 그 몇 초가 `maxPerTick` 을 넘겨 팬아웃에서 그대로
+ * 버려진다 — 2026-08-27 실행에서 제한 500/분을 걸고도 유실률이 41%→37%
+ * 로 안 내려간 이유다(절대량만 줄었다). 창을 전송 틱과 같은 길이로 맞추면
+ * 틱당 통과량이 확정돼 뒷단에서 버릴 것이 없어진다.
+ */
+export function perWindowLimit(limitPerMinute: number, tickMs: number): number {
+  const windowsPerMinute = 60_000 / tickMs;
+  return Math.max(1, Math.floor(limitPerMinute / windowsPerMinute));
+}
+
 export type ChatSignalMode = 'off' | 'shadow';
 
 const rawChatSignalMode = process.env.CHAT_SIGNAL_MODE ?? 'off';

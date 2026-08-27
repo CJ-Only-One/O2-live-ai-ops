@@ -19,7 +19,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import Redis from 'ioredis';
 import { WebSocket, WebSocketServer } from 'ws';
 
-import { config } from './config.js';
+import { config, perWindowLimit } from './config.js';
 import { createChatIngressHandler, type ChatIngressConnection } from './chat-ingress.js';
 import { emitChatSend, hashUserKey } from './events.js';
 import { nicknameFor } from './nickname.js';
@@ -139,10 +139,14 @@ async function overChannelLimit(conn: ChatIngressConnection): Promise<boolean> {
   const limit = await pub.get(`cfg:channel_limit:${conn.broadcastId}`);
   if (limit === null) return false;
 
-  const key = `chat:total:${conn.broadcastId}`;
+  // 창은 전송 틱과 같은 길이다 (config.ts perWindowLimit). 1분 창이면 통과분이
+  // 분 앞머리에 몰려 들어와 틱 상한을 넘기고, 조치를 걸고도 유실률이 그대로
+  // 남는다. 키가 200ms 마다 새로 생기므로 만료도 짧게 준다.
+  const perWindow = perWindowLimit(Number(limit), config.tickMs);
+  const key = `chat:total:${conn.broadcastId}:${Math.floor(Date.now() / config.tickMs)}`;
   const count = await pub.incr(key);
-  if (count === 1) await pub.expire(key, 60);
-  return count > Number(limit);
+  if (count === 1) await pub.expire(key, 2);
+  return count > perWindow;
 }
 
 const handleChat = createChatIngressHandler({
