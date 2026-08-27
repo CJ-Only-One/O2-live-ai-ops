@@ -159,6 +159,54 @@ US1 기본값으로 보내면 403이 나고, `datadog.py` 가 그것을 삼켜 �
 경로(`o2-dify-ingress`·`o2-warm-api`·`o2-dev-dify-scale-executor` …)가 통째로
 사라진다. 함수는 `functionname` 으로만 고른다.
 
+### 기본 시간 창은 1일이다 (`live_span = "1d"`)
+
+**Datadog 대시보드의 기본 창은 1시간이다.** 시나리오는 하루에 몇 번 돌까 말까
+하므로, 그 상태로 열면 화면이 통째로 비어 있고 그것이 "고장" 으로 보인다.
+실제로 그 신고가 들어왔다.
+
+그래서 이 세 화면은 위젯마다 `live_span = "1d"` 를 박아 둔다. 실측으로 정했다.
+
+| 창 | 실행이 없는 동안 비는 위젯 |
+|---|---|
+| 4시간 | S1 12개 중 **6개**, S3 11개 중 **6개** |
+| **1일** | **0개** |
+
+실험 한 번은 1~1.5시간이라 1일 창에서 한 덩어리로 보이고, 자세히 볼 때는 그
+구간을 드래그해서 확대한다. 마지막 실행이 하루보다 오래됐으면 시간 선택기를
+넓혀야 한다 — **빈 화면은 "계측이 없다" 가 아니라 "그 창 안에 실행이 없었다"** 다.
+
+`live_span` 은 API 응답에서 `definition.time.live_span` 에 들어간다.
+`definition.live_span` 을 읽으면 항상 `None` 이라 "안 걸렸다" 고 오독하게 된다.
+
+### native 이관으로 죽은 `o2.warm.*` 지표를 쓰지 않는다
+
+`0bb9f18` "complete native metric cutover" 이후 **`DATADOG_SCALARS` 에서 빠진
+지표는 Datadog 에 안 온다.** 계약(warm snapshot)에는 남아 있어서 에이전트는
+`o2-warm-api` 로 계속 읽지만, **대시보드에서는 죽은 쿼리다.**
+
+2026-08-27 확인 — 아래는 **2026-08-25 00:00 이후 값이 없다.**
+
+```
+cache_hit_rate  channel_limited_rate  fallback_rate
+latency_p50  latency_p95  latency_p99  overall_failure_rate
+event_count(08-25 02:00)  rps_ratio(08-23)  cancel_rate(08-20)
+```
+
+살아 있는 것은 `confidence` · `distinct_users` · `event_rate` ·
+`ip_diversity` · `pipeline_freshness_seconds` · `rps` · `top1pct_share` ·
+`top5_share` 다.
+
+**일곱 개가 같은 시각에 멈춘 것이 단서였다.** 실험을 안 해서 비는 것이라면
+시각이 흩어진다. 동시에 끊기면 코드나 발행 목록이 바뀐 것이다.
+
+이 때문에 초안의 위젯 두 개를 갈아 끼웠다.
+
+| 죽은 쿼리 | 대체 | 비고 |
+|---|---|---|
+| `o2.warm.latency_p95 by {pod_name}` | `p99:o2.app.operation.duration by {pod_name}` | native 대체 있음 |
+| `o2.warm.fallback_rate` | `o2.app.business_event by {event}` (실패율의 분모) | **native 대체 없음** — 폴백 관점은 warm snapshot 에만 남는다 |
+
 ### 실험 전에 비어 있는 것은 정상이다
 
 이 세 화면은 부하와 장애 주입이 돌 때 채워진다. 다만 **"실험을 안 해서 빈 것" 과
