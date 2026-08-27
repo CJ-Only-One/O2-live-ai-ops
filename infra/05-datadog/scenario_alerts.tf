@@ -254,15 +254,7 @@ resource "datadog_monitor" "s3_pg_latency_p95" {
   message = <<-EOT
     결제 처리(`payment.process`) p95 가 ${var.s3_pg_latency_p95_critical_ms}ms 를 넘었습니다.
 
-    **이 알림이 말하는 것은 "느리다" 까지입니다.** 우리가 느린 것인지 외부 PG 가
-    느린 것인지는 이 값으로 갈리지 않습니다. 원시 이벤트에서 `failure_code` 분포와
-    `pg_latency_ms` 가 전체 지연에서 차지하는 몫을 확인하세요.
-
-    **조치 후보를 다 써도 안 되면 멈추세요.** 커넥션 풀을 넓히거나 타임아웃을
-    조정해도 외부 PG 자체가 느린 것은 그대로입니다. 한도에 닿으면 무엇을 해봤고
-    왜 안 됐는지를 정리해 사람에게 넘기는 것이 정답입니다.
-
-    @webhook-o2-dify
+    @webhook-o2-incident-entry
   EOT
 
   monitor_thresholds {
@@ -275,10 +267,11 @@ resource "datadog_monitor" "s3_pg_latency_p95" {
   require_full_window = true
   renotify_interval   = 0
 
-  tags = concat(local.monitor_tags, ["env:${local.monitor_env}", "scenario:s3", "service:${var.default_service}", "role:entry"])
+  tags = concat(local.monitor_tags, ["env:${local.monitor_env}", "scenario:s3", "service:${var.default_service}", "role:corroborating"])
 }
 
-# 결제 실패율. evidence 축이라 webhook 은 없다 — 위 지연 Monitor 가 진입이다.
+# 결제 실패율. Incident 성립에 필수인 CORROBORATING은 위 지연 Monitor가 맡고,
+# 이 Monitor는 같은 Incident에 사용자 영향 CONTEXT를 보탠다.
 #
 # 분모는 **전체 시도**다(`business_event{event:payment.process}`). 실패 코드
 # 분포로 나누지 않는 것은 D-069 가 S1 차단률에서 정한 것과 같은 이유다.
@@ -295,10 +288,7 @@ resource "datadog_monitor" "s3_payment_failure_rate" {
   message = <<-EOT
     결제 실패율이 ${var.s3_payment_failure_rate_critical} 를 넘었습니다.
 
-    `PAYMENT_FAILURE_RATE` evidence 로 `PAYMENT_DEGRADATION` 판단에 씁니다
-    (명세 §3 taxonomy).
-
-    분모는 실패 코드 분포가 아니라 **전체 결제 시도**입니다.
+    @webhook-o2-incident-entry
   EOT
 
   monitor_thresholds {
@@ -310,5 +300,5 @@ resource "datadog_monitor" "s3_payment_failure_rate" {
   require_full_window = true
   renotify_interval   = 0
 
-  tags = concat(local.monitor_tags, ["env:${local.monitor_env}", "scenario:s3", "service:${var.default_service}", "role:impact"])
+  tags = concat(local.monitor_tags, ["env:${local.monitor_env}", "scenario:s3", "service:${var.default_service}", "role:context"])
 }
