@@ -7,6 +7,7 @@ import {
 } from './chat-ingress.js';
 import type { ChatSendPayload, EmitContext } from './events.js';
 import type { ChatSignalInput } from './chat-signal.js';
+import { perWindowLimit } from './config.js';
 
 function fixture(overrides: {
   rateLimited?: boolean;
@@ -117,4 +118,13 @@ test('SQS가 끝나지 않아도 Valkey 팬아웃을 기다리게 하지 않는�
 
   await state.handle(state.conn, '계속 로딩돼요');
   assert.deepEqual(state.fanout, ['계속 로딩돼요']);
+});
+
+// 채널 제한 창 환산. 분당 상한을 전송 창 하나가 받아줄 건수로 나눠야
+// 통과분이 팬아웃 상한(maxPerTick)을 안 넘긴다.
+test('채널 제한을 전송 창 단위로 환산하면 틱당 통과량이 팬아웃 상한 아래로 들어온다', () => {
+  assert.equal(perWindowLimit(2100, 200), 7); // 분당 2,100 → 200ms 창당 7건
+  assert.equal(perWindowLimit(3000, 200), 10); // 상한 10 과 같아지는 지점
+  assert.ok(perWindowLimit(2100, 200) < 10); // maxPerTick 기본 시연값
+  assert.equal(perWindowLimit(60, 200), 1); // 창당 1건 미만이어도 0 으로 죽지 않는다
 });

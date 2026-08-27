@@ -253,7 +253,12 @@ RUNBOOKS = [
                 {"metric": "chat_propagation_p95_ms", "comparison": "<=", "threshold": 800},
                 {"metric": "p95_ms", "comparison": "<=", "threshold": 500},
                 {"metric": "error_rate", "comparison": "<=", "threshold": Decimal("0.05")},
-                {"metric": "items_per_sec", "comparison": "<=", "threshold": 20000},
+                # 2026-08-27: 20,000은 뒤집힌 옛 안전선이다("2파드 20,000
+                # items/s"). M-010 재측정에서 서버는 80,000 items/s를 p95
+                # 325ms로 처리했고, 먼저 닿는 벽은 CPU가 아니라 메모리였다.
+                # limit=2,100이면 조치 후 전달이 70,000 items/s라 이 기준에
+                # 12.5% 마진으로 들어온다.
+                {"metric": "items_per_sec", "comparison": "<=", "threshold": 80000},
             ],
             "logic": "OR",
         },
@@ -286,12 +291,21 @@ RUNBOOKS = [
                     # (risk_level L3)이 대신한다 — "강도를 고른다"가 아니라
                     # "이 고정값으로 실행할지 승인/거부"로 단순화.
                     #
-                    # TEMP: 500은 실측 없는 자리값이다(options_temp 중간값).
-                    # 부하테스트로 실제 안전선 나오면 그 값으로 덮어쓸 것.
+                    # 2026-08-27: 500(자리값)을 실측 기반 2,100으로 바꿨다.
+                    # 500은 부하(분당 3,600건)의 1/7이라 조치를 걸면 발화의
+                    # 92%가 거부되는데도 유실률은 41%→37%로 안 내려갔다.
+                    # 유실이 나는 자리는 인입이 아니라 팬아웃이라(연결당
+                    # maxPerTick), 통과분이 전송 창당 상한 아래로 들어와야
+                    # 유실이 0이 된다. 2,100/분 = 200ms 창당 7건이고 시연
+                    # 설정(maxPerTick=10) 대비 30% 마진이다. 이때 전달량은
+                    # 분당 2,100건으로 조치 전 실제 전달량(2,124건/분)과
+                    # 같고 유실만 사라진다 — 조치가 전달을 깎지 않는다.
+                    # 상한 자체는 M-010(서버 80,000 items/s 정상)과
+                    # perWindowLimit(config.ts) 둘 다에 걸려 있다.
                     "limit": {
                         "type": "int",
                         "required": True,
-                        "source": "static:500",
+                        "source": "static:2100",
                     },
                 },
                 "execution_target": {
