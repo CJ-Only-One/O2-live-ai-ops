@@ -6,7 +6,7 @@ import LivePlayer from '../components/LivePlayer'
 import LiveProductCard from '../components/LiveProductCard'
 import PreBroadcast from '../components/PreBroadcast'
 import ProductSheet from '../components/ProductSheet'
-import { approximateViewers, broadcastView } from '../presentation'
+import { broadcastView } from '../presentation'
 import { ApiError } from '../services/api'
 import { fetchBroadcast } from '../services/broadcastService'
 import { track } from '../services/clientEvents'
@@ -31,7 +31,6 @@ function LiveRoom() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [muted, setMuted] = useState(true)
   const [sheetOpen, setSheetOpen] = useState(false)
-  const [couponIssued, setCouponIssued] = useState(false)
   const [order, setOrder] = useState<OrderPhase>({ kind: 'idle' })
 
   const { messages, connected, send } = useChat(broadcastId)
@@ -191,9 +190,6 @@ function LiveRoom() {
         <div className="room__topbar">
           <span className="room__logo">올영LIVE</span>
           <div className="room__topbar-icons">
-            <span className="room__viewers">
-              👁 {approximateViewers(broadcast.broadcast_id).toLocaleString()}
-            </span>
             <button className="icon-btn" onClick={() => setMuted((m) => !m)} aria-label="음소거">
               {muted ? '🔇' : '🔊'}
             </button>
@@ -220,18 +216,6 @@ function LiveRoom() {
             </button>
           )}
           {order.kind === 'failed' && <p className="room__toast is-error">{order.message}</p>}
-
-          {/*
-            쿠폰 API 는 계약에 없다. 화면 장식이고 실제 발급이 일어나지 않는다 —
-            특가 자체가 쿠폰을 대신한다 (contracts.md 5.2).
-          */}
-          <button
-            className={`room__coupon${couponIssued ? ' is-issued' : ''}`}
-            onClick={() => setCouponIssued(true)}
-            disabled={couponIssued}
-          >
-            {couponIssued ? '✓ 쿠폰이 발급되었습니다' : '🎟 라이브 전용 쿠폰 받기'}
-          </button>
 
           {featured && (
             <LiveProductCard

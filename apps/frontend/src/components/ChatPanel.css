@@ -4,8 +4,9 @@
   gap: 8px;
 }
 
+/* 6줄이 보이는 높이다 — 한 줄 약 26px(13px 글자 + 상하 5px 패딩)에 gap 6px. */
 .chat-panel__list {
-  max-height: 132px;
+  max-height: 186px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
