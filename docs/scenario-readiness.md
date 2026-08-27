@@ -59,20 +59,20 @@
 
 | 요구 | 현재 | 판정 |
 |---|---|---|
-| 조치 실행기 (파드 수·노브 변경) | S2는 `action_executor.tf` + `scale_deployment.py`, S1은 `/ws/admin/channel-limit`로 구현됐다. S3는 PG-A 장애 주입 제어면만 있고 PG-A→PG-B Failover Action Handler는 없다. 옛 `/api/admin/read-path-degraded`는 자산만 유지한다 | **고쳐야** |
+| 조치 실행기 (파드 수·노브 변경) | S2는 `action_executor.tf` + `scale_deployment.py`, S1은 `/ws/admin/channel-limit`로 구현됐다. S3도 배선은 끝났다 — 제어면(`/api/admin/pg-stub`·`/api/admin/pg-provider-switch`), 런북 L3 조치(`seed_runbook.py` `switch_pg_provider`), DSL 실행기 특수 타깃(`$PG_PROVIDER_SWITCH_URL`). 다만 저장소 DSL의 환경변수 값이 빈 문자열이라(`dify/o2-aiops-workflow.yml` `PG_PROVIDER_SWITCH_URL`) live 주입 전에는 `is_real=false` mock 경로로 떨어진다. 옛 `/api/admin/read-path-degraded`는 자산만 유지한다 | **고쳐야** |
 | Dify → EKS 권한 (인스턴스 역할 + RBAC) | 직접 권한 대신 S2 실행기 Lambda에 EKS Access Entry와 `deployments/scale` get·patch만 부여했다(`04-platform/action_executor_access.tf`) | **구현됨** |
 | `cfg:*` 노브 저장·조회 | chat-gateway의 `cfg:channel_limit:*`, api의 `cfg:read_path_degraded:*`와 S3 목업 PG의 `cfg:pg:*` SET·DEL 및 테스트가 있다 | **구현됨** |
 | 노브 카탈로그 (가역성·예산·precondition·검증 지표) | `seed_runbook.py`의 `KNOBS`, `runbook_lookup.py` 조회와 단위 테스트가 있다. 시간·예산 수치는 미측정이라 `None`. 형식과 live 대조는 `runbook-catalog.md` | **구현됨** |
 | 게이트 진입 결정론적 판정 | 판정 입력인 노브 카탈로그 조회는 구현됐지만, 상태 머신/Dify가 이 값으로 분기하는 경로는 없다. 현재 Guardrail은 ACTION `risk_level`만 읽는다 | **설계만** |
 | Runbook 위험도 척도 | ACTION의 L1/L2는 AUTO, L3는 APPROVAL로 라우팅되지만 등급 부여 기준은 없다. ACTION-KNOB 중복값도 일치 검사가 없다(D-079) | **없음** |
-| 상태 머신 · 검증 대기 타이머 · 재분석 1회 분기 | 없음. 정의는 `scenario-experiment.md` 0.4 에 있다 | **없음** |
+| 상태 머신 · 검증 대기 타이머 · 재분석 1회 분기 | 별도 서비스가 아니라 Dify 워크플로 안에 있다 — `dify/o2-aiops-workflow.yml`의 상태 dict(`diagnosis_retry`·`remediation_retry`·`excluded_actions`·`skip_diagnosis`), `stabilization` 노드, `GLOBAL_LOOP_MAX_10` 한도. 멱등 키는 Correlator 쪽 signal claim(`09-incident/incident_correlation.tf`)에 있다. **재진단 한도가 2회라 `scenario-experiment.md` 0.4의 "재분석 1회"와 어긋난다** | **고쳐야** |
 | `Deduped` 병합 (Incident Correlator) | `infra/09-incident/terraform.tfvars` 에서 실행·event source 게이트 둘 다 `true`, `incident_shadow_mode=false`, 병합 window 420초와 Datadog monitor mapping(S1 셋 + READ_PATH)이 적용됐다. 채팅·Datadog 양방향 live E2E 도 한 인시던트로 병합돼 Dify 를 한 번만 깨웠다(`agent-entrypoint.md` `phase4c_live_source_to_dify_e2e`). 오병합률·복구 실측은 실제 인시던트 표본 뒤로 남았다 | **있음** |
 | Slack 승인 왕복 | `infra/06-agent/slack_approval.tf` — Lambda 둘 + DynamoDB | **있음** |
 | 런북 카탈로그 + 조회 | `runbook.tf` + `runbook_lookup.tf` (Lambda + Function URL, `x-api-key`) | **있음** |
 | Runbook source-live 일치 | 2026-08-25 scan에서 source에 없는 구형 DEF 4개가 status 없이 남아 Lookup fallback상 active였다. live active ACTION에는 KNOB가 없다 | **고쳐야** |
 | 인시던트 히스토리 (S3 + S3 Vectors) | `history.tf`, `history_o2.tf`. O2 전용 분리까지 완료 | **있음** |
 | Agent 공통 진입점 | `agent_entry_transport.tf` SQS + Worker. 실행 게이트가 켜졌고 Invocation Queue consumer 도 동작한다(`agent-entrypoint.md` `implementation_state.agent_invocation_queue`·`production_agent_handoff`) | **있음** |
-| 저장소 Dify DSL | `infra/06-agent/dify/alert-triage.yml` 은 시작→LLM→출력 3노드. 실환경과 드리프트(T-022) | **고쳐야** |
+| 저장소 Dify DSL | 시연이 쓰는 워크플로는 `dify/o2-aiops-workflow.yml` 로 저장소에 있다(노드 153개, 최신 반영 9683e19). `alert-triage.yml` 3노드는 옛 자산이다. 남은 드리프트는 팀 운영 워크플로 쪽이고(`agent-entrypoint.md` `production_migration_blockers: DEPLOYED_TEAM_WORKFLOW_DSL_NOT_EXPORTED_TO_REPOSITORY`, T-022) 시연 경로의 blocker 는 아니다 | **있음** |
 
 ### 2.2 S1 — 채팅 총량 / 대가 게이트
 
