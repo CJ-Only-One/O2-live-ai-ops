@@ -78,6 +78,9 @@ US1 기본값으로 보내면 403이 나고, `datadog.py` 가 그것을 삼켜 �
 | `pipeline_native.tf` | 파이프라인 구간별 상태 | 출처별 | `aws.lambda.*` · `aws.kinesis.*` · `aws.firehose.*` · `aws.sqs.*` | 함수·스트림·큐 |
 | `dashboard_scenarios.tf` | O2 AI Agent — S1·S2·S3 이상 탐지 | 합성 (**실험 진행자용**) | 위 전부 | `env` · `kube_*` |
 | `dashboard_demo.tf` | O2 — 실시간 서비스 관측·자동 대응 | 합성 (**발표용**) | 위 전부 | `env` · `service` · `kube_namespace` |
+| `dashboard_scenario_flow.tf` | `[O2][S1]`/`[S2]`/`[S3]` … 발생부터 해결까지 (**세 개**) | 합성 (**시나리오 추적용**) | 위 전부 | **없음 — 값으로 박는다** |
+
+`dashboard_scenario_flow.tf` 만 템플릿 변수를 안 쓴다. 이유는 아래 전용 절에 있다.
 
 두 합성 화면은 **이름 규칙이 반대다.** 헷갈리면 대상을 보고 고른다.
 
