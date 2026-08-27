@@ -181,18 +181,21 @@ resource "datadog_monitor" "s2_api_tail_latency" {
 
   query = "max(last_${var.scenario_early_window_minutes}m):p99:trace.fastapi.request{service:${var.default_service},env:${local.monitor_env}} >= ${var.s2_tail_latency_p99_critical_ms / 1000}"
 
+  # 본문에 원인 해설을 적지 않는다. 이 message 는 알림에 실려 진단 프롬프트로
+  # 그대로 들어가므로, 여기 쓴 설명은 Agent 에게 **정답을 알려주는 것**이 된다.
+  #
+  # 2026-08-27 실측: 이전 본문에는 "파드 하나만 느리면 p95 는 안 움직인다",
+  # "조여진 파드는 CPU 를 적게 쓴다", "증설로 p50 만 좋아지면 그것이 새 증거다",
+  # "파드별로 쪼개 다시 보라"가 적혀 있었다. 진단이 그 문장들을 근거로 인용해
+  # **1차 진단부터 pod_load_skew 로 직행**했고, S2 가 보여주려는 오진→검증
+  # 실패→자기 교정 구간이 통째로 사라졌다. 모델이 바뀌면서 드러났을 뿐
+  # 새는 자리는 원래 여기였다 — 이전 모델은 "알림 문구의 설명일 뿐"이라며
+  # 쓰지 않았다.
+  #
+  # 사람용 조사 안내는 런북 카탈로그와 docs/runbook-catalog.md 가 갖는다.
+  # 알림은 **관측한 사실만** 싣는다.
   message = <<-EOT
     API 응답 p99 가 ${var.s2_tail_latency_p99_critical_ms}ms 를 넘었습니다.
-
-    **p95 가 아니라 p99 를 보는 이유** — 파드 하나만 느린 상황에서 그 파드의 몫이
-    전체의 5% 미만이면 p95 는 움직이지 않습니다. 꼬리가 먼저 벌어집니다.
-
-    **먼저 넓게 보세요.** 지표만 보면 흔한 용량 부족처럼 보이고, 실제로 조여진
-    파드는 상한에 막혀 CPU 를 **적게** 씁니다 — 1차 지표에서는 한가한 파드입니다.
-    범용 지연 런북(증설)은 가역이고 예산 안이므로 자동 실행 대상입니다.
-
-    **증설로 p50 만 좋아지고 p99 가 그대로면 그것이 새 증거입니다.** 같은 조치를
-    반복하지 말고 파드별로 쪼개 다시 보세요(`o2.apm.request.duration by pod_name`).
 
     @webhook-o2-dify
   EOT

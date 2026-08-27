@@ -57,11 +57,22 @@ RUNBOOKS = [
             "rollback and baseline recovery evidence missing",
             "operator approval missing",
         ],
+        # 2026-08-27 두 곳을 고쳤다.
+        #
+        # 1) overall_failure_rate 조건을 뺐다. Warm 이 표본 부족일 때 이 값을
+        #    null 로 주고 _check 는 null 을 미달로 센다 — AND 조건이 구조적으로
+        #    통과 불가능해져서, 격리에 성공해도 unresolved 로 끝났다.
+        #    traffic_spike_overload 는 같은 이유로 이미 이 조건을 뺐다.
+        #
+        # 2) p99_ms 조건을 넣었다. latency_p95 <= 800 은 Warm 서버측 밀리초
+        #    값과 자릿수가 안 맞아 canary 가 Service 에 붙어 있는 장애 중에도
+        #    통과한다(실측 28.6ms) — 그것만 두면 격리하지 않아도 RESOLVED 가
+        #    뜬다. 근거는 용량 런북과 같은 실측 두 개다: 무부하 p99 2.01ms,
+        #    canary 투입 부하 중 p99 100.7ms.
         "success_criteria": {
-            # 절대 SLO — architecture.md 12.1 계약, M-009 실측이 이 기준으로 판정됨.
             "conditions": [
                 {"metric": "latency_p95", "comparison": "<=", "threshold": 800},
-                {"metric": "overall_failure_rate", "comparison": "<=", "threshold": Decimal("0.01")},
+                {"metric": "p99_ms", "comparison": "<=", "threshold": 50},
             ],
             # 기준선 상대(D-058) — canary 붙이기 전 정상 파드만의 p95 가
             # baseline_p95_ms 로 Baseline 상태에서 기록된다(0.4). 격리 후,
@@ -71,6 +82,7 @@ RUNBOOKS = [
             "baseline_conditions": [
                 {"metric": "latency_p95", "comparison": "<=", "relative_to": "baseline_p95_ms"},
             ],
+            "verification_metrics": ["latency_p95", "p99_ms"],
             "logic": "AND",
         },
         "actions": [

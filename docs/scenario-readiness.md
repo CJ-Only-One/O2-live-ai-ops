@@ -100,6 +100,11 @@
 | 자원 요청 현실화 | `api-deployment.yaml:238` `cpu: 100m` (M-009 는 300 RPS 에서 664m). **지금은 올리지 않는다** — 3절 참조 | **보류** |
 | replicas 동기화 예외 | `argocd.tf`에 api `/spec/replicas` ignore와 `RespectIgnoreDifferences=true`가 있다. 실험 종료 시 2로 명시 원복 | **구현됨** |
 | api 에 HPA·KEDA 없을 것 | ScaledObject 는 `order-worker` 에만 붙어 있다 | **있음** |
+| 진입 알림 본문 | 원인 해설을 뺐다. Monitor message 는 진단 프롬프트로 그대로 들어가므로 거기 쓴 설명이 Agent 에게는 정답이 된다 — 2026-08-27 실측에서 1차 진단부터 `pod_load_skew` 로 직행했다. 지금은 관측 사실 한 줄만 싣는다 | **고쳐짐** |
+| 재조치·재진단 루프 | 라이브 `main_loop.loop_count` 가 **1** 이었다(git 기록본·노드 제목은 10). 상태 머신이 `stop_flag=false` 로 "재조치하라"를 내놔도 1회차에서 끝났다. 2026-08-27 에 10 으로 고쳐 재진단 라운드가 처음 열렸다. **라이브 값이 git 과 갈릴 수 있으므로 실행 전에 확인한다** | **고쳐짐** |
+| 재진단이 `pod_load_skew` 로 정정 | 아직 안 된다. 1·2차 진단이 모두 `traffic_spike_overload`(confidence 둘 다 0.65)라 `ACTIONS_EXHAUSTED_SAME_RCA` 로 끝난다. 데이터는 두 프롬프트에 다 있다(canary 202.54ms 대 정상 5.35·6.15ms). 1차와 2차가 같은 입력을 받는 것이 원인 — 노드 7 을 회차별로 나눠야 한다(`measurements.md` 해당 절) | **고쳐야** |
+| `pod_load_skew` 복구 판정 | `overall_failure_rate <= 0.01` 이 Warm 의 `null` 을 만나 구조적으로 통과 불가였다. 조건을 빼고 `p99_ms <= 50` 으로 바꿨다. 격리 전 미달 · 격리 후 통과로 갈린다 | **고쳐짐** |
+| 실험 중 `cue-warmer` 정지 | 워머가 `api` 의 `spec.replicas` 를 10초마다 기준값으로 되돌려 Agent 조치를 3~5초 만에 무효화한다(T-043). 실행 절차에 정지·복구를 넣었다(`scenario-experiment.md` 4.3·4.5) | **고쳐짐 · 절차** |
 
 ### 2.4 S3 — 외부 결제 PG 장애 / 1차 실패 → 지식화 → 2차 해결
 
