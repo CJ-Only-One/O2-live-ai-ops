@@ -66,12 +66,12 @@
 | 게이트 진입 결정론적 판정 | 판정 입력인 노브 카탈로그 조회는 구현됐지만, 상태 머신/Dify가 이 값으로 분기하는 경로는 없다. 현재 Guardrail은 ACTION `risk_level`만 읽는다 | **설계만** |
 | Runbook 위험도 척도 | ACTION의 L1/L2는 AUTO, L3는 APPROVAL로 라우팅되지만 등급 부여 기준은 없다. ACTION-KNOB 중복값도 일치 검사가 없다(D-079) | **없음** |
 | 상태 머신 · 검증 대기 타이머 · 재분석 1회 분기 | 없음. 정의는 `scenario-experiment.md` 0.4 에 있다 | **없음** |
-| `Deduped` 병합 (Incident Correlator) | Signal Queue 직접 합성 E2E에서 양방향 모두 같은 Incident revision 2로 병합. 실제 Adapter 지연도 source별 2회 측정했지만 운영 window·Datadog monitor mapping은 미설정이고 실행 gate는 다시 껐다 | **비활성** |
+| `Deduped` 병합 (Incident Correlator) | `infra/09-incident/terraform.tfvars` 에서 실행·event source 게이트 둘 다 `true`, `incident_shadow_mode=false`, 병합 window 420초와 Datadog monitor mapping(S1 셋 + READ_PATH)이 적용됐다. 채팅·Datadog 양방향 live E2E 도 한 인시던트로 병합돼 Dify 를 한 번만 깨웠다(`agent-entrypoint.md` `phase4c_live_source_to_dify_e2e`). 오병합률·복구 실측은 실제 인시던트 표본 뒤로 남았다 | **있음** |
 | Slack 승인 왕복 | `infra/06-agent/slack_approval.tf` — Lambda 둘 + DynamoDB | **있음** |
 | 런북 카탈로그 + 조회 | `runbook.tf` + `runbook_lookup.tf` (Lambda + Function URL, `x-api-key`) | **있음** |
 | Runbook source-live 일치 | 2026-08-25 scan에서 source에 없는 구형 DEF 4개가 status 없이 남아 Lookup fallback상 active였다. live active ACTION에는 KNOB가 없다 | **고쳐야** |
 | 인시던트 히스토리 (S3 + S3 Vectors) | `history.tf`, `history_o2.tf`. O2 전용 분리까지 완료 | **있음** |
-| Agent 공통 진입점 | `agent_entry_transport.tf` SQS + Worker. 실행 게이트 둘 다 기본 `false` | **비활성** |
+| Agent 공통 진입점 | `agent_entry_transport.tf` SQS + Worker. 실행 게이트가 켜졌고 Invocation Queue consumer 도 동작한다(`agent-entrypoint.md` `implementation_state.agent_invocation_queue`·`production_agent_handoff`) | **있음** |
 | 저장소 Dify DSL | `infra/06-agent/dify/alert-triage.yml` 은 시작→LLM→출력 3노드. 실환경과 드리프트(T-022) | **고쳐야** |
 
 ### 2.2 S1 — 채팅 총량 / 대가 게이트
@@ -104,8 +104,8 @@
 
 | 요구 | 현재 | 판정 |
 |---|---|---|
-| 채팅 파생 신호 → Candidate 생성 | `infra/08-chat-signal/lambda/runtime/processor.py`·`repository.py`. `CANDIDATE_CREATED` 구현됨. 실행 게이트는 꺼져 있다 | **비활성** |
-| Candidate → Agent 호출 handoff | `agent-entrypoint.md` 0절 `agent_handoff_status=NOT_CONFIGURED` | **없음** |
+| 채팅 파생 신호 → Candidate 생성 | `infra/08-chat-signal/lambda/runtime/processor.py`·`repository.py`. `CANDIDATE_CREATED` 가 구현됐고 `infra/08-chat-signal/terraform.tfvars` 에서 실행·DynamoDB Stream 게이트 둘 다 `true` 다 | **있음** |
+| Candidate → Agent 호출 handoff | `chat_source_adapter_operational_handoff_approved=true` 이고 `agent-entrypoint.md` `implementation_state.production_agent_handoff=ENABLED` 다. 0절 표의 `agent_handoff_status=NOT_CONFIGURED` 는 2026-08-23 스냅숏이라 현재 상태가 아니다. 결제 불만 채팅은 `READ_PATH` surface 로 분류돼(`chat-incident-candidate.md` 4절) `incident_chat_surface_map` 에 매핑돼 있다 | **있음** |
 | **목업 PG 스텁** | `apps/api/app/services/payment.py`가 주문 예약 뒤 `cfg:pg:*` 지연·결정론적 실패를 적용하고 `payment.process`를 발행한다. PG 실패 시 재고·멱등키를 보상한다(D-078). 아직 배포·실측 전 | **구현됨** |
 | **`cfg:pg:*` 노브** | `/api/admin/pg-stub`이 별도 admin key로 `delay_ms`·`fail_rate`를 함께 SET·DEL한다. 단위 테스트가 있고 배포 Secret 값은 별도 주입 필요 | **구현됨** |
 | **주문 부하 스크립트** | `loadtest/order-path.js`가 고정 도착률 주문을 만들며 RATE·DURATION·VU 수를 필수 입력으로 받는다. 시나리오 식별 헤더는 없다 | **구현됨** |
