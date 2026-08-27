@@ -130,9 +130,9 @@
 
 | 요구 | 현재 | 판정 |
 |---|---|---|
-| 데모용 `last_1m~2m` 모니터 (S1·S2) | 대부분 `min(last_5m)`. `last_2m` 는 채팅 인입 하나뿐 | **없음** |
+| 데모용 `last_1m~2m` 모니터 (S1·S2) | `05-datadog/terraform.tfvars` 의 `scenario_entry_window_minutes` · `scenario_early_window_minutes` 가 둘 다 `1` 이라 S1·S2·S3 진입 Monitor 가 모두 `last_1m` 이다. **S3 까지 1분이라 4절의 "S3 는 `last_5m` 그대로" 와 어긋난다** — 채팅 선행 폭이 그만큼 줄어든다 | **고쳐야** |
 | 승인 타임아웃 단축 프로필 | Dify HTTP 노드 600초 벽 그대로 | **없음** |
-| 검증 대기 단축과 화면 표시 | 상태 머신 자체가 없다 | **없음** |
+| 검증 대기 단축과 화면 표시 | 대기 자체는 있다(Action Handler 60초 안정화 계약 + `stabilization` 노드). 단축 프로필과 진행 상태를 화면에 보여주는 경로가 없다 | **없음** |
 
 ---
 
@@ -140,32 +140,34 @@
 
 완료된 replicas·실패 필드·S1 발화자 분포는 2절로 이동했다. 현재 변경 대상만 남긴다.
 
-1. **Datadog 모니터 이름의 시나리오 번호** — 지금 이름은 옛 번호(시나리오 1·2·4·5·6)이고
-   현재 셋은 S1·S2·S3 다. 표시 이름만 정리하고 Terraform 리소스 이름은 건드리지 않는다.
-2. **저장소 Dify DSL 드리프트** — 실환경 DSL 을 저장소로 내보낸다. T-022, production
-   migration blocker 다. 그 위에서 S3의 `History 없음 → 실패 보고`와
-   `History 있음 → 현재 증거 재검증 → active Runbook` 조건 분기를 명시적으로 추가한다.
-3. **S1 서버측 검증 지표** — `chat_propagation_p95`는 아직 k6에만 있다. Agent가
-   `Verifying`에서 읽을 수 있는 전달 경로와 정상 사용자 차단률 전용 scalar를 정한다.
+1. **Datadog Monitor 를 새 진입 경로에 붙이기** — 저장소 Terraform 어디에도
+   `@webhook-o2-incident-entry` 가 없다(2.1 라우팅 행). live 가 콘솔 설정으로
+   돌고 있다면 그 값을 Terraform 으로 받아적고, 아니면 붙인다. **S3 Monitor 둘은
+   `incident_datadog_monitor_map` 등록부터 없다.**
+2. **S3 History 분기 명시** — 저장소 DSL 에 `History 없음 → 실패 보고` 는 들어왔다
+   (13-A). `History 있음 → 현재 증거 재검증 → active Runbook` 을 별도 분기로 만드는
+   것이 남았다. 지금은 `past_cases` 를 진단 프롬프트에 넣는 것까지다.
+3. **S1 전파 p95 를 Agent 가 읽을 경로** — Datadog Monitor 는 서버측
+   `o2.chat.propagation` 을 본다. 그런데 Agent 의 `Verifying` 은 warm 스냅샷을 읽고
+   **warm 에는 propagation 집계가 없다** — DSL 이 참조하는 `chat_propagation_p95_ms`
+   는 항상 `None` 이라 복구 판정이 영원히 미달이다. 차단률은
+   `channel_block_rate` 로 이미 있다.
 4. **자원 요청 현실화는 보류** — api `cpu: 100m`은 실제 사용량보다 작지만, 지금 올리면
    canary 실험 중 Karpenter 노드가 추가돼 조건이 흔들린다. 노드 여유가 한 파드분 이상
    늘거나 api HPA를 도입할 때 재개한다.
-5. **S3 draft Runbook 교체** — client pool·timeout/retry 후보는 최신 S3의 실행 절차가 아니다.
-   자동 조회되지 않게 유지하고, 검증된 PG-A→PG-B Failover 절차로 대체한다.
+5. **S2 실험 게이트 만료 관리** — `s2_experiment_expires_at_epoch` 가 지나면 두 런북이
+   조용히 draft 로 빠져 1차 조치가 사라진다. 실행 직전 만료를 확인하고, 지났으면 새
+   실험 id 로 갱신한다.
 
 ## 4. 추가해야 할 것
 
-1. **Incident Correlator 운영 설정** — D-055 계약·비활성 배포와 Phase 3C-A
-   Signal Queue 직접 합성 E2E, Phase 4B 실제 Adapter 지연 source별 2회 측정까지 끝났다.
-   반복 표본 기반 운영 window 확정과 Datadog monitor mapping은 남았다. `agent.trigger.v1` Signal Queue
-   → Correlator → Incident State → `agent.incident.v1` Invocation Queue → Generic Worker.
-   기존 `agent-trigger` Queue 는 이름만 바꾸려고 교체하지 않는다.
-   **Worker mapping 분리를 확인하기 전에는 Correlator event source 를 켜지 않는다** —
-   competing consumer 가 되면 입력을 임의로 나눠 가진다.
-   S3 의 두 진입점 병합이 여기에 달려 있다.
-2. **상태 머신** — `Baseline` 기록·실행 락·멱등 키(`incident:<id>:revision:<n>`) ·
-   검증 대기 타이머 · 재분석 1회 분기 · `Judging` 세 갈래.
-   정의는 `scenario-experiment.md` 0.4 에 이미 있다.
+1. **Correlator 오병합·복구 실측** — 설정은 끝났다(2.1). 남은 것은 표본이다.
+   실제 인시던트가 쌓인 뒤 오병합률과 병합 후 복구 판정을 재
+   `measurements.md` 에 남긴다(`agent-entrypoint.md` `operational_followups`).
+2. **상태 머신 두 어긋남** — 구현은 Dify 워크플로 안에 있다(2.1). 남은 것은
+   `scenario-experiment.md` 0.4 와의 차이 둘 — 재진단 한도가 2회이고,
+   `Judging` 세 갈래가 `diagnostic_contamination` 조회로 갈리지 않는다.
+   문서를 구현에 맞출지 구현을 문서에 맞출지 정한다.
 3. **런북 생명주기와 S2 범용 런북** — 먼저 `RB-API-LATENCY-001`이
    `scenario-experiment.md` 0.2의 범용 런북 등록 기준을 충족하도록 진입·제외 조건,
    최대 변경량, 검증·중단·원복 기준, 소유자와 검증 증거를 만든다. S2 해결 뒤에는
@@ -174,25 +176,26 @@
    뒤에만 `active` 전용 런북으로 승격한다. 현재 `seed_runbook.py`와 실테이블의
    `pod_load_skew`는 `draft`로 분리돼 있다. 남은 문제는 `runbook-catalog.md`에 정리한
    status 없는 구형 active 항목과 위험도·KNOB 게이트 drift다.
-4. **Candidate → Agent handoff** — `agent_handoff_status` 를 실제로 연결한다. 실행 게이트
-    둘(`chat_source_adapter_execution_enabled` · `chat_source_adapter_event_source_enabled`)은
-    한 줄 실수를 막으려고 일부러 분리해둔 것이므로 순서대로 켠다.
-5. **S3 PG-B 제어면과 실행기** — PG-B 상태 확인, PG-A→PG-B 전환, 원복, Provider별
-   성공 이벤트, `L3` Action Handler를 추가한다. 전환 전 남은 PG-B 용량과 결제 가능
-   상태를 결정론적으로 검사한다.
+4. **S3 배포와 값 주입** — 목업 PG·전환 제어면을 실환경에 배포하고, admin key Secret 과
+   Dify 워크플로의 `PG_PROVIDER_SWITCH_URL` 값을 주입한다. 값이 비면 조치가 mock 으로
+   떨어져 2차 실행이 성립하지 않는다.
+5. **S3 주입 세기 확정** — `delay_ms` × 주문 RPS 를 스윕해 **주문은 깨지고 읽기는 사는**
+   구간을 찾는다. 파드가 죽으면 `pod_resource_exhaustion` 오진이 된다. 확정값은 1차·2차에
+   그대로 쓴다(7절).
 6. **S3 지식화 경로** — 사람의 수동 해결 결과를 verified History로 남기고, 별도 검증
    증거를 통과한 Runbook만 active로 승격한다. 반복 시연은 공유 append-only History를
    지우지 않도록 격리 데이터셋·벡터 인덱스를 사용한다.
 7. **효과 실측** — S1 강도별 차단률·p95, S2 CPU/probe 창과 최종 원복, S3 동일 주입에서
    PG-A 실패와 PG-B 우회 성공, 주문 실패율·p95·채팅 불만 감소를 `measurements.md`에 남긴다.
-8. **데모 전용 모니터** — S1·S2 용 `last_1m~2m`. **S3 는 `last_5m` 그대로 둔다** —
-    그 지연 자체가 S3 의 주제다.
+8. **데모 전용 모니터 창 결정** — 지금은 S1·S2·S3 가 모두 `last_1m` 이다. S3 만
+    `last_5m` 로 되돌릴지 정한다. 되돌리면 채팅 선행 폭이 커져 시나리오 전제가
+    선명해지고, 두면 녹화가 짧아진다. 어느 쪽이든 `terraform.tfvars` 한 값이다.
 
 ## 5. 뺄 것
 
-1. **시나리오 셋 밖 모니터의 `@webhook-o2-dify`** — 지금 6개에 붙어 있고 그중 캐시·주문 큐는
-   현재 셋에 없다. 부하가 같이 때리면 측정 중 Agent 가 깨어나 무언가 바꾼다.
-   webhook 을 떼거나 Downtime 대상 목록에 명시한다(`scenario-experiment.md` 2.1 넷째 원칙).
+1. ~~**시나리오 셋 밖 모니터의 `@webhook-o2-dify`**~~ — D-088 로 뗐다. 지금 남은 부착은
+   셋 안의 셋뿐이다(전파 p95 · S2 꼬리 지연 · S3 결제 지연). 그 셋이 **옛 경로로 간다는
+   문제**는 여기가 아니라 2.1 라우팅 행이 다룬다.
 2. **ALB 액세스 로그** — 파드별 지연 후보에서 제외한다. S3 전달 지연이 커서 반복 실험·녹화와 상극이다.
 3. **api 에 HPA·KEDA 부착** — 되돌리는 주체가 늘어난다(`scenario-experiment.md` 3절 "파드 수를 조치 수단으로 쓸 때").
 4. **FIS · Chaos Mesh** — 주입 원칙 첫째(부하 아니면 설정, 둘 중 하나)가 이미 배제했다(`scenario-experiment.md` 2.1).
@@ -232,9 +235,9 @@ M-016(파드 축 전제)이다. 아래는 전부 **안 쟀다.** 재면 `measure
 |---|---|
 | 검증 대기 시간 · 개선 판정 기준 · 승인 무응답 타임아웃 | 상태 머신 · 게이트 |
 | 노브별 최대 영향 범위 · 최대 적용 시간 · 사전 승인 예산 · 쿨다운 | 노브 카탈로그 |
-| correlation window | Correlator 자동 병합 (D-055). Phase 3C 양방향 도착 지연 실측 후 확정 |
+| ~~correlation window~~ | 420초로 확정·적용됐다(`09-incident/terraform.tfvars`). 남은 것은 오병합률 표본이다 |
 | 채팅 전파 기준값 · 총량 제한 강도별 인입 감소량과 차단률 | S1 성공·실패 기준 |
-| CPU 상한 창 (Ready 는 유지, 요청은 느림) · canary p95 대 정상 파드 p95 중앙값의 비 | S2 주입 · Go/No-Go |
+| ~~CPU 상한 창~~ | 2026-08-26 스윕으로 `125m` 확정(`measurements.md` S2 canary CPU 상한 스윕). 15분 연속 부하에서는 재시작 3회라 **60초 부하에서만 성립**한다 |
 | 증설 전후 서비스 p50·p95·p99 · 격리 후 복귀 폭 · 반복 재현율 | S2 1차·2차·최종 검증 |
 | 결제 PG 주입 강도(`delay_ms` × 주문 RPS)와 읽기 경로 생존 구간 | S3 주입값 · 오진 방지 |
 | PG-B 상태 확인·전환·원복 시간과 실패 조건 | S3 Failover Runbook·Guardrail 입력 |
