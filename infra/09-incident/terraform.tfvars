@@ -30,6 +30,37 @@ incident_datadog_monitor_map = {
     severity_level           = "WARNING"
     strong_exception_allowed = false
   }
+  # S3는 결제 불만 Chat Candidate가 PRIMARY다. Datadog의 실제 Monitor ID는
+  # 05-datadog state에서 확인했다. 현재 webhook payload 계약이 모든 Monitor를
+  # COMPOSITE_CONDITION으로 보내므로 mapping도 같은 type을 요구한다.
+  #
+  # Chat Candidate가 현재 READ_PATH로 분류되므로 두 Monitor도 같은 correlation
+  # tuple을 써야 한 Incident로 병합된다. PG 원인 확정은 이 mapping이 아니라
+  # Athena의 payment.process 현재 증거 재검증이 맡는다.
+  "22078625" = { # s3_pg_latency_p95, [O2][S3] 결제 처리 지연 — PG 왕복 p95
+    evidence_role            = "CORROBORATING"
+    evidence_type            = "COMPOSITE_CONDITION"
+    incident_family          = "READ_PATH_DEGRADATION"
+    symptom_family           = "LATENCY"
+    suspected_surface        = "READ_PATH"
+    service                  = "api"
+    minimum_samples          = 1
+    freshness_seconds        = 300
+    severity_level           = "HIGH"
+    strong_exception_allowed = false
+  }
+  "22078627" = { # s3_payment_failure_rate, [O2][S3] 결제 실패율
+    evidence_role            = "CONTEXT"
+    evidence_type            = "COMPOSITE_CONDITION"
+    incident_family          = "READ_PATH_DEGRADATION"
+    symptom_family           = "LATENCY"
+    suspected_surface        = "READ_PATH"
+    service                  = "api"
+    minimum_samples          = 1
+    freshness_seconds        = 300
+    severity_level           = "HIGH"
+    strong_exception_allowed = false
+  }
   # 2026-08-26: S1 진입 전환 — infra/05-datadog terraform state에서 확인한 실제
   # monitor ID(지어낸 값 아님). s1_chat_fanout_volume가 유일한 진입(PRIMARY)이고
   # 옛 @webhook-o2-dify는 뗐다(scenario_alerts.tf 라우팅 규칙 참고, 중복 호출 방지).
@@ -116,7 +147,7 @@ incident_shadow_mode                  = false
 incident_operational_handoff_approved = true
 
 datadog_source_adapter_execution_enabled   = true
-datadog_source_adapter_allowed_monitor_ids = ["21940248", "22078624", "22078626", "22076983", "22076982"]
+datadog_source_adapter_allowed_monitor_ids = ["21940248", "22078624", "22078625", "22078626", "22078627", "22076983", "22076982"]
 datadog_source_adapter_not_before_epoch    = 1787634074
 incident_correlator_execution_enabled      = true
 incident_correlator_event_source_enabled   = true

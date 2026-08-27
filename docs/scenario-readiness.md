@@ -67,7 +67,7 @@
 | Runbook 위험도 척도 | ACTION의 L1/L2는 AUTO, L3는 APPROVAL로 라우팅되지만 등급 부여 기준은 없다. ACTION-KNOB 중복값도 일치 검사가 없다(D-079) | **없음** |
 | 상태 머신 · 검증 대기 타이머 · 재분석 1회 분기 | 별도 서비스가 아니라 Dify 워크플로 안에 있다 — `dify/o2-aiops-workflow.yml`의 상태 dict(`diagnosis_retry`·`remediation_retry`·`excluded_actions`·`skip_diagnosis`), `stabilization` 노드, `GLOBAL_LOOP_MAX_10` 한도. 멱등 키는 Correlator 쪽 signal claim(`09-incident/incident_correlation.tf`)에 있다. **재진단 한도가 2회라 `scenario-experiment.md` 0.4의 "재분석 1회"와 어긋난다** | **고쳐야** |
 | `Deduped` 병합 (Incident Correlator) | `infra/09-incident/terraform.tfvars` 에서 실행·event source 게이트 둘 다 `true`, `incident_shadow_mode=false`, 병합 window 420초와 Datadog monitor mapping(S1 셋 + READ_PATH)이 적용됐다. 채팅·Datadog 양방향 live E2E 도 한 인시던트로 병합돼 Dify 를 한 번만 깨웠다(`agent-entrypoint.md` `phase4c_live_source_to_dify_e2e`). 오병합률·복구 실측은 실제 인시던트 표본 뒤로 남았다 | **있음** |
-| Datadog Monitor → Correlator 진입 라우팅 | `scenario_alerts.tf` 헤더 규칙과 `incident_datadog_monitor_map` 은 새 경로(`@webhook-o2-incident-entry` → Datadog Source Adapter → Signal Queue → Correlator)를 전제한다. 그런데 **저장소 Terraform 의 어떤 Monitor 문구에도 그 handle 이 없다** — 등록된 다섯 중 셋(팬아웃 총량·차단률·결제 실패율)은 webhook 자체가 없고, 둘(전파 p95·S2 꼬리 지연)과 S3 진입은 옛 `@webhook-o2-dify` 다. live 에서는 M-020·phase4c 가 통과했으므로 콘솔 쪽 설정이 있을 가능성이 크고, 그렇다면 Terraform 드리프트다. 어느 쪽인지 live 확인이 먼저다 | **고쳐야** |
+| Datadog Monitor → Correlator 진입 라우팅 | S3 두 Monitor는 저장소에서 `@webhook-o2-incident-entry`로 전환하고 실제 ID `22078625`·`22078627`을 map·allowlist에 등록했다. PG 지연은 `CORROBORATING`, 실패율은 `CONTEXT`이며 Chat `READ_PATH` PRIMARY와 같은 correlation tuple을 쓴다. 2026-08-28 read-only plan은 Datadog Monitor 2개와 Incident Lambda 2개의 in-place 변경을 확인했지만 **apply하지 않았다**. S1·S2의 저장소 message와 live 콘솔 라우팅 드리프트는 별도 확인이 남았다 | **부분 구현 · 미적용** |
 | Slack 승인 왕복 | `infra/06-agent/slack_approval.tf` — Lambda 둘 + DynamoDB | **있음** |
 | 런북 카탈로그 + 조회 | `runbook.tf` + `runbook_lookup.tf` (Lambda + Function URL, `x-api-key`) | **있음** |
 | Runbook source-live 일치 | 2026-08-25 scan에서 source에 없는 구형 DEF 4개가 status 없이 남아 Lookup fallback상 active였다. live active ACTION에는 KNOB가 없다 | **고쳐야** |
@@ -114,7 +114,7 @@
 | Candidate → Agent 호출 handoff | `chat_source_adapter_operational_handoff_approved=true` 이고 `agent-entrypoint.md` `implementation_state.production_agent_handoff=ENABLED` 다. 0절 표의 `agent_handoff_status=NOT_CONFIGURED` 는 2026-08-23 스냅숏이라 현재 상태가 아니다. 결제 불만 채팅은 `READ_PATH` surface 로 분류돼(`chat-incident-candidate.md` 4절) `incident_chat_surface_map` 에 매핑돼 있다 | **있음** |
 | **목업 PG 스텁** | `apps/api/app/services/payment.py`가 주문 예약 뒤 `cfg:pg:*` 지연·결정론적 실패를 적용하고 `payment.process`를 발행한다. PG 실패 시 재고·멱등키를 보상한다(D-078). 아직 배포·실측 전 | **구현됨** |
 | **`cfg:pg:*` 노브** | `/api/admin/pg-stub`이 별도 admin key로 `delay_ms`·`fail_rate`를 함께 SET·DEL한다. 단위 테스트가 있고 배포 Secret 값은 별도 주입 필요 | **구현됨** |
-| S3 Datadog 후속 증거 Monitor | `scenario_alerts.tf` 에 진입 `s3_pg_latency_p95`(`last_1m`, `@webhook-o2-dify`)와 증거 `s3_payment_failure_rate`(webhook 없음)가 있다. 그런데 **둘 다 `incident_datadog_monitor_map` 에 없다** — 등록이 없으면 Datadog Source Adapter 가 신호를 만들지 않으므로 0.7 Phase 1 의 "채팅 다음에 Datadog 증거가 병합된다" 가 성립하지 않는다 | **고쳐야** |
+| S3 Datadog 후속 증거 Monitor | 실제 state ID `22078625`(PG p95)를 `CORROBORATING`, `22078627`(결제 실패율)을 `CONTEXT`로 map·allowlist에 넣고 둘 다 Incident webhook으로 보냈다. 기존 webhook payload가 `COMPOSITE_CONDITION` 고정이라 mapping도 그 계약을 재사용한다. 원인을 alert 본문에서 가르치지 않도록 관측 사실만 남겼다. validate·대상 plan은 통과했지만 live apply와 Chat→두 Monitor 병합 E2E는 아직이다 | **구현됨 · 미적용** |
 | **주문 부하 스크립트** | S3 가 쓰는 것은 `loadtest/s3-payment.js` 다 — 결제 불만 채팅을 `CHAT_LEAD_SECONDS`(최소 17초) 먼저 흘리고 주문 부하를 얹는다. `CHAT_ONLY=true` 로 채팅만 돌려 Candidate 생성 최소 강도를 따로 잴 수 있다. 주문 축만 있는 `order-path.js` 는 그 하위 자산이다. 시나리오 식별 헤더는 없다(의도) | **구현됨** |
 | Dify History 유무 분기 | Worker가 S3 Vectors 검색 결과 중 `verified=true`인 사례만 `past_cases`로 넘기고 DSL이 진단 프롬프트에 포함한다. History 없음/있음 자체를 별도 상태로 표시하는 DSL 분기는 아직 없다 | **부분 구현** |
 | 1차 실행: active Runbook 없음 → 실패 보고 | 11-B가 `runbook_status`를 하류로 넘기고, 13-A가 `active`·`experiment`가 아니면 `MANUAL_REQUIRED` + `NO_ACTIVE_RUNBOOK`을 내 `ESCALATED`로 끝낸다. 런북이 있는데 후보만 소진된 경우만 종전대로 재진단한다. `dify/test_no_candidate_action.py`가 DSL 원본에서 코드를 꺼내 확인한다. **저장소 DSL 기준이고 실환경 반영은 3절 2번 드리프트 해소 뒤다** | **구현됨 · 미반영** |
@@ -145,10 +145,11 @@
 
 완료된 replicas·실패 필드·S1 발화자 분포는 2절로 이동했다. 현재 변경 대상만 남긴다.
 
-1. **Datadog Monitor 를 새 진입 경로에 붙이기** — 저장소 Terraform 어디에도
-   `@webhook-o2-incident-entry` 가 없다(2.1 라우팅 행). live 가 콘솔 설정으로
-   돌고 있다면 그 값을 Terraform 으로 받아적고, 아니면 붙인다. **S3 Monitor 둘은
-   `incident_datadog_monitor_map` 등록부터 없다.**
+1. **S3 Incident 라우팅 적용·E2E** — 저장소 변경과 read-only plan은 끝났다.
+   Datadog·09-incident 순서로 apply한 뒤 `Chat PRIMARY → PG p95 CORROBORATING →
+   실패율 CONTEXT`가 같은 `incident_id`에 쌓이는지 확인한다. 09-incident plan에는
+   같은 Lambda 환경변수에 묶인 기존 S1 symptom-family 드리프트도 포함되므로 함께
+   적용해도 되는지 먼저 확인한다.
 2. **S3 History 분기 명시** — 저장소 DSL 에 `History 없음 → 실패 보고` 는 들어왔다
    (13-A). `History 있음 → 현재 증거 재검증 → active Runbook` 을 별도 분기로 만드는
    것이 남았다. 지금은 `past_cases` 를 진단 프롬프트에 넣는 것까지다.
