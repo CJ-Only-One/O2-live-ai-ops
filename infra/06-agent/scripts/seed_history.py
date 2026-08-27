@@ -3,9 +3,18 @@
 # requires-python = ">=3.11"
 # dependencies = ["boto3", "botocore[crt]"]
 # ///
-"""S1(chat_channel_overload) 시연을 "알려진 장애"로 분류시키기 위한 이력 시딩.
+"""시연을 "알려진 장애"로 분류시키기 위한 이력 시딩.
 
-    python3 scripts/seed_history.py
+    python3 scripts/seed_history.py                       # S1 기본 사례만
+    python3 scripts/seed_history.py pg_external_failure    # S3 만
+    python3 scripts/seed_history.py pg_external_failure --unverified
+                                    # 사람이 원인을 확정하기 전 상태로 넣는다.
+                                    # scripts/verify.py 화면에 뜬다.
+
+★ **S3(pg_external_failure)는 1차 실행을 찍은 뒤에 넣는다.** S3 는 1차에
+  verified 사례가 없어서 ESCALATED 로 멈추는 것이 전제다(0.7 Phase 2).
+  1차 촬영 전에 넣으면 1차가 곧바로 History 분기를 타 시나리오가 성립하지
+  않는다. 여기 있는 사례는 Phase 3(사람 해결 → 지식화)의 결과물이다.
 
 `docs/scenario-experiment.md` 0.2 — 분류(알려진/처음 보는 장애)는 **과거에
 같은 원인의 검증된 사례가 있는가**로 갈린다. S1 흐름(0.5)이 "유사 과거
@@ -35,6 +44,7 @@
 import datetime
 import json
 import os
+import sys
 
 import _history as H
 
@@ -80,15 +90,63 @@ INCIDENTS = [
         "state": "agent_fixed",
         "human_correction": "채널 총량 노브 하향 후 전파 p95 회복, 정상 사용자 차단 없음 확인.",
     },
+    {
+        "rca_type": "pg_external_failure",
+        "occurred_days_ago": 3,
+        "mttr_min": 26,
+        "event": {
+            "event_id": "seed-s3-001",
+            "cycle_key": "seed-s3-001",
+            "monitor_id": "seed-monitor-pg-latency",
+            "priority": "P1",
+            "link": "",
+            "service": "api",
+            "env": "dev",
+            "host": "",
+            "tags": "service:api,scenario:s3",
+            "alert_title": "[Recovered] [O2][S3] 결제 처리 지연 — PG 왕복 p95",
+            "alert_query": (
+                "max(last_5m):p95:o2.app.operation.duration"
+                "{service:api,env:dev,operation:payment.process} >= 3000"
+            ),
+            "alert_body": (
+                "결제 처리 p95 가 임계를 넘고 주문 실패율이 함께 올랐다. "
+                "실패는 전부 failure_stage=PG_CALL · failure_code=PG_TIMEOUT 이었고 "
+                "pg_latency_ms 가 전체 지연의 대부분을 차지했다. 클러스터 자원 "
+                "지표는 정상이었다 — 우리 쪽이 아니라 외부 PG-A 가 느렸다."
+            ),
+        },
+        "dify_data": {
+            "elapsed_time": 6.1,
+            "outputs": {
+                "result": (
+                    "pg_provider=PG-A 의 PG_TIMEOUT 이 결제 실패의 전부이고 "
+                    "pg_latency_ratio 가 1.0 에 가까움 — 외부 PG 장애로 판단. "
+                    "검증된 Failover 절차가 없어 임의 전환 없이 사람에게 넘김."
+                )
+            },
+        },
+        "root_cause_label": "pg_external_failure",
+        "state": "human_fixed",
+        "human_correction": (
+            "운영자가 결제 경로를 PG-A 에서 PG-B 로 수동 전환. PG-A 주입은 유지한 "
+            "채 pg_provider=PG-B · result=SUCCESS 이벤트, 주문 실패율·결제 p95 회복, "
+            "채팅 결제 불만 감소까지 확인. 자연 회복이 아니라 우회 효과임을 확인했다."
+        ),
+    },
 ]
 
 
-def _seed_incident(spec, s3, s3vectors, worker):
+def _seed_incident(spec, s3, s3vectors, worker, verified=True):
     now = datetime.datetime.now(datetime.timezone.utc)
     occurred = now - datetime.timedelta(days=spec["occurred_days_ago"])
     recovered = occurred + datetime.timedelta(minutes=spec["mttr_min"])
 
     event = {**spec["event"], "occurred_at": str(int(occurred.timestamp()))}
+    if not verified:
+        # 검증본과 키가 겹치면 서로 덮어쓴다. cycle_key 가 incident_id 다.
+        event["cycle_key"] = f"{event['cycle_key']}-raw"
+        event["event_id"] = f"{event['event_id']}-raw"
 
     incident = worker._build_incident(event, spec["dify_data"], past_cases=False)
     # _build_incident 은 started_at 을 "지금"으로 찍는다 — 시딩은 과거 사례처럼
@@ -97,13 +155,25 @@ def _seed_incident(spec, s3, s3vectors, worker):
     incident["occurred_at"] = event["occurred_at"]
     incident["s3_key"] = f"incidents/dt={occurred:%Y-%m-%d}/{incident['incident_id']}.json"
     incident["recovered_at"] = recovered.isoformat()
-    incident["outcome"] = {
-        "state": spec["state"],
-        "mttr_sec": spec["mttr_min"] * 60,
-        "root_cause_label": spec["root_cause_label"],
-        "verified": True,
-        "human_correction": spec["human_correction"],
-    }
+    if verified:
+        incident["outcome"] = {
+            "state": spec["state"],
+            "mttr_sec": spec["mttr_min"] * 60,
+            "root_cause_label": spec["root_cause_label"],
+            "verified": True,
+            "human_correction": spec["human_correction"],
+        }
+    else:
+        # worker._handle_recovery 가 남기는 그대로 — Recovered 는 "지표가 임계
+        # 아래로 돌아왔다" 일 뿐이라 state 는 auto_recovered 이고 원인은 비어
+        # 있다. 이걸 사람이 scripts/verify.py 에서 채운다.
+        incident["outcome"] = {
+            "state": "auto_recovered",
+            "mttr_sec": spec["mttr_min"] * 60,
+            "root_cause_label": None,
+            "verified": False,
+            "human_correction": None,
+        }
 
     text = worker._alert_text(event)
     vector = worker._embed(text)
@@ -128,9 +198,33 @@ def _seed_incident(spec, s3, s3vectors, worker):
     return incident
 
 
+def _select_specs(args):
+    flags = {a for a in args if a.startswith("-")}
+    unknown_flags = flags - {"--unverified"}
+    if unknown_flags:
+        raise SystemExit(f"지원하지 않는 옵션: {', '.join(sorted(unknown_flags))}")
+
+    only = {a for a in args if not a.startswith("-")}
+    available = {s["rca_type"] for s in INCIDENTS}
+    unknown = only - available
+    if unknown:
+        raise SystemExit(
+            f"{sorted(unknown)} 에 해당하는 시딩 대상이 없다. 가능한 값: "
+            + ", ".join(s["rca_type"] for s in INCIDENTS)
+        )
+    # S3 verified 이력은 1차 ESCALATED 뒤에만 넣어야 한다. 기존 무인자 실행이
+    # S3까지 시딩해 1차 조건을 깨지 않도록 기본값은 원래 S1 사례만 유지한다.
+    selected = only or {"chat_channel_overload"}
+    return [s for s in INCIDENTS if s["rca_type"] in selected], "--unverified" not in flags
+
+
 def main():
+    # 인자로 rca_type 을 주면 그것만 시딩한다. 시나리오별로 따로 찍을 때 쓴다.
+    #   ./scripts/seed_history.py pg_external_failure
+    specs, verified = _select_specs(sys.argv[1:])
+
     known = set(H.labels())
-    for spec in INCIDENTS:
+    for spec in specs:
         if spec["rca_type"] not in known:
             raise SystemExit(
                 f"'{spec['rca_type']}' 는 labels.txt 에 없다 — 오타이거나 "
@@ -141,11 +235,12 @@ def main():
 
     s3, s3vectors = H.clients()
 
-    for spec in INCIDENTS:
-        incident = _seed_incident(spec, s3, s3vectors, worker)
-        print(f"✓ {spec['rca_type']} — {incident['s3_key']}")
+    for spec in specs:
+        incident = _seed_incident(spec, s3, s3vectors, worker, verified=verified)
+        mark = "verified" if verified else "미검증"
+        print(f"✓ {spec['rca_type']} · {mark} — {incident['s3_key']}")
 
-    print(f"\n완료. {len(INCIDENTS)}건 시딩됨.")
+    print(f"\n완료. {len(specs)}건 시딩됨.")
     print(
         "\nS2(pod_load_skew)는 의도적으로 안 채웠다 — 그 시나리오는 "
         "'처음 보는 장애'가 전제라 검증된 과거 사례가 없어야 맞다."
