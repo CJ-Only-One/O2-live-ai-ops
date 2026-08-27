@@ -1,5 +1,17 @@
 // S3: 결제 불만 채팅 선감지 후 PG 장애 주문 부하.
 // PG 장애 주입/해제는 관리자 API로 별도 수행한다. 이 파일은 사용자 트래픽만 만든다.
+//
+// 불만 채팅은 두 갈래다.
+//
+//   1. 고정 발화 (`CHAT_INCIDENT_RPS`) — 결제 성공 여부와 무관하게 계속 나온다.
+//      측정용 프로필이 쓴다. 강도를 입력으로 고정해야 1차와 2차를 같은 조건으로
+//      비교할 수 있기 때문이다.
+//   2. 반응형 발화 (`COMPLAINT_ON_FAILURE_RATIO`) — 자기 주문이 실제로 실패한
+//      VU만 불만을 쏜다. 결제가 복구되면 발화가 저절로 멎는다.
+//
+// 시연 녹화는 2번을 쓴다. 1번만으로는 PG-B 우회 뒤에도 불만이 그대로 쏟아져
+// "회복됐다"는 그림이 화면에 안 나온다. 두 갈래를 같이 켜도 되지만, 회복을
+// 보여주는 것이 목적이면 `CHAT_INCIDENT_RPS=0`으로 두고 반응형만 쓴다.
 
 import http from 'k6/http';
 import { check, sleep } from 'k6';
@@ -41,6 +53,11 @@ const CHAT_SALE_RPS = Number(__ENV.CHAT_SALE_RPS);
 const CHAT_INCIDENT_RPS = Number(__ENV.CHAT_INCIDENT_RPS);
 const CHAT_PRE_ALLOCATED_VUS = Number(__ENV.CHAT_PRE_ALLOCATED_VUS);
 const CHAT_MAX_VUS = Number(__ENV.CHAT_MAX_VUS);
+// 자기 주문이 실패한 VU 중 몇 %가 불만을 쏘는가. 기본 0 — 명시적으로 켜야 한다.
+const COMPLAINT_ON_FAILURE_RATIO = Number(__ENV.COMPLAINT_ON_FAILURE_RATIO || 0);
+// 진입 시드 4건을 타임세일 오픈보다 늦게 쏘고 싶을 때 쓴다. 장애 주입 전에
+// 시드가 나가면 아직 아무도 실패하지 않았는데 불만이 먼저 오는 그림이 된다.
+const INCIDENT_SEED_DELAY_SECONDS = Number(__ENV.INCIDENT_SEED_DELAY_SECONDS || 0);
 
 if (!CHAT_ONLY && (!Number.isFinite(RATE) || RATE <= 0)) throw new Error('RATE는 양수여야 합니다');
 if (!Number.isInteger(QTY) || QTY <= 0) throw new Error('QTY는 양의 정수여야 합니다');
@@ -59,8 +76,18 @@ if (!Number.isFinite(CHAT_BASE_RPS) || CHAT_BASE_RPS <= 0) {
 if (!Number.isFinite(CHAT_SALE_RPS) || CHAT_SALE_RPS <= CHAT_BASE_RPS) {
   throw new Error('CHAT_SALE_RPS는 CHAT_BASE_RPS보다 커야 합니다');
 }
-if (!Number.isFinite(CHAT_INCIDENT_RPS) || CHAT_INCIDENT_RPS <= 0) {
-  throw new Error('CHAT_INCIDENT_RPS는 양수여야 합니다');
+// 0이면 고정 발화 시나리오 자체를 만들지 않는다(반응형만 쓰는 녹화 프로필).
+if (!Number.isFinite(CHAT_INCIDENT_RPS) || CHAT_INCIDENT_RPS < 0) {
+  throw new Error('CHAT_INCIDENT_RPS는 0 이상이어야 합니다');
+}
+if (!Number.isFinite(COMPLAINT_ON_FAILURE_RATIO) || COMPLAINT_ON_FAILURE_RATIO < 0 || COMPLAINT_ON_FAILURE_RATIO > 1) {
+  throw new Error('COMPLAINT_ON_FAILURE_RATIO는 0 이상 1 이하여야 합니다');
+}
+if (CHAT_INCIDENT_RPS === 0 && COMPLAINT_ON_FAILURE_RATIO === 0) {
+  throw new Error('CHAT_INCIDENT_RPS와 COMPLAINT_ON_FAILURE_RATIO가 둘 다 0이면 불만 채팅이 없습니다');
+}
+if (!Number.isInteger(INCIDENT_SEED_DELAY_SECONDS) || INCIDENT_SEED_DELAY_SECONDS < 0) {
+  throw new Error('INCIDENT_SEED_DELAY_SECONDS는 0 이상의 정수여야 합니다');
 }
 if (!Number.isInteger(CHAT_PRE_ALLOCATED_VUS) || CHAT_PRE_ALLOCATED_VUS <= 0) {
   throw new Error('CHAT_PRE_ALLOCATED_VUS는 양의 정수여야 합니다');
@@ -130,6 +157,7 @@ const saleChats = [
 ];
 
 const complaintsSent = new Counter('s3_chat_complaints_sent');
+const reactiveComplaintsSent = new Counter('s3_reactive_complaints_sent');
 const incidentChatsSent = new Counter('s3_incident_chats_sent');
 const generalChatsSent = new Counter('s3_general_chats_sent');
 const chatFailed = new Counter('s3_chat_failed');
@@ -143,7 +171,7 @@ export const options = {
       executor: 'per-vu-iterations',
       vus: INCIDENT_SEED_USERS,
       iterations: 1,
-      startTime: `${CHAT_LEAD_SECONDS}s`,
+      startTime: `${CHAT_LEAD_SECONDS + INCIDENT_SEED_DELAY_SECONDS}s`,
       maxDuration: '17s',
       exec: 'sendComplaint',
     },
@@ -166,16 +194,18 @@ export const options = {
       startTime: `${CHAT_LEAD_SECONDS}s`,
       exec: 'sendGeneralChat',
     },
-    incident_after_sale: {
-      executor: 'constant-arrival-rate',
-      rate: CHAT_INCIDENT_RPS,
-      timeUnit: '1s',
-      duration: DURATION,
-      preAllocatedVUs: CHAT_PRE_ALLOCATED_VUS,
-      maxVUs: CHAT_MAX_VUS,
-      startTime: `${CHAT_LEAD_SECONDS}s`,
-      exec: 'sendIncidentChat',
-    },
+    ...(CHAT_INCIDENT_RPS > 0 ? {
+      incident_after_sale: {
+        executor: 'constant-arrival-rate',
+        rate: CHAT_INCIDENT_RPS,
+        timeUnit: '1s',
+        duration: DURATION,
+        preAllocatedVUs: CHAT_PRE_ALLOCATED_VUS,
+        maxVUs: CHAT_MAX_VUS,
+        startTime: `${CHAT_LEAD_SECONDS}s`,
+        exec: 'sendIncidentChat',
+      },
+    } : {}),
     ...(CHAT_ONLY ? {} : {
       orders: {
         executor: 'constant-arrival-rate',
@@ -275,6 +305,16 @@ export function createOrder() {
   if (isAccepted) accepted.add(1);
   else if (isPaymentFailure) paymentFailed.add(1);
   else unexpected.add(1, { status: String(response.status) });
+
+  // 실제로 실패를 겪은 사람만 불만을 쓴다. 성공하면 아무 말도 안 한다 —
+  // 그래서 결제가 복구되면 불만이 저절로 멎는다.
+  //
+  // ★ 이 발화는 주문 VU 안에서 일어나므로 WebSocket이 닫힐 때까지 그 이터레이션이
+  //   붙잡힌다(약 0.5초). 도착률을 유지하려면 주문 쪽 MAX_VUS에 그만큼 여유를 둔다.
+  if (isPaymentFailure && COMPLAINT_ON_FAILURE_RATIO > 0 && Math.random() < COMPLAINT_ON_FAILURE_RATIO) {
+    const message = complaints[Math.floor(Math.random() * complaints.length)];
+    openChat(message, 's3-reactive', reactiveComplaintsSent, 500);
+  }
 
   check(response, {
     '202 accepted 또는 502 payment failure': () => isAccepted || isPaymentFailure,

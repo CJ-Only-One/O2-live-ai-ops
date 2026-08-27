@@ -702,6 +702,42 @@ curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
 > 별도 검증 대상이며, 이 항목을 확인하기 전에는 위 2차 실행을 E2E 완료로
 > 표시하지 않는다.
 
+### 4.6 발표 도입부 클립 (라이브 화면만)
+
+발표 맨 앞에 아키텍처 설명 없이 **사용자 화면만으로** "불만이 올라왔다가 멎는" 그림을
+보여주려면 4.4 와 다른 부하 프로필이 필요하다. 4.4 의 불만 채팅은 `CHAT_INCIDENT_RPS`
+고정 발화라 PG-B 우회 뒤에도 그대로 쏟아진다 — 측정에는 그게 맞지만(1차·2차 조건을
+같게 유지해야 한다) 회복 장면은 안 나온다.
+
+```bash
+BASE_URL='https://<현재-ALB>' WS_URL='wss://<현재-ALB>' \
+PG_STUB_ADMIN_URL='https://<현재-ALB>/api/admin/pg-stub' PG_STUB_ADMIN_KEY='<주입>' \
+PG_DELAY_MS='<실측 후 확정>' PG_FAIL_RATE='<실측 후 확정>' \
+ORDER_RATE='<주문 RPS>' ORDER_PRE_ALLOCATED_VUS='<실측값>' ORDER_MAX_VUS='<실측값>' \
+CHAT_BASE_RPS='<타임세일 전>' CHAT_SALE_RPS='<타임세일 후>' \
+CHAT_PRE_ALLOCATED_VUS='<실측값>' CHAT_MAX_VUS='<실측값>' \
+RUN_DURATION='<Agent 한 바퀴보다 길게>' loadtest/s3-coldopen.sh
+```
+
+러너가 하는 일은 셋뿐이다 — **타임세일을 열고, 장애를 넣고, 끝나면 원복한다.**
+PG-B 전환은 하지 않는다. 그것을 러너가 대신하면 녹화물이 연극이 된다.
+
+| 무엇 | 어떻게 |
+|---|---|
+| 불만이 멎는 근거 | `COMPLAINT_ON_FAILURE_RATIO` — 자기 주문이 실제로 502 를 받은 VU 만 불만을 쓴다. 결제가 나으면 발화가 저절로 멎는다 |
+| 진입 시드 4건 | `INCIDENT_SEED_DELAY_SECONDS` 로 장애 주입 뒤로 민다. 주입 전에 시드가 나가면 아무도 실패하지 않았는데 불만이 먼저 오는 그림이 된다 |
+| 타임세일 오픈 | `PENDING` 상품 하나를 `ON_SALE` 로 바꾼다. 화면의 "아직 특가가 시작되지 않았습니다" 가 구매 가능으로 바뀌는 순간이 오픈 장면이다 |
+| 품절 방지 | 재고를 크게 올려 둔다. 녹화 중 `SOLD_OUT` 이 나면 결제 실패가 아니라 품절로 화면이 갈린다 |
+| 원복 | 종료·중단 어느 쪽이든 PG 주입 해제와 상품 상태·재고 원복이 돌아간다. **PG-B 로 전환된 상태는 러너가 안 되돌린다** — `/api/admin/pg-provider-switch` 로 사람이 되돌린다 |
+
+**시작 전에 사람이 확인한다.** 이 클립은 **2차 실행**을 찍는 것이다 — verified History 와
+active 런북이 있어야 하고, Dify 워크플로의 `PG_PROVIDER_SWITCH_URL` 값이 채워져 있어야
+하며, L3 승인을 누를 사람이 대기해야 한다. 셋 중 하나라도 없으면 1차 실행이 되어
+`ESCALATED` 로 끝나고 결제는 낫지 않는다.
+
+**실제 소요는 12~18분이다**(채팅 선행 + 알림 창 + 진단 + 승인 + 전환 + 검증 대기).
+클립은 그중 도배 고원 구간을 배속으로 압축해 만든다.
+
 ### 4.5 다음 실행 전 확인
 
 ```bash
