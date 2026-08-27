@@ -286,7 +286,10 @@ watch)
       echo "적용 확인: limit=${limit} (분당 방송 전체 건수) · 조치직전 p95=${pre:-없음} · 채팅량=${rps:-없음}/s"
       break
     fi
-    other="$(valkey keys 'cfg:channel_limit:*')"
+    # 대상 키는 뺀다. get 과 keys 사이에 조치가 들어오면(폴링 간격 10초 안에
+    # 실제로 일어난다) 대상 방송인데도 "다음 바퀴에 잡히는" 대신 여기서
+    # 죽는다. 2026-08-27 실행이 그렇게 날아갔다.
+    other="$(valkey keys 'cfg:channel_limit:*' | grep -v "^cfg:channel_limit:${BROADCAST_ID}$" || true)"
     [ -z "${other}" ] || die "다른 방송에 제한이 걸렸습니다: ${other}. 대상 방송(${BROADCAST_ID})이 아니면 실패입니다."
     [ "$(date +%s)" -lt "${deadline}" ] || die "제한이 걸리지 않은 채 ${WATCH_TIMEOUT_S}s 가 지났습니다."
     sleep 10
