@@ -7,7 +7,7 @@
 //      측정용 프로필이 쓴다. 강도를 입력으로 고정해야 1차와 2차를 같은 조건으로
 //      비교할 수 있기 때문이다.
 //   2. 반응형 발화 (`COMPLAINT_ON_FAILURE_RATIO`) — 자기 주문이 실제로 실패한
-//      VU만 불만을 쏜다. 결제가 복구되면 발화가 저절로 멎는다.
+//      VU가 불만을 쏜다. 복구 뒤에는 마지막 실패 시점부터 확률이 서서히 줄어든다.
 //
 // 시연 녹화는 2번을 쓴다. 1번만으로는 PG-B 우회 뒤에도 불만이 그대로 쏟아져
 // "회복됐다"는 그림이 화면에 안 나온다. 두 갈래를 같이 켜도 되지만, 회복을
@@ -23,6 +23,7 @@ import { Counter } from 'k6/metrics';
 // 문구는 연출용 스크립트(`demo-staged-chat.js`)와 같은 것을 쓴다 — 측정 실행과
 // 녹화 실행에서 채팅이 다르면 같은 방송으로 안 읽힌다.
 import { generalChats, saleChats, complaints } from './chat-messages.js';
+import { decayedComplaintRatio } from './recovery-decay.mjs';
 
 const CHAT_ONLY = __ENV.CHAT_ONLY === 'true';
 
@@ -59,6 +60,8 @@ const CHAT_PRE_ALLOCATED_VUS = Number(__ENV.CHAT_PRE_ALLOCATED_VUS);
 const CHAT_MAX_VUS = Number(__ENV.CHAT_MAX_VUS);
 // 자기 주문이 실패한 VU 중 몇 %가 불만을 쏘는가. 기본 0 — 명시적으로 켜야 한다.
 const COMPLAINT_ON_FAILURE_RATIO = Number(__ENV.COMPLAINT_ON_FAILURE_RATIO || 0);
+// 결제 성공 응답이 돌아온 뒤에도 사용자 반응이 즉시 0이 되지 않게 하는 잔존 시간.
+const RECOVERY_COMPLAINT_DECAY_SECONDS = Number(__ENV.RECOVERY_COMPLAINT_DECAY_SECONDS || 60);
 // 진입 시드 4건을 타임세일 오픈보다 늦게 쏘고 싶을 때 쓴다. 장애 주입 전에
 // 시드가 나가면 아직 아무도 실패하지 않았는데 불만이 먼저 오는 그림이 된다.
 const INCIDENT_SEED_DELAY_SECONDS = Number(__ENV.INCIDENT_SEED_DELAY_SECONDS || 0);
@@ -87,6 +90,9 @@ if (!Number.isFinite(CHAT_INCIDENT_RPS) || CHAT_INCIDENT_RPS < 0) {
 if (!Number.isFinite(COMPLAINT_ON_FAILURE_RATIO) || COMPLAINT_ON_FAILURE_RATIO < 0 || COMPLAINT_ON_FAILURE_RATIO > 1) {
   throw new Error('COMPLAINT_ON_FAILURE_RATIO는 0 이상 1 이하여야 합니다');
 }
+if (!Number.isInteger(RECOVERY_COMPLAINT_DECAY_SECONDS) || RECOVERY_COMPLAINT_DECAY_SECONDS < 0) {
+  throw new Error('RECOVERY_COMPLAINT_DECAY_SECONDS는 0 이상의 정수여야 합니다');
+}
 if (CHAT_INCIDENT_RPS === 0 && COMPLAINT_ON_FAILURE_RATIO === 0) {
   throw new Error('CHAT_INCIDENT_RPS와 COMPLAINT_ON_FAILURE_RATIO가 둘 다 0이면 불만 채팅이 없습니다');
 }
@@ -104,12 +110,14 @@ const INCIDENT_SEED_USERS = 4;
 
 const complaintsSent = new Counter('s3_chat_complaints_sent');
 const reactiveComplaintsSent = new Counter('s3_reactive_complaints_sent');
+const recoveryLingeringComplaintsSent = new Counter('s3_recovery_lingering_complaints_sent');
 const incidentChatsSent = new Counter('s3_incident_chats_sent');
 const generalChatsSent = new Counter('s3_general_chats_sent');
 const chatFailed = new Counter('s3_chat_failed');
 const accepted = new Counter('orders_accepted');
 const paymentFailed = new Counter('orders_payment_failed');
 const unexpected = new Counter('orders_unexpected_response');
+let lastPaymentFailureAt = 0;
 
 export const options = {
   scenarios: {
@@ -252,14 +260,33 @@ export function createOrder() {
   else if (isPaymentFailure) paymentFailed.add(1);
   else unexpected.add(1, { status: String(response.status) });
 
-  // 실제로 실패를 겪은 사람만 불만을 쓴다. 성공하면 아무 말도 안 한다 —
-  // 그래서 결제가 복구되면 불만이 저절로 멎는다.
+  // 실패한 VU는 즉시 불만을 쓰고, 이후 성공 응답부터는 마지막 실패 시점 기준으로
+  // 발화 확률을 선형 감소시킨다. 장애가 다시 나면 감쇠 시간을 처음부터 다시 센다.
   //
   // ★ 이 발화는 주문 VU 안에서 일어나므로 WebSocket이 닫힐 때까지 그 이터레이션이
   //   붙잡힌다(약 0.5초). 도착률을 유지하려면 주문 쪽 MAX_VUS에 그만큼 여유를 둔다.
-  if (isPaymentFailure && COMPLAINT_ON_FAILURE_RATIO > 0 && Math.random() < COMPLAINT_ON_FAILURE_RATIO) {
+  const now = Date.now();
+  let complaintRatio = 0;
+  let complaintPrefix = 's3-reactive';
+  let complaintCounter = reactiveComplaintsSent;
+
+  if (isPaymentFailure) {
+    lastPaymentFailureAt = now;
+    complaintRatio = COMPLAINT_ON_FAILURE_RATIO;
+  } else if (isAccepted && lastPaymentFailureAt > 0) {
+    complaintRatio = decayedComplaintRatio(
+      COMPLAINT_ON_FAILURE_RATIO,
+      (now - lastPaymentFailureAt) / 1000,
+      RECOVERY_COMPLAINT_DECAY_SECONDS,
+    );
+    complaintPrefix = 's3-recovery-lingering';
+    complaintCounter = recoveryLingeringComplaintsSent;
+    if (complaintRatio === 0) lastPaymentFailureAt = 0;
+  }
+
+  if (complaintRatio > 0 && Math.random() < complaintRatio) {
     const message = complaints[Math.floor(Math.random() * complaints.length)];
-    openChat(message, 's3-reactive', reactiveComplaintsSent, 500);
+    openChat(message, complaintPrefix, complaintCounter, 500);
   }
 
   check(response, {

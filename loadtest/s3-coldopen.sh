@@ -9,7 +9,7 @@
 # 일이고, 여기서 대신 하면 녹화물은 연극이 된다.
 #
 # 불만 채팅은 반응형으로만 만든다(`COMPLAINT_ON_FAILURE_RATIO`). 자기 주문이 실제로
-# 실패한 VU만 불만을 쓰므로, 결제가 복구되면 발화가 저절로 멎는다. 고정 발화
+# 실패한 VU가 불만을 쓰고, 복구 뒤에는 확률이 선형 감소한다. 고정 발화
 # (`CHAT_INCIDENT_RPS`)를 쓰면 우회 뒤에도 불만이 그대로 쏟아져 결말이 안 나온다.
 #
 # 사용 예:
@@ -58,6 +58,7 @@ CALM_SECONDS="${CALM_SECONDS:-40}"
 # 실패하지 않았는데 불만이 먼저 오면 시나리오 전제가 거꾸로 찍힌다.
 HEALTHY_SECONDS="${HEALTHY_SECONDS:-20}"
 COMPLAINT_ON_FAILURE_RATIO="${COMPLAINT_ON_FAILURE_RATIO:-0.3}"
+RECOVERY_COMPLAINT_DECAY_SECONDS="${RECOVERY_COMPLAINT_DECAY_SECONDS:-60}"
 
 BROADCAST_ID="${BROADCAST_ID:-bc_1042}"
 # 기본값은 seed.py에서 PENDING으로 들어가는 상품이다 — 화면에서 "아직 특가가
@@ -140,7 +141,7 @@ trap teardown EXIT INT TERM
 ORIGINAL="$(product_state)"
 log "상품 $SALE_SKU 현재 상태: $ORIGINAL (끝나면 이 값으로 되돌린다)"
 
-log "부하 시작 — 평시 채팅 ${CALM_SECONDS}초 뒤 타임세일 오픈, 총 $RUN_DURATION"
+log "부하 시작 — 평시 채팅 ${CALM_SECONDS}초 뒤 타임세일 오픈, 복구 불만 감쇠 ${RECOVERY_COMPLAINT_DECAY_SECONDS}초, 총 $RUN_DURATION"
 k6 run \
   -e BASE_URL="$BASE_URL" -e WS_URL="$WS_URL" \
   -e BROADCAST_ID="$BROADCAST_ID" -e SKU_ID="$SALE_SKU" \
@@ -152,6 +153,7 @@ k6 run \
   -e CHAT_INCIDENT_RPS=0 \
   -e INCIDENT_SEED_DELAY_SECONDS="$((HEALTHY_SECONDS + 4))" \
   -e COMPLAINT_ON_FAILURE_RATIO="$COMPLAINT_ON_FAILURE_RATIO" \
+  -e RECOVERY_COMPLAINT_DECAY_SECONDS="$RECOVERY_COMPLAINT_DECAY_SECONDS" \
   -e CHAT_PRE_ALLOCATED_VUS="$CHAT_PRE_ALLOCATED_VUS" -e CHAT_MAX_VUS="$CHAT_MAX_VUS" \
   loadtest/s3-payment.js &
 K6_PID=$!
