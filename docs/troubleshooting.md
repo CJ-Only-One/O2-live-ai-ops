@@ -59,6 +59,8 @@
 | T-042 | `latency_p95_by_pod`가 실부하를 걸어도 계속 비어 있다 | `read_path_degraded` 노브가 켜져 있어 `inventory.check` 발행 자체가 꺼짐 |
 | T-043 | Agent 가 늘린 파드가 몇 초 만에 원래대로 돌아간다 | cue-warmer 가 남의 조치를 자기 잔여물로 보고 되돌림 |
 | T-044 | S2 Dify 워크플로가 매번 `status code 400` 으로 죽는다 | 방송 축 없는 알림에서 `broadcast_id` 가 `LIVE-001` 로 fallback |
+| T-045 | Dify 컨테이너를 다시 만든 뒤 모든 요청이 502 | nginx 가 옛 컨테이너 IP 를 물고 있다 |
+| T-046 | Bedrock 호출이 `Read timed out` 으로 끊긴다 | 플러그인이 botocore 기본 read timeout 60초를 그대로 쓴다 |
 
 
 ---
@@ -123,7 +125,7 @@ aws bedrock list-inference-profiles --region ap-northeast-2 --query 'inferencePr
 | `global.anthropic.claude-sonnet-5` | 정상 |
 | `global.anthropic.claude-opus-5` | 정상 |
 | `apac.anthropic.claude-3-5-sonnet-20241022-v2:0` | **ResourceNotFoundException** |
-| `global.anthropic.claude-haiku-4-5-20251001-v1:0` | ResourceNotFoundException |
+| `global.anthropic.claude-haiku-4-5-20251001-v1:0` | **2026-08-19 ResourceNotFoundException → 2026-08-27 재조회에서 `ACTIVE`.** 그 사이 열렸다 |
 
 **왜 늦게 찾았나**
 
@@ -1898,3 +1900,91 @@ GET /api/admin/read-path-degraded?broadcast_id=LIVE-001  ->  400 Bad Request
 **부르는 쪽이 아니라 불리는 쪽 로그로 좁혀서** 찾았다 — 워크플로가 부르는 대상을
 DSL 환경변수에서 열거하고(`WARM_API_URL`, `HOT_PROXY_URL`, `API_ADMIN_URL` …)
 각각의 로그를 훑으니 api 파드 접근 로그에 400 이 그대로 찍혀 있었다.
+---
+
+## T-045. Dify 컨테이너를 다시 만든 뒤 모든 요청이 502
+
+**증상** — Dify 설정을 고치려고 `docker compose up -d api worker` 를 돌린 뒤부터
+Agent 호출이 전부 `HTTP Error 502: Bad Gateway` 로 실패한다. **컨테이너는 전부
+정상으로 보인다** — `docker compose ps` 에서 `docker-api-1` 은 `Up (healthy)` 고
+`curl http://127.0.0.1:5001/health` 도 응답한다. 그래서 Dify 가 아니라 부르는
+쪽(Lambda·네트워크)을 먼저 의심하게 된다.
+
+**원인** — nginx 가 **옛 컨테이너 IP** 를 물고 있다.
+
+```
+[error] connect() failed (111: Connection refused) while connecting to upstream,
+        upstream: "http://172.21.0.12:5001/v1/workflows/run"
+```
+
+`up -d` 는 컨테이너를 **재생성**하므로 api 가 새 IP 를 받는다. nginx 는 시작
+시점에 upstream 이름을 한 번만 해석해 캐싱하기 때문에, 자기가 재시작되지 않는 한
+없어진 IP 로 계속 연결을 시도한다. `docker compose ps` 는 nginx 를 `Up 33 hours`
+로 보여주는데 그것이 정상이 아니라 **원인**이다.
+
+**해결**
+
+```bash
+cd /opt/dify/docker && sudo docker compose restart nginx
+```
+
+확인은 `curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1/v1/workflows/run`
+로 한다. **401 이 나오면 정상이다** — 인증 없이 빈 요청을 보냈으니 nginx 가 api 까지
+도달했다는 뜻이고, 502 면 아직 옛 IP 를 보고 있다.
+
+**애초에 안 밟는 법** — 설정만 바꿀 때는 `up -d`(재생성) 대신 `restart` 를 쓴다.
+재생성이 필요하면 **nginx 도 같이 재시작한다.**
+
+**왜 늦게 찾았나** — 모든 컨테이너가 healthy 라 Dify 를 용의선상에서 뺐다. 호출하는
+Lambda 쪽과 보안그룹을 먼저 봤다. **nginx 의 에러 로그에 죽은 IP 가 그대로 찍혀
+있었는데** 컨테이너 상태만 보고 로그를 안 봤다. 상태가 아니라 로그를 먼저 봤어야 했다.
+
+---
+
+## T-046. Bedrock 호출이 `Read timed out` 으로 끊긴다
+
+**증상** — Dify 워크플로가 중간에 죽고 Worker 에 이렇게 남는다.
+
+```
+dify workflow failed: InvokeError:
+AWSHTTPSConnectionPool(host='bedrock-runtime.ap-northeast-2.amazonaws.com', port=443):
+Read timed out.
+```
+
+**Bedrock 쪽에는 오류가 없다.** 같은 시간대 CloudWatch `AWS/Bedrock` 에서
+`InvocationClientErrors`·`InvocationServerErrors`·`InvocationThrottles` 가 전부 0 이고
+`Invocations` 는 정상 집계된다. **모델은 응답했고 클라이언트가 기다리다 끊은 것이다.**
+
+**원인** — Dify 의 Bedrock 플러그인이 botocore 클라이언트를 이렇게 만든다.
+
+```python
+# storage/cwd/langgenius/bedrock-*/provider/get_bedrock_client.py
+client_config = Config(region_name=region_name)
+```
+
+`read_timeout` 을 안 주므로 **botocore 기본값 60초**가 적용된다. 2026-08-27 실측에서
+호출당 서버측 지연이 **9.7~51.3초**였고 절반 이상이 30초를 넘었다. 서버측 51초짜리는
+스트리밍 수신까지 더하면 클라이언트에서 60초를 넘는다.
+
+느린 이유는 모델이 아니라 **보내는 양**이다 — 호출당 입력 16,000~21,700 토큰,
+출력 최대 4,092 토큰. 같은 창에서 입력이 7,843 토큰이던 호출은 12.4초였다.
+
+**`.env` 의 `TEXT_GENERATION_TIMEOUT_MS` 는 이 값이 아니다.** 그걸 60000 → 120000 으로
+올려도 증상이 그대로였다. 그 값은 Dify 애플리케이션 레벨이고, 여기서 끊는 것은
+플러그인 안의 botocore 다. **손잡이를 잘못 잡으면 "고쳤는데 안 낫는" 상태로 시간을 쓴다.**
+
+**해결** — 셋 중 하나이고 아래로 갈수록 근본이다.
+
+1. 플러그인의 `Config(...)` 에 `read_timeout` 을 준다. 빠르지만 **플러그인을
+   재설치·업그레이드하면 날아가고 저장소에 안 남는다.**
+2. 더 빠른 모델로 바꾼다. 같은 입력으로 직접 재보니
+   `global.anthropic.claude-sonnet-5` **30.0초**, `global.anthropic.claude-haiku-4-5-20251001-v1:0`
+   **11.8초**로 약 2.5배 차이였다(2026-08-27, 입력 24k~29k 토큰).
+3. **보내는 양을 줄인다.** Warm 스냅샷 요청의 `windows=6` 을 줄이거나 진단에 안 쓰는
+   필드(`rundown`·`policy`·`gaps`·`topology`)를 문맥에서 뺀다. 지연이 선형으로 준다.
+
+**왜 늦게 찾았나** — 오류 문구에 `bedrock-runtime` 호스트가 찍혀서 **Bedrock 장애나
+스로틀을 먼저 의심했다.** CloudWatch 를 봐야 그게 아니라는 게 갈리는데, 지표를 보기
+전에 `.env` 에서 `timeout` 을 grep 해 제일 그럴듯한 이름(`TEXT_GENERATION_TIMEOUT_MS`)을
+먼저 올렸다. **어느 계층이 끊었는지부터 확정했어야 했다** — 예외 타입이 botocore 것
+(`AWSHTTPSConnectionPool`)이라는 게 처음부터 답을 가리키고 있었다.
