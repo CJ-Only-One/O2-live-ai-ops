@@ -59,7 +59,7 @@
 
 | 요구 | 현재 | 판정 |
 |---|---|---|
-| 조치 실행기 (파드 수·노브 변경) | S2는 `action_executor.tf` + `scale_deployment.py`, S1은 `/ws/admin/channel-limit`로 구현됐다. S3도 배선은 끝났다 — 제어면(`/api/admin/pg-stub`·`/api/admin/pg-provider-switch`), 런북 L3 조치(`seed_runbook.py` `switch_pg_provider`), DSL 실행기 특수 타깃(`$PG_PROVIDER_SWITCH_URL`). 다만 저장소 DSL의 환경변수 값이 빈 문자열이라(`dify/o2-aiops-workflow.yml` `PG_PROVIDER_SWITCH_URL`) live 주입 전에는 `is_real=false` mock 경로로 떨어진다. 옛 `/api/admin/read-path-degraded`는 자산만 유지한다 | **고쳐야** |
+| 조치 실행기 (파드 수·노브 변경) | S2는 `action_executor.tf` + `scale_deployment.py`, S1은 `/ws/admin/channel-limit`로 구현됐다. S3도 제어면(`/api/admin/pg-stub`·`/api/admin/pg-provider-switch`)과 L3 `switch_pg_provider`가 있다. 2026-08-28 게시 Dify graph는 PG 전환을 `REAL` 특수 타깃으로 라우팅하지만 URL·admin key를 Code 노드에 평문으로 넣은 옛 배포본이다. 저장소 DSL의 환경변수 방식과 다르므로 키 회전 후 환경변수 기반으로 재게시해야 한다. 옛 `/api/admin/read-path-degraded`는 자산만 유지한다 | **있음 · 보안 드리프트** |
 | Dify → EKS 권한 (인스턴스 역할 + RBAC) | 직접 권한 대신 S2 실행기 Lambda에 EKS Access Entry와 `deployments/scale` get·patch만 부여했다(`04-platform/action_executor_access.tf`) | **구현됨** |
 | `cfg:*` 노브 저장·조회 | chat-gateway의 `cfg:channel_limit:*`, api의 `cfg:read_path_degraded:*`와 S3 목업 PG의 `cfg:pg:*` SET·DEL 및 테스트가 있다 | **구현됨** |
 | 노브 카탈로그 (가역성·예산·precondition·검증 지표) | `seed_runbook.py`의 `KNOBS`, `runbook_lookup.py` 조회와 단위 테스트가 있다. 시간·예산 수치는 미측정이라 `None`. 형식과 live 대조는 `runbook-catalog.md` | **구현됨** |
@@ -67,7 +67,7 @@
 | Runbook 위험도 척도 | ACTION의 L1/L2는 AUTO, L3는 APPROVAL로 라우팅되지만 등급 부여 기준은 없다. ACTION-KNOB 중복값도 일치 검사가 없다(D-079) | **없음** |
 | 상태 머신 · 검증 대기 타이머 · 재분석 1회 분기 | 별도 서비스가 아니라 Dify 워크플로 안에 있다 — `dify/o2-aiops-workflow.yml`의 상태 dict(`diagnosis_retry`·`remediation_retry`·`excluded_actions`·`skip_diagnosis`), `stabilization` 노드, `GLOBAL_LOOP_MAX_10` 한도. 멱등 키는 Correlator 쪽 signal claim(`09-incident/incident_correlation.tf`)에 있다. **재진단 한도가 2회라 `scenario-experiment.md` 0.4의 "재분석 1회"와 어긋난다** | **고쳐야** |
 | `Deduped` 병합 (Incident Correlator) | `infra/09-incident/terraform.tfvars` 에서 실행·event source 게이트 둘 다 `true`, `incident_shadow_mode=false`, 병합 window 420초와 Datadog monitor mapping(S1 셋 + READ_PATH)이 적용됐다. 채팅·Datadog 양방향 live E2E 도 한 인시던트로 병합돼 Dify 를 한 번만 깨웠다(`agent-entrypoint.md` `phase4c_live_source_to_dify_e2e`). 오병합률·복구 실측은 실제 인시던트 표본 뒤로 남았다 | **있음** |
-| Datadog Monitor → Correlator 진입 라우팅 | S3 두 Monitor는 저장소에서 `@webhook-o2-incident-entry`로 전환하고 실제 ID `22078625`·`22078627`을 map·allowlist에 등록했다. PG 지연은 `CORROBORATING`, 실패율은 `CONTEXT`이며 Chat `READ_PATH` PRIMARY와 같은 correlation tuple을 쓴다. 2026-08-28 read-only plan은 Datadog Monitor 2개와 Incident Lambda 2개의 in-place 변경을 확인했지만 **apply하지 않았다**. S1·S2의 저장소 message와 live 콘솔 라우팅 드리프트는 별도 확인이 남았다 | **부분 구현 · 미적용** |
+| Datadog Monitor → Correlator 진입 라우팅 | S3 두 Monitor 실제 ID `22078625`·`22078627`을 `@webhook-o2-incident-entry`로 전환하고 map·allowlist에 등록했다. PG 지연은 `CORROBORATING`, 실패율은 `CONTEXT`이며 Chat `READ_PATH` PRIMARY와 같은 correlation tuple을 쓴다. 2026-08-28 대상 plan/apply는 Datadog `0 add / 2 change / 0 destroy`, Incident `0 add / 2 change / 0 destroy`였고, 적용 뒤 Lambda live 환경변수와 Incident 전체 no-change plan을 확인했다. 남은 것은 Chat→두 Monitor가 한 `incident_id`로 합쳐지는 live E2E다 | **있음 · E2E 미검증** |
 | Slack 승인 왕복 | `infra/06-agent/slack_approval.tf` — Lambda 둘 + DynamoDB | **있음** |
 | 런북 카탈로그 + 조회 | `runbook.tf` + `runbook_lookup.tf` (Lambda + Function URL, `x-api-key`) | **있음** |
 | Runbook source-live 일치 | 2026-08-25 scan에서 source에 없는 구형 DEF 4개가 status 없이 남아 Lookup fallback상 active였다. live active ACTION에는 KNOB가 없다 | **고쳐야** |
@@ -145,11 +145,10 @@
 
 완료된 replicas·실패 필드·S1 발화자 분포는 2절로 이동했다. 현재 변경 대상만 남긴다.
 
-1. **S3 Incident 라우팅 적용·E2E** — 저장소 변경과 read-only plan은 끝났다.
-   Datadog·09-incident 순서로 apply한 뒤 `Chat PRIMARY → PG p95 CORROBORATING →
-   실패율 CONTEXT`가 같은 `incident_id`에 쌓이는지 확인한다. 09-incident plan에는
-   같은 Lambda 환경변수에 묶인 기존 S1 symptom-family 드리프트도 포함되므로 함께
-   적용해도 되는지 먼저 확인한다.
+1. **S3 Incident 라우팅 E2E** — Datadog·09-incident 적용과 live map 검증은 끝났다.
+   `Chat PRIMARY → PG p95 CORROBORATING → 실패율 CONTEXT`가 같은 `incident_id`에
+   쌓이는지 실제 2차 실행에서 확인한다. 테스트 전 Queue/DLQ 기존 건수를 기준선으로
+   기록하고 새 증가분만 실패로 판정한다.
 2. **S3 History 분기 명시** — 저장소 DSL 에 `History 없음 → 실패 보고` 는 들어왔다
    (13-A). `History 있음 → 현재 증거 재검증 → active Runbook` 을 별도 분기로 만드는
    것이 남았다. 지금은 `past_cases` 를 진단 프롬프트에 넣는 것까지다.
@@ -182,9 +181,10 @@
    뒤에만 `active` 전용 런북으로 승격한다. 현재 `seed_runbook.py`와 실테이블의
    `pod_load_skew`는 `draft`로 분리돼 있다. 남은 문제는 `runbook-catalog.md`에 정리한
    status 없는 구형 active 항목과 위험도·KNOB 게이트 drift다.
-4. **S3 배포와 값 주입** — 목업 PG·전환 제어면을 실환경에 배포하고, admin key Secret 과
-   Dify 워크플로의 `PG_PROVIDER_SWITCH_URL` 값을 주입한다. 값이 비면 조치가 mock 으로
-   떨어져 2차 실행이 성립하지 않는다.
+4. **S3 Dify 비밀값 이관** — 목업 PG·전환 제어면은 배포됐고 게시 graph도 PG 전환을
+   `REAL`로 호출한다. 그러나 옛 graph가 URL·admin key를 Code 노드에 평문으로 갖고 있다.
+   노출된 키를 회전하고 저장소 DSL처럼 `PG_PROVIDER_SWITCH_URL`·admin key 환경변수를
+   참조하도록 재게시한 뒤 `is_real=true`를 다시 확인한다.
 5. **S3 주입 세기 확정** — `delay_ms` × 주문 RPS 를 스윕해 **주문은 깨지고 읽기는 사는**
    구간을 찾는다. 파드가 죽으면 `pod_resource_exhaustion` 오진이 된다. 확정값은 1차·2차에
    그대로 쓴다(7절).
