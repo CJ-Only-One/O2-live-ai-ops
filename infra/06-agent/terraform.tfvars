@@ -54,5 +54,5 @@ agent_read_path_status_url = "http://k8s-o2dev-frontend-0af27d967f-1008618203.ap
 #
 # 실험이 끝나면 enabled = false 로 내리고 나머지 둘을 기본값으로 되돌린다.
 s2_experiment_runbook_enabled  = true
-s2_experiment_id               = "s2-20260826T095944-live"
-s2_experiment_expires_at_epoch = 1787781584 # 2026-08-27 06:59:44 KST
+s2_experiment_id               = "s2-20260827T074450"
+s2_experiment_expires_at_epoch = 1787827490 # 2026-08-27 19:44:50 KST
