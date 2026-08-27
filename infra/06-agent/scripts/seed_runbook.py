@@ -131,15 +131,20 @@ RUNBOOKS = [
             "rollback and final baseline recovery evidence missing",
             "owner review and approval missing",
         ],
+        # 2026-08-27 p99 조건 추가 — traffic_spike_overload 와 같은 이유다.
+        # latency_p95 <= 800 은 Warm 서버측 밀리초 값과 자릿수가 안 맞아
+        # 장애 중에도 통과한다(실측 28.6ms). 근거는 같은 실측 두 개:
+        # 무부하 p99 2.01ms, canary 투입 부하 중 p99 100.7ms.
         "success_criteria": {
             "conditions": [
                 {"metric": "latency_p95", "comparison": "<=", "threshold": 800},
+                {"metric": "p99_ms", "comparison": "<=", "threshold": 50},
                 {"metric": "overall_failure_rate", "comparison": "<=", "threshold": Decimal("0.01")},
             ],
             "baseline_conditions": [
                 {"metric": "latency_p95", "comparison": "<=", "relative_to": "baseline_p95_ms"},
             ],
-            "verification_metrics": ["latency_p95", "overall_failure_rate"],
+            "verification_metrics": ["latency_p95", "p99_ms", "overall_failure_rate"],
             "logic": "AND",
         },
         "actions": [
@@ -305,9 +310,19 @@ RUNBOOKS = [
         "runbook_kind": "generic",
         "status": "active",
         "rca_type": "traffic_spike_overload",
+        # 2026-08-27 p99 조건 추가. p95_ms <= 350 하나만 두면 canary 가 Service 에
+        # 붙어 있는 장애 한복판에서도 통과한다 — Warm 서버측 p95 는 그때도 28.6ms
+        # 였다(실측). 꼬리가 먼저 벌어지는 것이 이 시나리오의 전제이고 진입
+        # Monitor 도 p99 를 본다. 판정도 같은 축을 봐야 "조치는 됐는데 꼬리가
+        # 안 잡힌다"가 판정으로 나온다.
+        #
+        # 50ms 는 두 실측 사이에서 고른 값이다 — 무부하 p99 2.01ms,
+        # canary 투입 부하 중 p99 100.7ms. 격리 뒤 값은 아직 못 재서
+        # **통과쪽 근거가 없다.** 격리까지 도달하면 그 값으로 갱신한다.
         "success_criteria": {
             "conditions": [
                 {"metric": "p95_ms", "comparison": "<=", "threshold": 350},
+                {"metric": "p99_ms", "comparison": "<=", "threshold": 50},
             ],
             "logic": "AND",
         },
