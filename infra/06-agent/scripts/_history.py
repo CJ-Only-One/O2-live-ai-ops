@@ -27,6 +27,13 @@ sys.path.insert(0, str(LAMBDA_DIR))
 
 @functools.lru_cache(maxsize=None)
 def tf_output(name):
+    # 라이브 Agent 는 O2 전용 저장소(history_o2.tf)를 쓰는데 그쪽엔 output 이
+    # 없다. 그래서 환경변수로 대상을 지정할 수 있게 둔다 —
+    #   HISTORY_BUCKET / HISTORY_VECTOR_BUCKET / HISTORY_VECTOR_INDEX
+    override = os.environ.get(name.upper())
+    if override:
+        return override
+
     out = subprocess.run(
         ["terraform", f"-chdir={MODULE}", "output", "-raw", name],
         capture_output=True,

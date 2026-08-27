@@ -38,10 +38,11 @@ import boto3
 #   S1  chat_channel_overload                 active 전용
 #   S2  RB-API-LATENCY-001                    draft 범용
 #   S2  RB-API-POD-RESOURCE-SKEW              draft 전용 후보
-#   S3  pg_external_failure                   draft 시나리오 런북
+#   S3  pg_external_failure                   active 시나리오 런북
 #
-# S2 범용은 실험 검증 증거가, S2 전용 후보는 승격 증거가, S3 는 실제 조치
-# 실행기가 아직 없다. 시딩은 하되 이 세 항목을 active 로 가장하지 않는다.
+# S2 범용은 실험 검증 증거가, S2 전용 후보는 승격 증거가 아직 없다. 시딩은
+# 하되 그 둘을 active 로 가장하지 않는다. S3 는 2026-08-27 라이브 실측과
+# verified History 로 승격했다(해당 항목 promotion_evidence).
 
 RUNBOOKS = [
     {
@@ -401,12 +402,26 @@ RUNBOOKS = [
         # 승인 뒤에만 PG-B로 우회하는 L3 조치 하나를 후보로 둔다.
         "runbook_id": "pg_external_failure",
         "runbook_kind": "scenario",
-        "status": "draft",
+        # 2026-08-27 운영자 승인으로 active 승격. 근거는 아래 promotion_evidence
+        # 다 — 같은 주입(delay_ms=1200·fail_rate=0.9)에서 PG-A 실패와 PG-B 성공을
+        # 라이브로 갈랐고, 그 사례를 사람이 verified History 로 확정했다.
+        "status": "active",
         "rca_type": "pg_external_failure",
+        # 승격 전 막고 있던 항목과, 그것을 무엇으로 풀었는지 같이 남긴다.
+        # 지우면 다음 사람이 "왜 active 인가"를 코드에서 확인할 수 없다.
+        "promotion_evidence": [
+            "2026-08-27 live: PG-A 주입(1200ms/0.9)에서 주문 6001건 중 5401건 실패"
+            "(90.0%), p95 1.32s — 같은 주입 유지한 채 PG-B 전환 후 1200건 실패 0,"
+            " p95 102ms",
+            "2026-08-27 verified history: inc_01M11P6NJ6DH7J7C0Y0P1E2668 를"
+            " pg_external_failure · human_fixed 로 사람이 확정",
+            "rollback: /api/admin/pg-provider-switch 가 PG-A 주입 해제 전 원복을"
+            " 409 로 막는 것을 라이브에서 확인, 해제 후 원복 성공",
+        ],
+        # 아직 안 끝난 것 — 지식 개입 뒤 2차 실행이 이 런북으로 실제 복구까지
+        # 가는 것은 이 승격 다음에야 볼 수 있다.
         "promotion_blockers": [
-            "PG-A failure to PG-B success live measurement missing",
             "verified history match and active runbook paired E2E evidence missing",
-            "operator approval and rollback evidence missing",
         ],
         # 2026-08-26: baseline_conditions만 두면 "장애 발생 시점(이미 실패율
         # 100%에 가까움)"을 기준선으로 잡을 때 아무 조치도 안 먹혔어도
