@@ -161,14 +161,21 @@ function LivePlayer({ src, poster, muted, live, onCircuitOpen }: Props) {
       setShowPoster(false)
     }
     const onStop = () => controllerRef.current?.onStalled()
+    // 재생 위치가 흐르면 끊긴 것이 아니다. `stalled` 는 3초간 데이터가 안
+    // 들어오면 뜨지만 그동안 재생은 버퍼로 이어지고, 비디오가 멈춘 적이
+    // 없으니 `playing` 은 다시 오지 않는다. 이 신호가 없으면 감시 타이머가
+    // 안 풀려 멀쩡한 플레이어를 8초마다 재부착한다.
+    const onProgress = () => controllerRef.current?.onProgress()
 
     video.addEventListener('playing', onPlaying)
     video.addEventListener('waiting', onStop)
     video.addEventListener('stalled', onStop)
+    video.addEventListener('timeupdate', onProgress)
     return () => {
       video.removeEventListener('playing', onPlaying)
       video.removeEventListener('waiting', onStop)
       video.removeEventListener('stalled', onStop)
+      video.removeEventListener('timeupdate', onProgress)
     }
   }, [])
 
