@@ -93,11 +93,11 @@
 |---|---|---|
 | canary Deployment (같은 Service, CPU 상한만 다름) | `loadtest/s2-canary.sh`가 클러스터의 현재 main Deployment를 원본으로 읽고 실측 CPU/probe 입력을 강제한다. 2026-08-25 로컬 Git base의 이미지 드리프트를 수정한 뒤 server-side dry-run과 200 RPS 실부하 재검증을 완료했다 | **구현·실측됨** |
 | 정상 파드 복수 | `api-deployment.yaml`은 `replicas: 2`; main/canary는 서로 다른 Deployment selector와 `o2.cj.io/api-service-member` Service 멤버십을 쓴다 | **구현됨** |
-| 파드별 지연 (`latency_by_pod`) | 2026-08-24 PR #133 으로 들어왔다 — `o2warm/sketch.py:514·609`, `metrics.py:328` `latency_p95_by_pod`, `datadog.py:131` 이 `pod_name` 태그로 전송한다 | **있음** |
-| 파드 단위 이상치 모니터 | `monitor.tf:420` `[O2][시나리오 5] 파드 단위 응답 지연 이상치` — `outliers(… latency_p95 … by {pod_name}, 'DBSCAN', …)`. 캐시 히트율 이상치(`monitor.tf:331`)와 별개로 붙었다 | **있음** |
-| 범용 런북 `RB-API-LATENCY-001` | `seed_runbook.py`에 한 단계 증설·검증·원복 조건과 `status=draft`로 시딩된다. Lookup은 draft를 반환하지 않는다. 반복 재현·원복·승인 증거가 남음 | **비활성** |
-| 후보 런북 분리·승격 게이트 | `RB-API-POD-RESOURCE-SKEW`가 `status=draft`로 시딩되고 Lookup이 자동 조회에서 제외한다(D-077). 재현·오적용·롤백 검증과 운영자 승인 뒤에만 active로 바꾼다 | **비활성** |
-| 자원 요청 현실화 | `api-deployment.yaml:160` `cpu: 100m` (M-009 는 300 RPS 에서 664m). **지금은 올리지 않는다** — 3절 1 참조 | **보류** |
+| 파드별 지연 (`latency_by_pod`) | 2026-08-24 PR #133 으로 들어왔다 — warm 의 `o2warm/metrics.py:370` `latency_p95_by_pod`, `sketch.py` 의 `pod_name` 축 집계, `datadog.py` 가 `pod_name` 태그로 전송한다 | **있음** |
+| 파드 단위 이상치 모니터 | `monitor.tf:465` `[O2][S2] 파드 단위 응답 지연 이상치 — 2차 재진단 재료` — `outliers(… latency_p95 … by {pod_name}, 'DBSCAN', …)`. 진입이 아니라 재진단 재료라 webhook 을 일부러 뺐다. 캐시 히트율 이상치(`monitor.tf:379`)와 별개다 | **있음** |
+| 범용 런북 `RB-API-LATENCY-001` | `status=draft` 로 시딩되지만 S2 실험 게이트(`06-agent/terraform.tfvars` `s2_experiment_*`)가 켜져 있어 Lookup 이 `runbook_status=experiment` 로 반환한다. 복구 판정은 2026-08-27 에 `p99_ms <= 50` 축으로 옮겼다. **게이트에 만료 epoch 가 있어 지나면 조용히 draft 로 빠지고 1차 조치가 사라진다** — 실행 전에 만료를 확인한다 | **있음** |
+| 후보 런북 분리·승격 게이트 | `RB-API-POD-RESOURCE-SKEW` 도 `status=draft` 이고 같은 실험 게이트로만 노출된다(`runbook_lookup.py` `S2_EXPERIMENT_RUNBOOKS`, D-077). DynamoDB status 는 안 바꾸므로 실험이 끝나면 승격 상태가 남지 않는다. 반복 재현·오적용·롤백 검증과 운영자 승인 뒤에만 active 로 올린다 | **있음** |
+| 자원 요청 현실화 | `api-deployment.yaml:238` `cpu: 100m` (M-009 는 300 RPS 에서 664m). **지금은 올리지 않는다** — 3절 참조 | **보류** |
 | replicas 동기화 예외 | `argocd.tf`에 api `/spec/replicas` ignore와 `RespectIgnoreDifferences=true`가 있다. 실험 종료 시 2로 명시 원복 | **구현됨** |
 | api 에 HPA·KEDA 없을 것 | ScaledObject 는 `order-worker` 에만 붙어 있다 | **있음** |
 
