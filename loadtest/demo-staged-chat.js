@@ -40,13 +40,18 @@ const P3_SECONDS = Number(__ENV.P3_SECONDS || 600);
 const P4_SECONDS = Number(__ENV.P4_SECONDS || 5);
 
 // 발화율 (초당). 정상 채팅은 구간 내내 흐르고, 불만만 오르내린다.
-const NORMAL_RPS = Number(__ENV.NORMAL_RPS || 2);
-const SALE_RPS = Number(__ENV.SALE_RPS || 4);
-const COMPLAINT_PEAK_RPS = Number(__ENV.COMPLAINT_PEAK_RPS || 6);
+const NORMAL_RPS = Number(__ENV.NORMAL_RPS || 1.6);
+const SALE_RPS = Number(__ENV.SALE_RPS || 3.2);
+const COMPLAINT_PEAK_RPS = Number(__ENV.COMPLAINT_PEAK_RPS || 5);
 
 // 불만이 오르는 시간과 잦아드는 시간. 나머지가 도배 고원이다.
 const COMPLAINT_RAMP_UP_SECONDS = Number(__ENV.COMPLAINT_RAMP_UP_SECONDS || 20);
 const COMPLAINT_DECAY_SECONDS = Number(__ENV.COMPLAINT_DECAY_SECONDS || 120);
+
+// 발화 직전 대기의 평균. k6 의 도착률은 일정한 간격으로 발화를 시작시키므로
+// 이 값이 없으면 채팅이 메트로놈처럼 규칙적으로 올라온다. 지수분포로 흔들어
+// 사람들이 제각각 치는 것처럼 만든다 — 가끔 두 줄이 겹치고 가끔 잠깐 조용하다.
+const JITTER_MEAN_SECONDS = Number(__ENV.JITTER_MEAN_SECONDS || 0.6);
 
 const PRE_ALLOCATED_VUS = Number(__ENV.PRE_ALLOCATED_VUS || 30);
 const MAX_VUS = Number(__ENV.MAX_VUS || 80);
@@ -78,15 +83,45 @@ const SALE_AT = P1_SECONDS;
 const INCIDENT_AT = P1_SECONDS + P2_SECONDS;
 const RESOLVED_AT = P1_SECONDS + P2_SECONDS + P3_SECONDS;
 
+// 고원 구간을 한 발화율로 두면 채팅이 메트로놈처럼 규칙적으로 올라온다. 발화
+// 직전 지연을 흔들어도 소용이 없다 — VU 가 여럿이라 합쳐지면 다시 고르게 편다.
+// 눈에 보이는 불규칙은 **발화율 자체가 시간에 따라 오르내려야** 생긴다. 실제
+// 방송에서도 불만은 물결로 온다(누가 쓰면 따라 쓰고, 잠깐 잦아든다).
+//
+// 배수와 길이는 고정값이다. 무작위로 만들면 VU 마다 다른 options 를 계산할 수
+// 있어 위험하고, 고정이어도 주기가 서로 어긋나 화면에서는 불규칙해 보인다.
+const WAVE_MULTIPLIERS = [1.3, 0.6, 1.1, 0.45, 1.4, 0.75, 1.0, 0.55];
+const WAVE_SECONDS = [7, 5, 9, 6, 8, 5, 10, 6];
+
+function holdWaves() {
+  const stages = [];
+  let remaining = COMPLAINT_HOLD_SECONDS;
+  for (let i = 0; remaining > 0; i += 1) {
+    const seconds = Math.min(WAVE_SECONDS[i % WAVE_SECONDS.length], remaining);
+    stages.push({
+      target: perTenSeconds(COMPLAINT_PEAK_RPS * WAVE_MULTIPLIERS[i % WAVE_MULTIPLIERS.length]),
+      duration: `${seconds}s`,
+    });
+    remaining -= seconds;
+  }
+  return stages;
+}
+
 const generalSent = new Counter('demo_general_chats_sent');
 const complaintsSent = new Counter('demo_complaints_sent');
 const recoveredSent = new Counter('demo_recovered_chats_sent');
 const chatFailed = new Counter('demo_chat_failed');
 
-const normal = (rate, startSeconds, durationSeconds, exec) => ({
+// k6 의 도착률은 정수만 받는다. 초당 1.6 건 같은 값을 쓰려면 단위를 10초로
+// 늘려 정수로 표현한다(초당 1.6 = 10초당 16).
+function perTenSeconds(rps) {
+  return Math.max(1, Math.round(rps * 10));
+}
+
+const normal = (rps, startSeconds, durationSeconds, exec) => ({
   executor: 'constant-arrival-rate',
-  rate,
-  timeUnit: '1s',
+  rate: perTenSeconds(rps),
+  timeUnit: '10s',
   duration: `${durationSeconds}s`,
   startTime: `${startSeconds}s`,
   preAllocatedVUs: PRE_ALLOCATED_VUS,
@@ -102,18 +137,18 @@ export const options = {
     p2_sale_open: normal(SALE_RPS, SALE_AT, P2_SECONDS, 'sendSale'),
     // 3. 장애 구간의 정상 채팅 — 불만만 나오면 방송이 아니라 장애 화면이 된다
     p3_normal: normal(SALE_RPS, INCIDENT_AT, P3_SECONDS, 'sendSale'),
-    // 3. 불만 — 오르고, 버티고, 잦아든다
+    // 3. 불만 — 오르고, 물결치고, 잦아든다
     p3_complaints: {
       executor: 'ramping-arrival-rate',
       startTime: `${INCIDENT_AT}s`,
       startRate: 0,
-      timeUnit: '1s',
+      timeUnit: '10s',
       preAllocatedVUs: PRE_ALLOCATED_VUS,
       maxVUs: MAX_VUS,
       exec: 'sendComplaint',
       stages: [
-        { target: COMPLAINT_PEAK_RPS, duration: `${COMPLAINT_RAMP_UP_SECONDS}s` },
-        { target: COMPLAINT_PEAK_RPS, duration: `${COMPLAINT_HOLD_SECONDS}s` },
+        { target: perTenSeconds(COMPLAINT_PEAK_RPS), duration: `${COMPLAINT_RAMP_UP_SECONDS}s` },
+        ...holdWaves(),
         { target: 0, duration: `${COMPLAINT_DECAY_SECONDS}s` },
       ],
     },
@@ -165,9 +200,11 @@ export function sendRecovered() {
 }
 
 function send(message, prefix, counter) {
-  // 사람마다 타이핑 속도가 다르다. 같은 초에 발화가 몰리면 줄이 계단처럼 붙어
-  // 생성기 티가 난다.
-  sleep(Math.random() * 0.5);
+  // 지수분포 대기. 균등분포(0~0.5초)로는 도착 간격이 여전히 고르게 남아
+  // 화면에서 주기성이 보인다. 지수분포는 간격이 제각각이라 사람이 치는 것처럼
+  // 보인다 — 다만 꼬리가 길어 구간 경계를 넘길 수 있으므로 평균의 3배에서 자른다.
+  const wait = -Math.log(1 - Math.random()) * JITTER_MEAN_SECONDS;
+  sleep(Math.min(wait, JITTER_MEAN_SECONDS * 3));
 
   const ws = new WebSocket(
     `${WS_URL}/ws?broadcast_id=${encodeURIComponent(BROADCAST_ID)}`,
