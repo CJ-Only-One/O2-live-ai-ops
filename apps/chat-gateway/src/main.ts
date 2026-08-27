@@ -22,6 +22,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { config } from './config.js';
 import { createChatIngressHandler, type ChatIngressConnection } from './chat-ingress.js';
 import { emitChatSend, hashUserKey } from './events.js';
+import { nicknameFor } from './nickname.js';
 import { emitChatSignal } from './chat-signal.js';
 import { activeConnections, businessEvent, chatPropagation, fanoutItems } from './telemetry.js';
 
@@ -153,7 +154,7 @@ const handleChat = createChatIngressHandler({
   publishFanout: (conn, msg) =>
     pub.publish(
       channel(conn.broadcastId),
-      JSON.stringify({ user: conn.userKey, nick: conn.userKey.slice(0, 8), msg, ts: Date.now() }),
+      JSON.stringify({ user: conn.userKey, nick: nicknameFor(conn.userKey), msg, ts: Date.now() }),
     ),
 });
 
