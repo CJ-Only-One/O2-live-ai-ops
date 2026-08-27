@@ -103,6 +103,16 @@ resource "datadog_dashboard" "flow_s1" {
         **효과는 조치 적용 시각 이후만 센다.** 첫 파동은 이미 지나가 있다.
 
         실험 전에는 대부분 비어 있는 것이 정상이다. 부하가 돌면 위에서부터 채워진다.
+
+        **화면이 비면 시간 창부터 본다.** 위젯 기본 창은 **1일**이다. 실험 한 번은
+        1~1.5시간이라 이 창 안에서 한 덩어리로 보이고, 자세히 볼 때는 그 구간을
+        드래그해서 확대한다. **마지막 실행이 하루보다 오래됐으면 오른쪽 위 시간
+        선택기를 넓혀야 한다.** 빈 화면은 "계측이 없다" 가 아니라 "그 창 안에 실행이
+        없었다" 는 뜻이다.
+
+        4시간으로 잡았다가 1일로 넓힌 이유는 실측이다 — 4시간 창에서는 실행이
+        없는 동안 S1 이 12개 중 6개, S3 가 11개 중 6개가 비었다. 1일 창에서는
+        거의 다 채워진다.
       EOT
     }
   }
@@ -120,6 +130,7 @@ resource "datadog_dashboard" "flow_s1" {
           #   40,000  무너지는 지점
           title       = "팬아웃 아이템/s — 채널이 감당하는 총량"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -145,6 +156,7 @@ resource "datadog_dashboard" "flow_s1" {
           # 접속자가 는 것과 발화가 는 것은 조치가 다르다.
           title       = "총량의 두 축 — 접속자 수와 발화율"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -175,6 +187,7 @@ resource "datadog_dashboard" "flow_s1" {
           # 않으면 조치를 어느 방송에 걸어야 할지 알 수 없다.
           title       = "전파 p95 — 방송별 (진입 Monitor 와 같은 축)"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -200,6 +213,7 @@ resource "datadog_dashboard" "flow_s1" {
           # 파드·일부 방송이다. 조치 범위가 갈린다.
           title       = "몸통과 꼬리 — p50 · p95 · p99"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -236,6 +250,7 @@ resource "datadog_dashboard" "flow_s1" {
           # 아니라 S2 다. 진단이 갈리는 자리라 조치 전에 반드시 본다.
           title       = "파드별 전파 p95 — 고른가, 한 파드인가"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -252,6 +267,7 @@ resource "datadog_dashboard" "flow_s1" {
           # 축을 눌러버리지 않는다.
           title       = "채팅 단계별 처리 지연 p95"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -267,6 +283,7 @@ resource "datadog_dashboard" "flow_s1" {
           # 늦으면 원인은 자원이 아니라 총량이고, 그것이 S1 의 전제다.
           title       = "Gateway 파드 CPU"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -282,6 +299,7 @@ resource "datadog_dashboard" "flow_s1" {
           # 전파 p95 가 오르기 전에 여기가 먼저 움직인다.
           title       = "배치 크기와 메시지 크기"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -312,6 +330,7 @@ resource "datadog_dashboard" "flow_s1" {
           # 규칙 4 — env 를 붙이면 이 함수들이 전부 사라진다.
           title       = "승인 요청과 사람의 응답"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -327,6 +346,7 @@ resource "datadog_dashboard" "flow_s1" {
           # 시각이 곧 "조치 적용 시각" 이고, 효과는 그 이후만 센다.
           title       = "채널 제한이 걸린 발화 수 — 조치 적용 시각"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -367,6 +387,7 @@ resource "datadog_dashboard" "flow_s1" {
         timeseries_definition {
           title       = "빨라졌나 — 전파 p95 복귀"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -388,6 +409,7 @@ resource "datadog_dashboard" "flow_s1" {
           # 형태로 바꾼 것뿐이다.
           title       = "안 망가뜨렸나 — 정상 사용자 차단률"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -460,6 +482,16 @@ resource "datadog_dashboard" "flow_s2" {
         늘려서 나은 것" 을 배제할 수 없다 — ⑤ 에서 파드 수와 지연을 같이 본다.
 
         사람 승인이 없는 경로다(L1/L2). ④ 에 승인 위젯이 없는 것이 정상이다.
+
+        **화면이 비면 시간 창부터 본다.** 위젯 기본 창은 **1일**이다. 실험 한 번은
+        1~1.5시간이라 이 창 안에서 한 덩어리로 보이고, 자세히 볼 때는 그 구간을
+        드래그해서 확대한다. **마지막 실행이 하루보다 오래됐으면 오른쪽 위 시간
+        선택기를 넓혀야 한다.** 빈 화면은 "계측이 없다" 가 아니라 "그 창 안에 실행이
+        없었다" 는 뜻이다.
+
+        4시간으로 잡았다가 1일로 넓힌 이유는 실측이다 — 4시간 창에서는 실행이
+        없는 동안 S1 이 12개 중 6개, S3 가 11개 중 6개가 비었다. 1일 창에서는
+        거의 다 채워진다.
       EOT
     }
   }
@@ -475,6 +507,7 @@ resource "datadog_dashboard" "flow_s2" {
           # periods 자체가 늘어서 횟수는 항상 오르기 때문이다.
           title       = "파드별 CPU 스로틀 비율"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -511,6 +544,7 @@ resource "datadog_dashboard" "flow_s2" {
           # 0 series 다. 와일드카드로 api 와 api-canary 를 같이 잡는다.
           title       = "api 계열 파드 수 — canary 가 붙는 시점"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -533,6 +567,7 @@ resource "datadog_dashboard" "flow_s2" {
           # ms 임계와 맞추려면 1000 을 곱해야 한다.
           title       = "API 응답 지연 — p50 · p95 · p99 (ms)"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -572,6 +607,7 @@ resource "datadog_dashboard" "flow_s2" {
           # 같이 뛰었으면 그건 부하 증가이지 쏠림이 아니다.
           title       = "요청량 — 부하가 는 것인가 아닌가"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -595,6 +631,7 @@ resource "datadog_dashboard" "flow_s2" {
           # 증설이 맞다. 1차 조치가 미달한 이유가 여기서 읽힌다.
           title       = "파드별 처리 지연 p95 — 한 파드만 떨어져 나오는가"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -606,14 +643,23 @@ resource "datadog_dashboard" "flow_s2" {
 
       widget {
         timeseries_definition {
-          # 집계 경로로 본 같은 사실. 위 위젯(Datadog 직접 계측)과 어긋나면
-          # 둘 중 하나가 틀린 것이므로 판정을 미룬다.
-          title       = "파드별 지연 p95 — 집계 경로 대조"
+          # **위 위젯이 안 움직여도 여기는 움직일 수 있다.** 느린 파드의 몫이
+          # 전체의 5% 미만이면 p95 는 그대로고 p99 만 뜬다. 1차 증설이 왜
+          # 미달했는지가 이 차이에서 읽힌다 —
+          # `o2warm/metrics.py` 의 `DATADOG_SCALARS` 주석이 같은 이유로 p99 를
+          # 발행 대상에 넣었다.
+          #
+          # 처음엔 여기에 `o2.warm.latency_p95 by {pod_name}` 을 뒀다가 바꿨다.
+          # 그 지표는 native 계측 이관(`0bb9f18`)으로 Datadog 발행이 끊겼다 —
+          # 2026-08-25 00:00 이후 값이 없다. 계약(warm snapshot)에는 남아 있고
+          # 에이전트는 `o2-warm-api` 로 읽지만, **대시보드에서는 죽은 쿼리다.**
+          title       = "파드별 처리 지연 p99 — 꼬리 끝만 움직이는가"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
-            q            = "avg:o2.warm.latency_p95{${local.flow_env}} by {pod_name}"
+            q            = "p99:o2.app.operation.duration{${local.flow_api}} by {pod_name}"
             display_type = "line"
           }
         }
@@ -626,6 +672,7 @@ resource "datadog_dashboard" "flow_s2" {
           # "Unready" 가 아니라 "죽었다 살아난다" — 그때마다 지연이 요동친다.
           title       = "파드 재시작 — 지연이 요동치면 여기부터 본다"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -641,6 +688,7 @@ resource "datadog_dashboard" "flow_s2" {
           # 늘어졌으면 원인은 애플리케이션 파드 쪽으로 좁혀진다.
           title       = "의존 계층 지연 p95 — DB · 캐시 (ms)"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -670,6 +718,7 @@ resource "datadog_dashboard" "flow_s2" {
           # 1차 증설, 2차 격리.
           title       = "조치 실행기 호출"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -685,6 +734,7 @@ resource "datadog_dashboard" "flow_s2" {
           # 실제로 걸리는 데 걸린 시간이고, 검증 창을 그 뒤에 잡아야 한다.
           title       = "파드 수 — 목표(desired)와 준비 완료(ready)"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -729,6 +779,7 @@ resource "datadog_dashboard" "flow_s2" {
         timeseries_definition {
           title       = "지연 복귀 — canary 붙이기 전 값으로 (ms)"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -754,6 +805,7 @@ resource "datadog_dashboard" "flow_s2" {
         timeseries_definition {
           title       = "증설분이 원복됐는가 — 파드 수"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -804,6 +856,21 @@ resource "datadog_dashboard" "flow_s3" {
 
         인시던트 단위에서 `broadcast_id` 를 뺀다 — 외부 의존이라 모든 방송에 동시에
         영향하고, 방송별로 쪼개면 같은 사건이 방송 수만큼 늘어난다.
+
+        **화면이 비면 시간 창부터 본다.** 위젯 기본 창은 **1일**이다. 실험 한 번은
+        1~1.5시간이라 이 창 안에서 한 덩어리로 보이고, 자세히 볼 때는 그 구간을
+        드래그해서 확대한다. **마지막 실행이 하루보다 오래됐으면 오른쪽 위 시간
+        선택기를 넓혀야 한다.** 빈 화면은 "계측이 없다" 가 아니라 "그 창 안에 실행이
+        없었다" 는 뜻이다.
+
+        4시간으로 잡았다가 1일로 넓힌 이유는 실측이다 — 4시간 창에서는 실행이
+        없는 동안 S1 이 12개 중 6개, S3 가 11개 중 6개가 비었다. 1일 창에서는
+        거의 다 채워진다.
+
+        **S3 는 특히 이 함정에 잘 걸린다.** `payment.process` 는 S3 부하가 돌 때만
+        발행된다 — 14일 중 실제로 나온 날이 **08-26 하루뿐**이다(00:20~01:20,
+        08:10~09:30 UTC). 다른 시나리오는 평상시 트래픽으로도 선이 그려지지만
+        이 화면의 ①·⑤ 는 그렇지 않다.
       EOT
     }
   }
@@ -820,6 +887,7 @@ resource "datadog_dashboard" "flow_s3" {
           # 단위는 ms — DogStatsD 로 ms 를 그대로 보내므로 환산하지 않는다.
           title       = "결제 처리 지연 p95 — PG 왕복 (ms)"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -845,6 +913,7 @@ resource "datadog_dashboard" "flow_s3" {
           # 이미 주문에 실패하고 있다.
           title       = "결제 실패 사유 — pg_timeout 이 서는가"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -870,6 +939,7 @@ resource "datadog_dashboard" "flow_s3" {
           # SQS 와 Lambda 에 env 를 붙이면 둘 다 통째로 사라진다.
           title       = "채팅 진입 경로 — 신호 적체와 처리"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -890,6 +960,7 @@ resource "datadog_dashboard" "flow_s3" {
           # 아니다.
           title       = "Datadog 보강 경로 — 같은 사건을 언제 아는가"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -921,6 +992,7 @@ resource "datadog_dashboard" "flow_s3" {
           # 외부 의존이다.
           title       = "이벤트별 실패율 — payment 만 오르는가"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -937,6 +1009,7 @@ resource "datadog_dashboard" "flow_s3" {
           # 원시 이벤트의 사유 분포는 에이전트가 Athena 로 판다.
           title       = "실패 사유 코드 — 한 곳으로 몰리는가"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -952,6 +1025,7 @@ resource "datadog_dashboard" "flow_s3" {
           # 회복 판정에서도 같이 본다.
           title       = "주문 큐 적체와 대기 시간"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -975,14 +1049,23 @@ resource "datadog_dashboard" "flow_s3" {
 
       widget {
         timeseries_definition {
-          # 폴백 성공은 '성공' 으로 기록되어 실패율에 안 잡힌다. 이 값만 오르는
-          # 구간은 겉으로 멀쩡한데 실제로는 버티고 있는 상태다.
-          title       = "폴백 사용률 — 실패율에 안 잡히는 저하"
+          # **실패율만 보면 방향을 거꾸로 읽는다.** 사용자가 포기해서 시도 자체가
+          # 줄면 실패율은 저절로 내려간다. 분모를 같이 놓아야 "덜 실패한 것" 과
+          # "덜 시도한 것" 이 갈린다.
+          #
+          # 원래 여기엔 `o2.warm.fallback_rate` 를 두려 했다 — 폴백 성공은
+          # '성공' 으로 기록되어 실패율에 안 잡히므로 그 구간을 보는 값이다.
+          # 그런데 native 계측 이관(`0bb9f18`)으로 Datadog 발행이 끊겼다
+          # (2026-08-25 00:00 이후 없음). **Datadog 에 native 대체가 없다** —
+          # 이 값은 warm snapshot 에만 남아 있고 에이전트가 `o2-warm-api` 로
+          # 읽는다. 화면에서 못 보는 것을 인정하고 분모 위젯으로 대신한다.
+          title       = "이벤트별 시도 수 — 실패율의 분모"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
-            q            = "avg:o2.warm.fallback_rate{${local.flow_env}} by {service}"
+            q            = "sum:o2.app.business_event{${local.flow_env}} by {event}.as_count()"
             display_type = "line"
           }
         }
@@ -1017,6 +1100,7 @@ resource "datadog_dashboard" "flow_s3" {
           # 둔다. 셋의 조합으로 어느 단계에서 멈췄는지가 읽힌다.
           title       = "Runbook 조회 · 실행 · 승인 요청"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -1069,6 +1153,7 @@ resource "datadog_dashboard" "flow_s3" {
           # 이 시나리오의 성공 서명이다.
           title       = "결제 실패율 복귀"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
@@ -1105,6 +1190,7 @@ resource "datadog_dashboard" "flow_s3" {
           # 밀려 있는 것이다.
           title       = "주문 큐 대기 시간 복귀"
           title_size  = "16"
+          live_span   = "1d"
           show_legend = true
 
           request {
