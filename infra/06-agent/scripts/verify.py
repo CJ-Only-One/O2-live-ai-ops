@@ -7,6 +7,7 @@
 
     python3 scripts/verify.py            # 미검증 건을 순서대로 처리
     python3 scripts/verify.py --list     # 목록만 보고 끝
+    python3 scripts/verify.py 결제       # 요약에 '결제' 든 건만 (여러 개 = OR)
 
 왜 사람이 하나.
 
@@ -57,7 +58,15 @@ def _ask(prompt, options, allow_skip=True):
         print("    번호로 골라라.")
 
 
+def _search_terms(args):
+    unknown_flags = {a for a in args if a.startswith("-")} - {"--list"}
+    if unknown_flags:
+        raise SystemExit(f"지원하지 않는 옵션: {', '.join(sorted(unknown_flags))}")
+    return [a.lower() for a in args if not a.startswith("-")]
+
+
 def main():
+    terms = _search_terms(sys.argv[1:])
     s3, s3vectors = H.clients()
     bucket = H.tf_output("history_bucket")
     labels = [(x, x) for x in H.labels()]
@@ -68,6 +77,21 @@ def main():
         if not (v.get("metadata") or {}).get("verified")
     ]
     pending.sort(key=lambda v: (v.get("metadata") or {}).get("occurred_at", ""))
+
+    # 플래그가 아닌 인자는 검색어다. 요약·키에 그 말이 든 건만 남긴다 —
+    # 미검증이 수십 건 쌓이면 원하는 건까지 s 를 수십 번 누르게 된다.
+    if terms:
+        pending = [
+            v
+            for v in pending
+            if any(
+                t in ((v.get("metadata") or {}).get("summary", "") + v["key"]).lower()
+                for t in terms
+            )
+        ]
+        if not pending:
+            print(f"'{' '.join(terms)}' 에 걸리는 미검증 건 없음.")
+            return
 
     if not pending:
         print("미검증 인시던트 없음.")
