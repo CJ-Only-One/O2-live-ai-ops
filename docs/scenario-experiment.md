@@ -454,8 +454,8 @@ emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
 
 | | 무엇을 주입하나 | 안 하면 실패하는 것 |
 |---|---|---|
-| **S1** | `broadcast.js` 로 `아이템/s = 시청자 × 발화율` 을 M-010 붕괴점 위로. **연결 축**으로 올린다 — 같은 총량이면 연결이 많을수록 확실히 무너진다(M-010 해석 2) | **발화자를 넓게 퍼뜨린다.** 기존 조건(`발화자 수 = 채팅율 × 6`)은 발화자가 좁아 **1인 도배로 보인다.** 전제는 *전원이 한도 안인데 인원이 많아 총량이 넘는다* 이므로, 발화자를 늘리고 1인당 발화율을 낮춰 **전원이 `CHAT_RATE_PER_MIN` 아래**가 되게 한다.<br>파형은 **첫 파동 + 지속 고원** — 지금은 고정 발화율이라 추가해야 한다 |
-| **S2** | canary Deployment 를 같은 Service 에 붙인다. main 과 **같은 이미지·같은 셀렉터, CPU 상한만** 낮게. 부하는 `read-path.js` 고정 도착률 | **CPU 상한 값 잡기** — 총 부하를 총 포화 아래로 두고, `파드당 RPS × M-009 기울기` 로 필요 CPU 를 구한 뒤 그보다 낮은 구간을 스윕해 **Ready 는 유지되면서 파드별 p95 가 이상치로 뜨는 값**을 고른다.<br>너무 낮으면 파드가 Service 에서 빠져 저절로 회복된다 — **canary 에만** `readinessProbe` 의 `timeoutSeconds`·`failureThreshold` 를 올려 창을 넓힌다 |
+| **S1** | `broadcast.js` 의 `PROFILE=s1` 로 `아이템/s = 시청자 × 발화율` 을 M-010 붕괴점 위로. **연결 축**으로 올린다 — 같은 총량이면 연결이 많을수록 확실히 무너진다(M-010 해석 2) | **발화자를 넓게 퍼뜨린다.** 전제는 *전원이 한도 안인데 인원이 많아 총량이 넘는다* 이므로 전원이 `CHAT_RATE_PER_MIN` 아래여야 한다 — 스크립트가 `SENDERS` 를 필수로 받고 1인당 한도를 넘으면 시작 전에 실패한다.<br>파형은 **첫 파동 + 지속 고원** — `SPIKE_RPS`·`SPIKE_S`·`PLATEAU_RPS` 로 두 구간을 만든다 |
+| **S2** | canary Deployment 를 같은 Service 에 붙인다. main 과 **같은 이미지·같은 셀렉터, CPU 상한만** 낮게. 부하는 `read-path.js` 고정 도착률 | **CPU 상한은 `125m` 으로 정해졌다**(2026-08-26 스윕, 200 RPS·60초). `100m` 은 liveness 를 5초로 넓혀도 재시작이 나고, `150m` 은 장애가 약해진다. **`125m` 의 재시작 0 은 60초 부하에서만 성립한다** — 15분 연속에서는 재시작 3회다. 시연처럼 길게 끌면 `150m` 이나 `failureThreshold` 확대를 다시 재야 한다.<br>판정에는 p95 절대값을 쓰지 않는다 — 실행마다 흔들린다. 쓰는 것은 재시작 0 · 정상 파드 중앙값 16ms 대 · canary 가 정상 파드의 8.1배다 |
 | **S3** | **목업 PG-A 스텁**에 `cfg:pg:delay_ms`·`cfg:pg:fail_rate`를 SET하고 k6 주문 부하를 건다. `payment.process` 이벤트가 `pg_provider=PG-A`·`failure_stage=PG_CALL`·`failure_code=PG_TIMEOUT`·`pg_latency_ms`를 싣는다. 지식화 후 환경을 초기화하고 같은 값을 다시 주입한다 | **1차와 2차의 장애 조건을 같게 유지한다.** PG 지연을 중간에 풀면 자연 회복이 Failover 효과로 기록된다.<br>**`api` 주문 접수 경로에 넣는다.** `order-worker`에 넣으면 SQS 백로그 때문에 `queue_backlog`로 오진한다.<br>PG-B 전환 뒤에도 PG-A 주입값은 유지하고, Provider별 성공 이벤트로 실제 우회를 확인한다 |
 
 **파드별 지연 지표는 이미 있다.** `p95:o2.apm.request.duration{...} by {pod_name}` 을
@@ -586,10 +586,11 @@ canary는 **클러스터에 배포된 현재 main Deployment**를 원본으로 �
 실측 입력이 없으면 렌더링조차 막는다.
 
 ```bash
-CANARY_CPU_LIMIT='<측정값>' \
-CANARY_READINESS_TIMEOUT_SECONDS='<측정값>' \
-CANARY_READINESS_FAILURE_THRESHOLD='<측정값>' \
-CANARY_LIVENESS_TIMEOUT_SECONDS='<측정값>' \
+# 2026-08-26 스윕에서 확정한 값이다(measurements.md "S2 canary CPU 상한 스윕").
+CANARY_CPU_LIMIT='125m' \
+CANARY_READINESS_TIMEOUT_SECONDS='5' \
+CANARY_READINESS_FAILURE_THRESHOLD='6' \
+CANARY_LIVENESS_TIMEOUT_SECONDS='5' \
 loadtest/s2-canary.sh render > /tmp/o2-s2-api-canary.yaml
 
 kubectl diff -f /tmp/o2-s2-api-canary.yaml
