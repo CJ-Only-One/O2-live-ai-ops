@@ -94,6 +94,113 @@ US1 기본값으로 보내면 403이 나고, `datadog.py` 가 그것을 삼켜 �
 `02-eks`/`04-platform` 의 실제 값과 맞춰 뒀다(`o2-eks` / `o2-dev`). 값이
 갈리면 이 대시보드도 "비즈니스 관측" 과 같은 증상 — 화면이 조용히 빈다.
 
+## 시나리오별 진행 화면 (`dashboard_scenario_flow.tf`)
+
+시나리오 하나씩 대시보드 하나. 위젯이 위에서 아래로 **시간 순서**다 —
+① 발생 → ② 감지 → ③ 진단 → ④ 조치 → ⑤ 검증. 실행 중에 위에서부터 채워진다.
+
+`dashboard_scenarios.tf` 와 겹치지 않는다. 그쪽은 셋을 한 화면에 모은 **실험
+진행자용 점검표**이고, 이쪽은 **하나가 어떻게 풀려 가는지**를 따라가는 화면이다.
+
+⑤ 검증 그룹의 조건이 이 파일의 요점이고 `docs/scenario-experiment.md` 1.2 에서
+그대로 가져왔다. **셋 다 단일 조건이 아니다.**
+
+| | 성공 조건 | 이것을 안 보면 |
+|---|---|---|
+| S1 | 전파 p95 복귀 **AND** 정상 사용자 차단률 상한 이내 | "정상 사용자 절반을 차단해서 빨라진 것" 이 성공이 된다 |
+| S2 | 격리 후 p95 복귀, **증설분 원복 뒤에도** 유지 | 격리가 들은 것인지 대수로 덮은 것인지 구분 안 된다 |
+| S3 | 1차는 조치 없이 `ESCALATED`, 2차에서 전환 효과 | 장애를 걷어내고 좋아진 자연 회복을 우회 효과로 기록한다 |
+
+### 쿼리 규칙 — 조용히 비는 사고를 막는 네 가지
+
+전부 2026-08-27 에 `/api/v1/query` 로 실측해서 정했다. 어기면 **오류가 아니라
+빈 화면**이 나오고, 빈 화면은 "정상" 과 구분되지 않는다.
+
+**1. 템플릿 변수(`$env` 등)를 쓰지 않는다.** 이 파일의 범위는 Terraform 이 apply
+시점에 값으로 박는다. 화면을 열 때 치환되는 것이 없으므로 **확인한 쿼리가 곧
+배포된 쿼리다.**
+
+**2. `key:value` 와 `key IN (...)` 를 한 중괄호에 같이 쓰지 않는다.** 섞으면
+0 series 다.
+
+```
+{operation IN (chat.fanout,chat.message)}            -> 2 series
+{env:dev,operation IN (chat.fanout,chat.message)}    -> 0 series   ★
+{kube_deployment IN (api,api-canary)}                -> 2 series
+{kube_namespace:o2-dev,kube_deployment IN (...)}     -> 0 series   ★
+```
+
+여러 값을 고를 때는 **와일드카드**(`operation:chat*`, `kube_deployment:api*`)를
+쓰거나 필터 없이 `by {...}` 로 펼친다. `IN (...)` 은 단독일 때만 쓴다.
+
+**3. `aws.sqs.*` · `aws.kinesis.*` · `aws.firehose.*` 에 env 를 붙이지 않는다.**
+이 셋은 `env` 태그가 아예 없어서 붙이면 전부 0 series 다.
+
+**4. `aws.lambda.*` 에도 env 를 붙이지 않는다.** `aws.lambda.invocations{*} by {env}`
+가 `env:dev` 와 `env:N/A` 로 갈리는데, **`env:dev` 에 들어오는 함수는 `o2-agg`
+하나뿐이고 나머지 17개가 전부 `env:N/A`** 다. `{env:dev}` 로 묶으면 에이전트 대응
+경로(`o2-dify-ingress`·`o2-warm-api`·`o2-dev-dify-scale-executor` …)가 통째로
+사라진다. 함수는 `functionname` 으로만 고른다.
+
+### 기본 시간 창은 1일이다 (`live_span = "1d"`)
+
+**Datadog 대시보드의 기본 창은 1시간이다.** 시나리오는 하루에 몇 번 돌까 말까
+하므로, 그 상태로 열면 화면이 통째로 비어 있고 그것이 "고장" 으로 보인다.
+실제로 그 신고가 들어왔다.
+
+그래서 이 세 화면은 위젯마다 `live_span = "1d"` 를 박아 둔다. 실측으로 정했다.
+
+| 창 | 실행이 없는 동안 비는 위젯 |
+|---|---|
+| 4시간 | S1 12개 중 **6개**, S3 11개 중 **6개** |
+| **1일** | **0개** |
+
+실험 한 번은 1~1.5시간이라 1일 창에서 한 덩어리로 보이고, 자세히 볼 때는 그
+구간을 드래그해서 확대한다. 마지막 실행이 하루보다 오래됐으면 시간 선택기를
+넓혀야 한다 — **빈 화면은 "계측이 없다" 가 아니라 "그 창 안에 실행이 없었다"** 다.
+
+`live_span` 은 API 응답에서 `definition.time.live_span` 에 들어간다.
+`definition.live_span` 을 읽으면 항상 `None` 이라 "안 걸렸다" 고 오독하게 된다.
+
+### native 이관으로 죽은 `o2.warm.*` 지표를 쓰지 않는다
+
+`0bb9f18` "complete native metric cutover" 이후 **`DATADOG_SCALARS` 에서 빠진
+지표는 Datadog 에 안 온다.** 계약(warm snapshot)에는 남아 있어서 에이전트는
+`o2-warm-api` 로 계속 읽지만, **대시보드에서는 죽은 쿼리다.**
+
+2026-08-27 확인 — 아래는 **2026-08-25 00:00 이후 값이 없다.**
+
+```
+cache_hit_rate  channel_limited_rate  fallback_rate
+latency_p50  latency_p95  latency_p99  overall_failure_rate
+event_count(08-25 02:00)  rps_ratio(08-23)  cancel_rate(08-20)
+```
+
+살아 있는 것은 `confidence` · `distinct_users` · `event_rate` ·
+`ip_diversity` · `pipeline_freshness_seconds` · `rps` · `top1pct_share` ·
+`top5_share` 다.
+
+**일곱 개가 같은 시각에 멈춘 것이 단서였다.** 실험을 안 해서 비는 것이라면
+시각이 흩어진다. 동시에 끊기면 코드나 발행 목록이 바뀐 것이다.
+
+이 때문에 초안의 위젯 두 개를 갈아 끼웠다.
+
+| 죽은 쿼리 | 대체 | 비고 |
+|---|---|---|
+| `o2.warm.latency_p95 by {pod_name}` | `p99:o2.app.operation.duration by {pod_name}` | native 대체 있음 |
+| `o2.warm.fallback_rate` | `o2.app.business_event by {event}` (실패율의 분모) | **native 대체 없음** — 폴백 관점은 warm snapshot 에만 남는다 |
+
+### 실험 전에 비어 있는 것은 정상이다
+
+이 세 화면은 부하와 장애 주입이 돌 때 채워진다. 다만 **"실험을 안 해서 빈 것" 과
+"계측이 없어서 영영 안 채워지는 것" 은 다른 사실**이므로, 7일 창으로 전부 한 번씩
+데이터가 들어온 것을 확인하고 넣었다(35개 위젯 전부). 확인 못 한 지표는 위젯을
+만들지 않았다.
+
+24시간 창으로만 봤다면 `o2.app.operation.duration{operation:payment.process}` 와
+`o2.warm.latency_p95 by {pod_name}` 을 "없는 지표" 로 잘못 판정했을 것이다. 둘 다
+실험 중에만 나온다.
+
 ## 대시보드 구성 — 위에서 아래가 진단 순서 (`dashboard.tf`)
 
 | 그룹 | 무엇 | 알림 대상 |
