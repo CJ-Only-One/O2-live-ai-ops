@@ -20,6 +20,10 @@ import { setTimeout } from 'k6/timers';
 import exec from 'k6/execution';
 import { Counter } from 'k6/metrics';
 
+// 문구는 연출용 스크립트(`demo-staged-chat.js`)와 같은 것을 쓴다 — 측정 실행과
+// 녹화 실행에서 채팅이 다르면 같은 방송으로 안 읽힌다.
+import { generalChats, saleChats, complaints } from './chat-messages.js';
+
 const CHAT_ONLY = __ENV.CHAT_ONLY === 'true';
 
 for (const name of [
@@ -96,65 +100,7 @@ if (!Number.isInteger(CHAT_MAX_VUS) || CHAT_MAX_VUS < CHAT_PRE_ALLOCATED_VUS) {
   throw new Error('CHAT_MAX_VUS는 CHAT_PRE_ALLOCATED_VUS 이상의 정수여야 합니다');
 }
 
-const complaints = [
-  '저만 결제 안 돼요? ㅠ',
-  '결제 버튼 왜 반응 없죠',
-  '결제 계속 실패해요 ㅠㅠ',
-  '결제 화면 멈춘 듯요',
-  '카드 결제가 자꾸 실패해요',
-  '주문 버튼 눌러도 안 돼요',
-  '결제 로딩만 계속 도는데요',
-  '결제창이 먹통이에요 ㅠ',
-  '다시 해도 결제 실패함',
-  '결제 단계에서 계속 멈춰요',
-  '주문 결제가 안 돼요',
-  '결제 화면 반응 없는 분 또 있나요?',
-];
 const INCIDENT_SEED_USERS = 4;
-
-const generalChats = [
-  '색상 몇 개예요?',
-  '실물이랑 색감 비슷해요?',
-  '사이즈표 어디 있어요?',
-  '평소 100인데 뭐 입으면 돼요?',
-  '이거 무슨 소재예요?',
-  '세탁기 돌려도 되나요?',
-  '건조기 가능해요?',
-  '원산지 어디예요?',
-  '구성품 뭐뭐 와요?',
-  '많이 무거운가요?',
-  '재입고 또 되나요?',
-  '다른 색도 보여주세요!',
-  '착샷 한 번만 더요',
-  '뒤쪽도 보여주세요~',
-  '선물 포장 돼요?',
-  '배송 언제부터예요?',
-  '제주도 배송비 붙나요?',
-  '교환은 며칠까지 돼요?',
-  '반품비 얼마예요?',
-  '쿠폰이랑 적립금 같이 돼요?',
-  '방송 끝나도 이 가격이에요?',
-  '오늘 혜택 한 번만 정리해주세요',
-  '오 가격 괜찮은데요',
-  '설명 잘해주시네요 ㅋㅋ',
-  '친구한테 링크 보냈어요',
-  '일단 장바구니 담음 ㅎㅎ',
-];
-
-const saleChats = [
-  ...generalChats,
-  '지금 타임세일 가격 맞죠?',
-  '할인 몇 시까지예요?',
-  '수량 얼마 안 남았어요?',
-  '지금 사면 사은품도 와요?',
-  '쿠폰까지 하면 얼마예요?',
-  '두 개 사면 더 싸져요?',
-  '방금 샀어요 ㅋㅋ',
-  '품절 전에 얼른 사야겠다',
-  '가족 것도 같이 갑니다',
-  '타임세일 기다렸어요!!',
-  '이 가격이면 하나 더?',
-];
 
 const complaintsSent = new Counter('s3_chat_complaints_sent');
 const reactiveComplaintsSent = new Counter('s3_reactive_complaints_sent');
