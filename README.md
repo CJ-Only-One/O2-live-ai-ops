@@ -10,7 +10,8 @@
   app.yml        빌드 + 배포
   tf.yml         fmt · validate (PR 전용) — plan도 apply도 하지 않는다
   scan.yml       gitleaks
-  docs.yml       결정 기록 인덱스 검사
+  docs.yml       결정 기록 인덱스 + 계약 스키마 검사
+  warm.yml       warm path 집계기 시험 + SDK 계약 드리프트
 infra/
   00-cicd/       GitHub OIDC, IAM 역할, ECR
   01-network/    VPC, 서브넷, 라우팅, NAT
@@ -23,17 +24,26 @@ infra/
   06-agent/      Dify 호스트 — EKS 밖의 EC2 (D-028)
   06-datastream/ Kinesis, Firehose, S3 레이크, Glue, DynamoDB, Lambda
                  에이전트가 쓰는 내부 데이터 시스템 (backend key는 `data/` · D-029)
-  07-media/      MediaMTX, NLB, CloudFront — 영상 (미작성 · D-033)
-  08-chat-signal/ Chat Signal Lambda·실행 IAM — 트리거 비활성 골격 (D-048)
+  07-media/      영상 배포용 CloudFront — `/hls` 만 통과 (D-033, D-039)
+                 나머지 영상 구성요소는 매니페스트가 만든다
+  08-chat-signal/ Chat Signal Lambda·Chat Candidate Source Adapter (D-048)
+  09-incident/   Incident Signal/Invocation Queue, Datadog Source Adapter,
+                 Incident Correlator·State — 모니터링 팀 소유 (D-078)
 apps/<service>/  Dockerfile + src
 loadtest/        부하 테스트 시나리오
 AGENTS.md        작업 시작 전에 읽을 것 — 규약과 함정, 문서 지도 (D-022)
 docs/
   architecture.md  전체 설계 (부하 가정, 캐싱, 스케일링, 리스크)
   decisions.md   결정 기록
-  contracts.md   인터페이스 계약 (REST, WebSocket, 캐시 키, 이벤트)
+  contracts.md   인터페이스 계약 (REST, WebSocket, 캐시 키, 이벤트, 큐시트)
+  contracts/     기계 판독 스키마와 예시 (agent-*, cue-sheet-v1)
   chat-incident-candidate.md  채팅 기반 Incident Candidate canonical spec
+  agent-entrypoint.md  Candidate 이후 Agent 공통 진입점
+  agent.md       Dify 워크플로 대조본
+  runbook-catalog.md   Runbook 실행 카탈로그 형식과 위험도
+  scenario-experiment.md / scenario-readiness.md  시나리오 실험과 준비 상태
   schema.md      MySQL 테이블·Valkey 키·마이그레이션
+  troubleshooting.md / measurements.md  증상 기록과 실측
 ```
 
 **쿠버네티스 매니페스트는 이 저장소에 없다.**
@@ -51,8 +61,12 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 상대 리소스를 지운다** (D-015, D-029).
 
 `08-chat-signal`은 `03-data`의 Chat Signal SQS와 Candidate DynamoDB를 참조한다.
-따라서 `03-data` 이후에 적용하며, Phase 1B에서는 event source mapping을 코드에
-하드코딩해 비활성 상태로 둔다(D-048).
+따라서 `03-data` 이후에 적용한다(D-048). Candidate 생성과 Source Adapter는 실행
+게이트가 켜져 있고, 출력은 `09-incident`의 Signal Queue로만 간다.
+
+`09-incident`는 Incident 생성 runtime을 소유하고 `06-agent`가 그 소비자다(D-078).
+신규 환경에서는 `06-agent`·`08-chat-signal`보다 먼저 적용한다. 전체 순서는
+[`infra/09-incident/README.md`](infra/09-incident/README.md)가 원본이다.
 
 배경과 근거는 [`docs/decisions.md`](docs/decisions.md)에 있다.
 
@@ -63,9 +77,10 @@ Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 �
 | `app.yml` | `apps/**` 변경 | PR은 `verify`(lint·test·build)까지. main 푸시에서 이미지 빌드 → Trivy 스캔 → ECR → 매니페스트 저장소에 태그 갱신 |
 | `tf.yml` | `infra/**` PR | `fmt`·`init -backend=false`·`validate` 만. **plan도 apply도 하지 않는다** — AWS 접근이 필요 없다 (D-023) |
 | `scan.yml` | 모든 PR·푸시, 주 1회 | 시크릿 유출 검사 |
-| `docs.yml` | `docs/**`·`AGENTS.md` 변경 | 결정 기록 인덱스가 낡았는지 검사 |
+| `docs.yml` | `docs/**`·`AGENTS.md`·검증 스크립트 변경 | 결정 기록 인덱스, Agent 계약 스키마, 큐시트, correlation window 근거 검사 |
+| `warm.yml` | `infra/06-datastream/warm/**` 변경, 주 1회 | 집계기 시험. 계약 드리프트는 PR 게이트로 걸지 않는다 |
 
-넷으로 나눈 기준은 **실패했을 때 되돌리는 비용**이다.
+나눈 기준은 **실패했을 때 되돌리는 비용**이다.
 앱 배포는 다시 하면 되지만 인프라는 그렇지 않고, 유출된 시크릿은 되돌릴 수 없다.
 그래서 인프라만 CI가 적용하지 않는다 — 사람이 로컬에서 plan을 읽고 apply한다.
 
@@ -165,9 +180,14 @@ Secrets Manager 에 있고 ESO 가 동기화한다 (D-027).
 ConfigMap/Secret 키  ==  apps/api 의 Settings 필드  ==  .env.example 항목
 ```
 
-셋이 같아야 한다. `REDIS_URL` 같은 새 이름을 만들면 **주입된 값이 조용히 무시되고
+**앱이 읽는 키는** 셋이 같아야 한다. `REDIS_URL` 같은 새 이름을 만들면 **주입된 값이 조용히 무시되고
 기본값(localhost)이 쓰인다.** 파드는 정상적으로 뜨고 DB 호출에서만 실패하므로
 알아채기 늦다. 현재 키 목록은 `apps/api/.env.example` 에 있다.
+
+셋이 완전히 같은 집합은 아니다. `o2-data` ConfigMap 에는 chat-gateway 만 읽는
+키(`CHAT_SIGNAL_MODE`, `EMIT_CHAT_EVENTS` 등)가 함께 들어가고, `.env.example`
+에는 `Settings` 가 아니라 이벤트 SDK 가 읽는 `O2_*` 가 있다. 규칙이 적용되는
+것은 **같은 값을 두 곳이 읽는 키**다.
 
 ### 로컬과 클러스터의 차이는 둘뿐
 
@@ -191,9 +211,15 @@ ConfigMap/Secret 키  ==  apps/api 의 Settings 필드  ==  .env.example 항목
 ### 서비스를 새로 붙일 때
 
 1. 매니페스트에 `serviceAccountName: <service>` 와 `envFrom` 두 줄
-2. `infra/04-platform` 의 `app_service_accounts` 에 이름 추가 후 apply
+2. `infra/04-platform` 의 `app_service_accounts` 에 이름 추가 후 apply.
+   **변수만 늘리면 plan 이 막힌다** — 이 목록에는 `api`·`order-worker`·
+   `chat-gateway` 정확히 셋만 허용하는 validation 이 걸려 있다. 역할·정책·
+   매핑(`app_data_access.tf`)과 validation 을 함께 고친다
 3. 새 환경변수가 필요하면 `04-platform/app_data_access.tf` 의 ConfigMap 에
    추가하고, 같은 이름을 앱 설정과 `.env.example` 에도 넣는다
+
+AWS 호출이 필요 없는 서비스는 이 목록에 넣지 않는다. `cue-warmer` 가 그 예로,
+클러스터 API 만 쓰므로 `04-platform/cue_warmer_access.tf` 가 따로 RBAC 을 준다.
 
 ## 서비스 추가하기
 
@@ -212,7 +238,7 @@ ConfigMap/Secret 키  ==  apps/api 의 Settings 필드  ==  .env.example 항목
 - [x] `apps/api` — FastAPI (Python). 초기에는 Spring Boot(Kotlin)였다
 - [x] 매니페스트를 `O2-live-deploy` 로 분리 (D-006)
 - [x] Argo CD Application — `infra/04-platform` 이 소유 (`bootstrap/` 제거 · D-011)
-- [x] `loadtest/spike.js` — 스파이크 시나리오 (k6)
+- [x] `loadtest/` — 시나리오별 부하 스크립트 (k6). S1 `broadcast.js`, S2 `read-path.js`+`s2-canary.sh`, S3 `s3-payment.js`
 - [x] `AWS_APP_ROLE_ARN` / `AWS_TF_ROLE_ARN` 시크릿 등록
 - [x] `infra/00-cicd` — OIDC 프로바이더, IAM Role 2개, ECR (로컬 적용 완료)
 - [x] 파이프라인 전 구간 검증 — 커밋 → ECR → 태그 갱신 → Argo → 파드 응답
@@ -233,7 +259,12 @@ ConfigMap/Secret 키  ==  apps/api 의 Settings 필드  ==  .env.example 항목
 - [x] `app.yml` — Trivy 이미지 스캔, 결과를 Code Scanning으로 (D-014)
 - [x] Trivy를 CRITICAL 차단으로 승격 (D-014)
 - [x] `docs/contracts.md` — REST·WebSocket·캐시 키·이벤트 계약 (D-016)
-- [ ] `contracts.md` 5.5 — 모르는 `event_name` 을 수집단이 어떻게 처리하는지 확인 필요. `chat.send` 발행이 여기 막혀 있다
+- [x] `infra/07-media` — 영상 배포용 CloudFront (D-039). 적용 완료
+- [x] `infra/08-chat-signal` — Chat Candidate 생성과 Source Adapter (D-047, D-048)
+- [x] `infra/09-incident` — Incident Correlator·State, Agent Invocation Queue (D-055, D-078)
+- [x] `apps/cue-warmer` — 큐시트 기반 캐시 사전 워밍 (D-041, D-065)
+- [x] `chat.send` 발행 — `EMIT_CHAT_EVENTS`·`O2_EVENTS_SINK=kinesis` 로 켜졌고 warm 이 집계한다
+- [ ] `contracts.md` 5.5 — 모르는 `event_name` 을 Firehose→S3→Glue 가 어떻게 처리하는지는 아직 미확인
 - [ ] `tf.yml` — `trivy config` 로 Terraform 미스컨피그 검사 (게이트 없이 리포트만)
 - [ ] `scan.yml` — gitleaks 결과도 Code Scanning으로 이전
 - [ ] 주 1회 ECR 최신 이미지 재스캔 — CI 스캔은 빌드 시점만 본다

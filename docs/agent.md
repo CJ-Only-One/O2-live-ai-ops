@@ -1,9 +1,15 @@
 # Dify 워크플로 — O2 Agentic AIOps (진단·조치)
 
-> 이 문서는 다이어그램이 아니라 **Postgres 안 실제 워크플로 그래프(65 노드, 앱
-> `O2 Agentic AIOps — Source-Aligned Mock v4`, 2026-08-24 기준)를 직접 조회해
-> 대조한 결과**다. DSL export 는 아직 없다 — 다음에 워크플로를 고치면 Export DSL 을
-> 먼저 하고, 이 문서는 그 DSL 대조본으로 낮춘다.
+> 이 문서는 다이어그램이 아니라 **실제 워크플로 그래프를 직접 대조한 결과**다.
+> 앱은 `O2 Agentic AIOps — Source-Aligned Mock v4`.
+>
+> **대조 기준은 이제 저장소의 DSL 이다** — [`../infra/06-agent/dify/o2-aiops-workflow.yml`](../infra/06-agent/dify/o2-aiops-workflow.yml)
+> (노드 70개 · 엣지 83개). 처음 이 문서를 쓸 때(2026-08-24)는 DSL export 가 없어
+> Postgres 그래프를 직접 조회했고 그때 센 값이 65 노드였다.
+>
+> **라이브 그래프가 저장소 DSL 보다 앞서 있을 수 있다.** 노드 제목·한도처럼
+> 실행 결과를 가르는 값은 실행 전에 콘솔에서 확인한다 — 실제로 `main_loop.loop_count`
+> 가 라이브에서 1 이었던 적이 있다(`scenario-readiness.md` 2.3).
 
 ## 이 워크플로가 하는 일
 
@@ -74,7 +80,7 @@ Slack Final Notify (HTTP) → END
 | 2 | Incident Normalize | CODE | payload → `incident_context` 로 정규화. 이후 모든 노드가 이 형태를 기준으로 참조 |
 
 > **다이어그램에 있던 "3. Knowledge Retrieval — Incident History" 는 실제
-> 워크플로에 존재하지 않는다.** 65개 노드 전체를 확인했지만 이력 검색 노드가
+> 워크플로에 존재하지 않는다.** 노드 전체를 확인했지만 이력 검색 노드가
 > 없다. **원래는 Dify 안에 이 노드가 있었으나, 이후 검색을 Lambda 쪽으로
 > 옮기는 방향으로 로직이 바뀌었다** — 지금은 Lambda(`../infra/06-agent/lambda/worker.py`)가
 > Dify 호출 **전에** 검색을 끝내고 `past_cases` 하나로 시작 시점에 넘겨줄
@@ -89,7 +95,7 @@ Slack Final Notify (HTTP) → END
 | 6-B/6-C | Hot Path — CPU/Memory | HTTP ×2 | `hot_cpu_snapshot`/`hot_mem_snapshot` — Datadog 직접 조회. 6번과 합쳐 **총 3건이 동시에 조회됨** |
 | 7 | Context Enrichment | CODE | `warm_snapshot.body` + `hot_cpu_snapshot.body`/`hot_mem_snapshot.body`(CPU·Memory 최댓값 계산) + `incident_context` 를 `context_json` 하나로 병합. Warm Path 응답이 비거나 실패해도(dry-run 등) 예외 처리로 안전하게 degrade |
 | 8 | Diagnosis Prompt | Template | Context + `attempt_log`(이전 시도 기록)를 반영해 프롬프트 조립 |
-| 9 | Diagnosis Agent | Dify Agent 노드 (`type: agent`, v2, inline_agent 바인딩) | RCA 후보를 비교하고 근거와 confidence 를 산출. **query_athena tool 연결되어 있음** — snapshot 지표만으로 부족할 때 원시 로그 SQL 조회용. 모델은 Bedrock이 아니라 **GPT** — Bedrock + Dify Agent 노드 + 커스텀 tool 조합에서 `toolSpec.description null` 버그(langgenius/dify 확인된 버그)가 있어 이 노드만 GPT로 운용(제목·`desc` 필드에 명시, 2026-08-24 확인) |
+| 9 | Diagnosis Agent | Dify Agent 노드 (`type: agent`, v2, inline_agent 바인딩) | RCA 후보를 비교하고 근거와 confidence 를 산출. **query_athena tool 연결되어 있음** — snapshot 지표만으로 부족할 때 원시 로그 SQL 조회용. 모델은 Bedrock이 아니라 **GPT**(`gpt-4o-mini`) — Bedrock + Dify Agent 노드 + 커스텀 tool 조합에서 `toolSpec.description null` 버그(langgenius/dify 확인된 버그)가 있어 이 노드만 GPT로 운용(제목·`desc` 필드에 명시, 2026-08-24 확인). **모델을 되돌리면 M-001 실측이 무효가 된다** |
 | 10 | Diagnosis Output Parser | CODE | Agent 응답 → `parsed_diagnosis` 구조화 |
 
 ### 2.3 Runbook 준비
@@ -101,7 +107,7 @@ Slack Final Notify (HTTP) → END
 | 11-B | Runbook Response Shape | CODE | HTTP 응답에서 `actions` / `success_criteria` 추출 |
 | 12 | Excluded Filter | CODE | `available_actions = runbook_actions − excluded_actions` |
 | 13 | Candidate Guard | 분기 | `len(available_actions) > 0` 이면 조치 결정(14번)으로. 0 이면 13-A |
-| 13-A | Event — Candidates Exhausted | CODE | `REDIAGNOSE` 이벤트 발행. 실제 재진단 허가/조기 종료 판정은 `state_reducer`가 한다 — 상세는 2.7절 |
+| 13-A | Event — No Candidate Action | CODE | `REDIAGNOSE` 이벤트 발행. 실제 재진단 허가/조기 종료 판정은 `state_reducer`가 한다 — 상세는 2.7절 |
 
 **HTTP 노드가 3갈래(build → HTTP → shape)로 나뉘는 이유** — Dify HTTP 노드는
 `{{#node.field#}}` 단순 변수 치환만 가능하고, JSON 파싱·중첩 필드 추출·기본값
@@ -113,7 +119,7 @@ Slack Final Notify (HTTP) → END
 
 | # | 노드 | 타입 | 역할 |
 |---|---|---|---|
-| 14 | Remediation Planner | LLM (Bedrock Claude Sonnet 5) | 액션 후보를 비교해 trade-off 를 따져 하나를 선택. 현재는 tool 호출 없이 프롬프트 정보만으로 판단(`tools: null`). 유사 이력은 공통 Worker가 Dify 호출 전에 `past_cases`로 준비한다(D-075); Planner의 별도 tool 연결은 현재 범위가 아니다. |
+| 14 | Remediation Planner | LLM (`gpt-4o-mini`, OpenAI) | 액션 후보를 비교해 trade-off 를 따져 하나를 선택. 현재는 tool 호출 없이 프롬프트 정보만으로 판단(`tools: null`). 유사 이력은 공통 Worker가 Dify 호출 전에 `past_cases`로 준비한다(D-075); Planner의 별도 tool 연결은 현재 범위가 아니다. |
 | 15 | Guardrail Judge | CODE (결정론적 정책) | ACTION 최상위의 `risk_level`로 verdict 산출: **L1/L2 → `AUTO`, L3 → `APPROVAL`**. L1/L2/L3 부여 척도와 KNOB 미연결 상태는 [`runbook-catalog.md`](runbook-catalog.md)를 본다. |
 | 16 | Verdict Router | 분기 | `AUTO` → 바로 실행(19번). `APPROVAL` → Slack 승인 요청(17번) |
 | 17 | Slack Approval Request | HTTP | 승인 대기. 데모 기준 타임아웃 600초 |
@@ -319,8 +325,10 @@ State 갱신은 위 표에 적힌 개별 노드가 아니라 **`state_reducer`(�
 - **Diagnosis Agent(9번) `agent_binding.agent_id` 의 정확한 tool 스펙.**
   query_athena 연결 자체는 `desc` 필드로 확인됐지만, 파라미터 스키마 등
   상세는 별도 Dify `agents` 테이블을 더 조회해야 확정된다
-- **DSL export.** 아직 없다. 다음 워크플로 수정 시 Export DSL 을 먼저 하고
-  이 문서를 DSL 대조본으로 낮춘다
+- ~~**DSL export.**~~ 해소됐다 — `infra/06-agent/dify/` 에 커밋돼 있고 이 문서는
+  그 DSL 대조본이다. 남은 것은 **라이브 그래프와 저장소 DSL 의 드리프트**이며,
+  팀 운영 워크플로 쪽은 아직 export 되지 않았다(T-022,
+  `agent-entrypoint.md` `production_migration_blockers`)
 - **`agent_backend` 컨테이너와의 관계.** 호스트에 Dify 표준 compose에 없는
   `docker-agent_backend-1` 등 커스텀 컨테이너가 떠 있다(2026-08-24 확인).
   어느 노드가 이를 호출하는지 미확인 — `resolve_target`/`execution_route`
@@ -332,5 +340,5 @@ State 갱신은 위 표에 적힌 개별 노드가 아니라 **`state_reducer`(�
 - 한도(`remediation_retry`, `diagnosis_retry`, `loop_count`, Slack 타임아웃)를 바꿀 때 → 4절
 - State 변수 이름이나 갱신 위치를 바꿀 때 → 3절
 - 6절의 미확인 항목을 코드로 확인했을 때 → 해당 항목을 지우고 본문에 확정 반영
-- **DSL 을 처음 export 하는 날** → 상단 안내 문구를 지우고 `../infra/06-agent/dify/README.md` "파일" 표에
-  실제 DSL 파일명을 추가한다
+- **DSL 을 다시 export 하는 날** → 노드 수·모델·한도를 이 문서에 반영하고
+  `../infra/06-agent/dify/README.md` "파일" 표도 함께 고친다

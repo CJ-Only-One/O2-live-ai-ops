@@ -13,7 +13,7 @@ REST·WebSocket 규격은 `contracts.md`, 왜 이렇게 나눴는지는
 |---|---|
 | [1. 저장소 경계](#1-저장소-경계) | 무엇이 어디에 사는가 |
 | [2. ERD](#2-erd) | 테이블 관계 |
-| [3. MySQL 테이블](#3-mysql-테이블) | `broadcasts` · `products` · `orders` |
+| [3. MySQL 테이블](#3-mysql-테이블) | `broadcasts` · `products` · `orders` · `cue_sheets` |
 | [4. Valkey 키](#4-valkey-키) | 재고·멱등·세션 |
 | [5. 설계 결정](#5-설계-결정) | FK 없음, ENUM 없음, DATETIME(3) |
 | [6. 마이그레이션](#6-마이그레이션) | Alembic 운용 |
@@ -28,6 +28,7 @@ REST·WebSocket 규격은 `contracts.md`, 왜 이렇게 나눴는지는
 | **재고** | **Valkey `stock:{sku}`** | 없음. MySQL에 재고 컬럼이 **없다** |
 | 확정 주문 | **MySQL `orders`** | Valkey `order:{id}` (접수 직후 임시) |
 | 멱등 판정 | MySQL `uk_idem` (최종) | Valkey `idem:{key}` (1차, 600s) |
+| 방송 진행 대본(큐시트) | **MySQL `cue_sheets`** | 없음. 워머가 매 tick 조회한다 |
 
 재고가 Valkey에 있는 이유는 MySQL 행 잠금이 SKU 하나당 약 100 TPS 에서
 막히기 때문이다. 특가 오픈은 그 6배로 들어온다 (`architecture.md` 4.5).
@@ -46,9 +47,10 @@ REST·WebSocket 규격은 `contracts.md`, 왜 이렇게 나눴는지는
 
 ```mermaid
 erDiagram
-    broadcasts ||--o{ products : "편성 (FK 없음)"
-    broadcasts ||--o{ orders   : "발생 (FK 없음)"
-    products   ||--o{ orders   : "판매 (FK 없음)"
+    broadcasts ||--o{ products   : "편성 (FK 없음)"
+    broadcasts ||--o{ orders     : "발생 (FK 없음)"
+    broadcasts ||--o| cue_sheets : "대본 (FK 없음)"
+    products   ||--o{ orders     : "판매 (FK 없음)"
 
     broadcasts {
         varchar32  broadcast_id PK "bc_1042"
@@ -65,6 +67,14 @@ erDiagram
         int       sale_price     "특가"
         varchar16 state          "PENDING / ON_SALE / SOLD_OUT"
         datetime3 created_at
+    }
+    cue_sheets {
+        varchar32 broadcast_id PK "방송당 한 행"
+        int       cue_version     "고칠 때마다 올린다"
+        datetime3 scheduled_at    "idx_scheduled_at. body 의 색인이지 원본 아님"
+        datetime3 ends_at
+        json      body            "cue-sheet-v1 전체"
+        datetime3 updated_at
     }
     orders {
         bigint    id       PK "내부용. 밖에 안 나간다"
@@ -180,7 +190,38 @@ HMAC 적용 전 만들어진 개발 주문에는 원본 세션 키나 빈 문자
 
 `uk_idem` 이 왜 최종 방어선인지는 1절.
 
-### 3.4 모델 정의가 두 곳에 있다
+### 3.4 `cue_sheets`
+
+방송 진행 대본. 사전 확장(캐시 워밍)의 입력이다 (D-041, `contracts.md` 2.8).
+
+| 컬럼 | 타입 | NULL | 비고 |
+|---|---|---|---|
+| `broadcast_id` | `VARCHAR(32)` | N | **PK.** 방송당 큐시트 하나 |
+| `cue_version` | `INT` | N | 신선도 판정 근거. 고칠 때마다 올린다 |
+| `scheduled_at` | `DATETIME(3)` | N | `idx_scheduled_at` |
+| `ends_at` | `DATETIME(3)` | Y | |
+| `body` | `JSON` | N | `contracts/cue-sheet-v1.schema.json` 전체 |
+| `updated_at` | `DATETIME(3)` | N | `DEFAULT CURRENT_TIMESTAMP(3)` |
+
+**세그먼트를 별도 테이블로 정규화하지 않는다.** 워머가 실제로 던지는 질의는
+"앞으로 N분 안에 시작하는 세그먼트" 하나뿐이고 세그먼트 스키마가 아직 안 굳었다.
+질의가 둘 이상 생기면 그때 뽑는다.
+
+**`scheduled_at`·`ends_at` 은 `body` 안에도 있다.** 워머가 매 tick JSON 을 파싱하지
+않고 인덱스로 바로 거르기 위한 사본이며, **원본은 항상 `body`** 다. `api` 가 유일한
+쓰기 경로라 두 값이 어긋날 위험이 없다 — 쓰기 경로가 늘면 이 전제부터 깨진다.
+
+**저장 시점에 형식을 검증하지 않는다**(D-065). 스키마 검증은 CI 의
+`scripts/validate-cue-sheet.py` 가 예시 파일에 대해서만 한다. API 라우트나 AI
+해석이 쓰기 경로에 붙으면 런타임 검증을 다시 논의한다.
+
+**인덱스**
+
+| 이름 | 컬럼 | 이유 |
+|---|---|---|
+| `idx_scheduled_at` | `scheduled_at` | 워머의 유일한 질의 |
+
+### 3.5 모델 정의가 두 곳에 있다
 
 `apps/order-worker/worker/models.py` 에도 `orders` 매핑이 있다.
 **그쪽은 원본이 아니다** — INSERT 에 필요한 만큼만 적어둔 사본이고,
@@ -267,6 +308,10 @@ order:od_01J... → {"sku_id":"88213","qty":1,"state":"ACCEPTED"}   TTL 600s
 | `chat:rate:{bcast}:{user}` | Integer | 구현됨. 채팅 제한 60s |
 | `cfg:pg:delay_ms` | Integer | 구현됨. S3 목업 PG 지연, TTL 없음 |
 | `cfg:pg:fail_rate` | Number | 구현됨. S3 목업 PG 실패율, TTL 없음 |
+| `cfg:pg:active_provider` | String | 구현됨. `PG-A` / `PG-B` |
+| `cfg:pg:pg_b_ready` | String | 구현됨. 전환 사전 조건 |
+| `cfg:read_path_degraded:{bcast}` | String | 구현됨. **키 존재 여부가 상태다** |
+| `cfg:channel_limit:{bcast}` | Integer | 구현됨. chat-gateway 채널 총량 노브 |
 | `sku:{id}:detail` | String(JSON) | 예정. 상품 상세 캐시 60s |
 | `sess:{token}` | Hash | 예정. 세션 1800s |
 | `room:{bcast}:pods` | Set | 예정. 파드 목록 60s |
@@ -326,6 +371,7 @@ Alembic. `apps/api/migrations/versions/`.
 |---|---|
 | `6ba206d5374d` | 초기 스키마 |
 | `ccdd5120aa51` | `orders.unit_price` · `orders.amount` 추가 |
+| `e22d7e31dc84` | `cue_sheets` 신설 (D-041) |
 
 `ccdd5120aa51`은 당시 `orders`가 비어 있다는 전제에서 NOT NULL 컬럼을 바로
 추가했다. 앞으로 운영 데이터가 있는 테이블에 필수 컬럼을 추가할 때는
@@ -338,4 +384,4 @@ nullable 추가 → backfill → NOT NULL 전환 순서로 새 리비전을 만�
 **마이그레이션 Job 을 두지 않는다.** 지금은 사람이 돌린다. 파드 기동 시
 자동 실행하면 여러 파드가 동시에 같은 마이그레이션을 시도한다.
 
-`autogenerate` 는 `apps/api` 에서만 돌린다 (3.4).
+`autogenerate` 는 `apps/api` 에서만 돌린다 (3.5).

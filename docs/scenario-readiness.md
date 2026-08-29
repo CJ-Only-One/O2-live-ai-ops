@@ -73,7 +73,7 @@
 | Runbook source-live 일치 | 2026-08-25 scan에서 source에 없는 구형 DEF 4개가 status 없이 남아 Lookup fallback상 active였다. live active ACTION에는 KNOB가 없다 | **고쳐야** |
 | 인시던트 히스토리 (S3 + S3 Vectors) | `history.tf`, `history_o2.tf`. O2 전용 분리까지 완료 | **있음** |
 | Agent 공통 진입점 | `agent_entry_transport.tf` SQS + Worker. 실행 게이트가 켜졌고 Invocation Queue consumer 도 동작한다(`agent-entrypoint.md` `implementation_state.agent_invocation_queue`·`production_agent_handoff`) | **있음** |
-| 저장소 Dify DSL | 시연이 쓰는 워크플로는 `dify/o2-aiops-workflow.yml` 로 저장소에 있다(노드 153개, 최신 반영 9683e19). `alert-triage.yml` 3노드는 옛 자산이다. 남은 드리프트는 팀 운영 워크플로 쪽이고(`agent-entrypoint.md` `production_migration_blockers: DEPLOYED_TEAM_WORKFLOW_DSL_NOT_EXPORTED_TO_REPOSITORY`, T-022) 시연 경로의 blocker 는 아니다 | **있음** |
+| 저장소 Dify DSL | 시연이 쓰는 워크플로는 `dify/o2-aiops-workflow.yml` 로 저장소에 있다(노드 70개·엣지 83개, 최신 반영 9683e19). `alert-triage.yml` 3노드는 옛 자산이다. 남은 드리프트는 팀 운영 워크플로 쪽이고(`agent-entrypoint.md` `production_migration_blockers: DEPLOYED_TEAM_WORKFLOW_DSL_NOT_EXPORTED_TO_REPOSITORY`, T-022) 시연 경로의 blocker 는 아니다 | **있음** |
 
 ### 2.2 S1 — 채팅 총량 / 대가 게이트
 
@@ -119,7 +119,7 @@
 | Dify History 유무 분기 | Worker가 S3 Vectors 검색 결과 중 `verified=true`인 사례만 `past_cases`로 넘기고 DSL이 진단 프롬프트에 포함한다. History 없음/있음 자체를 별도 상태로 표시하는 DSL 분기는 아직 없다 | **부분 구현** |
 | 1차 실행: active Runbook 없음 → 실패 보고 | 11-B가 `runbook_status`를 하류로 넘기고, 13-A가 `active`·`experiment`가 아니면 `MANUAL_REQUIRED` + `NO_ACTIVE_RUNBOOK`을 내 `ESCALATED`로 끝낸다. 런북이 있는데 후보만 소진된 경우만 종전대로 재진단한다. `dify/test_no_candidate_action.py`가 DSL 원본에서 코드를 꺼내 확인한다. **저장소 DSL 기준이고 실환경 반영은 3절 2번 드리프트 해소 뒤다** | **구현됨 · 미반영** |
 | 사람 해결 사례 → verified History | 입력 경로는 `06-agent/scripts/verify.py` 다 — 미검증 인시던트를 하나씩 보여주고 `human_fixed` 와 `labels.txt` 의 원인을 사람이 확정해야 verified 가 된다. 없는 것은 **반복 시연용 격리** 뿐이다. 공유 append-only History 를 쓰면 1차 재촬영 때 verified 사례를 되돌려야 한다 | **부분 구현** |
-| PG Failover Runbook 생명주기 | `pg_external_failure` draft는 PG-A→PG-B 우회 L3만 후보로 둔다. draft는 Lookup에서 제외되며, verified History·실측·원복·운영자 승인 증거가 있어야만 active 승격할 수 있다 | **부분 구현** |
+| PG Failover Runbook 생명주기 | 2026-08-27 운영자 승인으로 `active` 승격됐다(`seed_runbook.py` `promotion_evidence` — 같은 주입에서 PG-A 실패 5,401/6,001·p95 1.32s 대 PG-B 실패 0·p95 102ms). **1차 실행의 `ESCALATED` 전제가 이 상태로는 재현되지 않는다** — 1차 재촬영 전에 draft 로 되돌리거나 격리 데이터셋을 쓴다(`runbook-catalog.md` 7.3) | **있음 · 1차 전제 충돌** |
 | PG-B 상태·전환·원복 제어면 | `/api/admin/pg-provider-switch`가 PG-B ready 확인 후 PG-A→PG-B 전환하고, PG-A 주입 해제 뒤에만 원복한다. 전환·안전한 원복 재시도는 멱등 처리한다. 로컬 통합 테스트가 PG-A 주입 실패 → PG-B 성공 이벤트 → 주입 중 원복 차단 → 안전 원복을 검증한다. 배포·실측 전 | **구현됨** |
 | PG-A→PG-B Action Handler | 새 실행기는 필요 없다 — `switch_pg_provider` 가 `L3` 로 등록돼 Slack 승인 경로를 타고, DSL 실행기 노드가 `$PG_PROVIDER_SWITCH_URL` 특수 타깃으로 api admin 라우트를 직접 부른다(auth 는 `READ_PATH_DEGRADED_ADMIN_KEY` 재사용). 저장소 DSL 의 그 환경변수 값이 빈 문자열이라 live 주입 전에는 mock 으로 떨어진다 | **구현됨 · 미주입** |
 | `pg_latency_ratio` 집계 | `o2warm/sketch.py`·`metrics.py` 에 있다. `pg_latency_ms` 가 안 들어와서 지금은 표본이 0 | **있음** |

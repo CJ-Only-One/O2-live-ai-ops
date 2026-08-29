@@ -4,7 +4,11 @@ Chat Signal SQS를 소비하고 privacy-safe Candidate를 공통 Agent 진입 �
 Lambda 실행 계층이다. `03-data`의 remote state에서 전용 SQS·Candidate DynamoDB·Stream을
 참조하며, EKS·Dify와 독립적으로 유지한다(D-048, D-050).
 
-## Agent Entry Phase 2 — 배포됨, 실행 비활성
+## Agent Entry Phase 2 — 배포·활성화됨
+
+> 아래 절은 Phase 2 **적용 당시**의 비활성 상태를 기록한 것이다. 현재
+> `terraform.tfvars` 는 실행·event source·handoff 게이트가 모두 `true` 이고
+> 출력은 `09-incident` 의 Signal Queue 로 간다. 현재 게이트의 원본은 tfvars 다.
 
 ```text
 Candidate DynamoDB NEW_IMAGE Stream

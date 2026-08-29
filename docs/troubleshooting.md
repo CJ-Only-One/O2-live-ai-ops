@@ -54,6 +54,7 @@
 | T-036 | validate는 통과하지만 IAM policy plan이 duplicate Sid로 실패한다 | `aws_iam_policy_document`, merge 중복, provider 렌더링 |
 | T-037 | topologySpreadConstraints 를 걸었는데 파드가 안 갈린다 | merge key 중복, `matchLabelKeys`, 롤링 중 구 ReplicaSet 계산 |
 | T-038 | 조치 실행기가 증설했는데 10초 뒤 원래 replicas로 돌아간다 | cue-warmer, 조치 소유권 충돌, 실험 잠금, RoleBinding 원복 |
+| ~~T-039~~ | 결번 — 부여했다가 T-043 으로 합쳐졌다. 번호를 재사용하지 않는다 | — |
 | T-040 | 지표는 있는데 조회 값이 `0` 이나 `1.0` 으로 튄다 | `_latest()`, 미완성 버킷, 창 전체 합산 |
 | T-041 | 부하 테스트 p95 가 서버 지표보다 6배 크다 | k6 이벤트 루프, 클라이언트측 계측, 부하 생성기 포화 |
 | T-042 | `latency_p95_by_pod`가 실부하를 걸어도 계속 비어 있다 | `read_path_degraded` 노브가 켜져 있어 `inventory.check` 발행 자체가 꺼짐 |
