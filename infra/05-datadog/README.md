@@ -359,13 +359,20 @@ aws logs tail /aws/lambda/o2-agg --since 10m --profile o2-data `
 (2026-08-19)에 있다 — `monitor.tf` 는 그 문서의 구현 계획을 코드로 옮긴 것뿐이고,
 새 판단은 거기서 먼저 정한다.
 
-알림 라우팅(Slack 등)은 이 스택이 다루지 않는다 — 인프라팀이 별도 webhook
-push 경로로 Datadog Monitor를 에이전트에 연결하는 작업을 진행 중이다. 여기서는
-그 webhook이 받게 될 Monitor(임계치·쿼리·진단 안내가 담긴 message 본문)만
-만든다. 라우팅이 정해지면 각 Monitor의 `message`에 수신자 설정만 얹으면 된다.
+**라우팅은 이제 이 스택이 다룬다.** 초안 시점에는 "webhook 은 인프라팀이
+따로 붙인다"였지만, 지금은 `scenario_alerts.tf` 의 Monitor `message` 에
+`@webhook-o2-incident-entry`(Incident Correlator 경유)와 옛 직결
+`@webhook-o2-dify` 가 직접 들어 있다. **에이전트를 깨우는 것은 시나리오 진입
+Monitor 뿐이다**(D-088) — 나머지는 webhook 을 떼고 사람용으로 남겼다.
+
+아래 표는 `monitor.tf` 의 Phase 구분만 다룬다. 시나리오 진입·증거 Monitor 는
+`scenario_alerts.tf`·`chat_incident_monitors.tf`, 파이프라인 생존 Monitor 는
+`monitor_pipeline.tf`·`pipeline_native.tf` 에 있고 각 파일 주석이 원본이다.
+전체 Monitor 는 24개이며 mapping 은 `09-incident/terraform.tfvars` 가 소유한다.
 
 세 단계로 나뉜다 — 지표가 없다고 포기하지 않고, 지금 되는 것과 계측이 먼저
-필요한 것을 코드로 구분해 둔다.
+필요한 것을 코드로 구분해 둔다. **아래 "기본 비활성" 은 변수 기본값이고, dev
+`terraform.tfvars` 에서는 넷 다 `true` 다.**
 
 | Monitor | 시나리오 | 단계 | 상태 |
 |---|---|---|---|
@@ -387,13 +394,14 @@ push 경로로 Datadog Monitor를 에이전트에 연결하는 작업을 진행 
 저장소, 백데이터 파트 소관) 쪽 PR이 먼저 필요하다.
 
 `chat_ingest_surge`는 애초에 "Phase 0으로 바로 켜진다"고 여겼다가 실측하며
-정정한 사례다 — `contracts.md`는 `chat.send`가 이미 발행된다고 적어 뒀지만,
-`apps/chat-gateway/src/events.ts`의 `emitChatSend()`를 읽어보면 기본값이
-꺼져 있고(`EMIT_CHAT_EVENTS=false`), 켜져도 목적지가 Kinesis가 아니라
-`process.stdout.write` 뿐이다 — Datadog 로그 수집도 꺼져 있어(`logs.enabled
-= false`) 이 이벤트는 지금 어디에도 도착하지 않는다. "계약에 있다"와
-"실제로 흐른다"는 다른 문장이라는 교훈을 여기서도 반복한다(`docs/decisions.md`
-D-031의 결론과 같은 종류).
+정정한 사례다 — 당시 `contracts.md`는 `chat.send`가 이미 발행된다고 적어 뒀지만,
+`apps/chat-gateway/src/events.ts`의 `emitChatSend()`는 기본값이 꺼져 있었고
+(`EMIT_CHAT_EVENTS=false`) 켜져도 목적지가 `process.stdout.write` 뿐이었다.
+Datadog 로그 수집도 꺼져 있어(`logs.enabled = false`, 지금도 그렇다) 이벤트가
+어디에도 도착하지 않았다. **지금은 해소됐다** — `04-platform` 이
+`EMIT_CHAT_EVENTS=true` 와 `O2_EVENTS_SINK=kinesis` 를 주입해 warm 이 집계한다.
+"계약에 있다"와 "실제로 흐른다"는 다른 문장이라는 교훈은 그대로 남긴다
+(`docs/decisions.md` D-031의 결론과 같은 종류).
 
 Monitor 를 만들 때 주의할 것 하나 — **`for` 는 그대로 옮겨지지 않는다.**
 "10분 내내 초과"를 원하면 `min(last_10m)` 을 써야 한다. `avg(last_10m)` 은

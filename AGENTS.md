@@ -22,6 +22,8 @@
 | Chat Candidate | `docs/chat-incident-candidate.md` |
 | Candidate 이후 Agent 호출 | `docs/agent-entrypoint.md`, `contracts.md` 5.8-5.9, `docs/contracts/agent-*.schema.json` |
 | 시나리오 실험·Runbook | `docs/scenario-experiment.md`, `docs/scenario-readiness.md`, `docs/runbook-catalog.md` |
+| Dify 워크플로 그래프 | `docs/agent.md`, `infra/06-agent/dify/` |
+| 큐시트·사전 확장 | `docs/contracts.md` 2.7, `docs/contracts/cue-sheet-v1.schema.json`, `apps/cue-warmer/` |
 | 배포·특정 스택 | `README.md`, `infra/<stack>/README.md` |
 
 `D-007`은 `decisions.md`, `D-07`은 `architecture.md`의 설계 선택입니다. 번호 자릿수를
@@ -34,7 +36,7 @@
 | `03-data` state는 `datastore/`, `06-datastream` state는 `data/` | 다음 destroy에서 상대 리소스를 삭제할 수 있음 |
 | ConfigMap 키 = `Settings` 필드 = `.env.example` | 값이 무시되어 `localhost` 기본값 사용 |
 | Manifest `serviceAccountName` = `04-platform.app_service_accounts` | AWS 호출 시점에만 실패 |
-| Terraform apply: `01` → `02` → (`03` \|\| `05` \|\| `06` \|\| `07`) → (`04` \|\| `08`), 로컬에서 실행 | CI는 `fmt`·`validate`만 수행 |
+| Terraform apply: `01` → `02` → (`03` \|\| `05` \|\| `06-datastream` \|\| `07`) → `09` → (`04` \|\| `06-agent` \|\| `08`), 로컬에서 실행 | CI는 `fmt`·`validate`만 수행 |
 
 - WebSocket 프레임 배열, 캐시 키, 이벤트 스키마, 오류 `code`는 계약 우선입니다.
   합의 없는 변경은 금지합니다. 계약과 코드가 다르면 코드를 고칩니다.

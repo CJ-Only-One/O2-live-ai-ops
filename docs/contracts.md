@@ -8,6 +8,7 @@
 > | WebSocket / 채팅 | 1 · 3 |
 > | 캐시·Valkey 키 | 4 |
 > | 이벤트 발행 | 5 |
+> | 큐시트(사전 확장 입력) | 2.7 · `contracts/cue-sheet-v1.schema.json` |
 > | 채팅 분석 신호·Candidate | 3.8 · 5.6 · 5.7 |
 > | AI Agent source 신호 | 5.8 · `contracts/agent-trigger-v1.schema.json` |
 > | AI Agent Incident revision | 5.9 · `contracts/agent-incident-v1.schema.json` |
@@ -192,13 +193,16 @@ GET /api/orders/{order_id}
 
 **이 응답은 캐싱하지 않는다**(설계 문서 3.4). 그리고 주문 직후 조회는
 **writer로 보낸다** — 리플리카는 비동기 복제라 "주문 없음"이 나갈 수 있다(4.2).
+리드 리플리카는 아직 안 켰지만(`03-data` 의 `enable_read_replica = false`) 앱은
+writer/reader 를 이미 나눠 쓴다. 켜는 순간 이 규칙이 실효를 갖는다.
 
 ### 2.4 헬스
 
-| 경로 | 검사 대상 |
-|---|---|
-| `GET /api/health` | 프로세스 생존만. 의존성을 보지 않는다 |
-| `GET /api/readyz` | Valkey·MySQL 연결 |
+| 서비스 | 경로 | 검사 대상 |
+|---|---|---|
+| api | `GET /api/health` | 프로세스 생존만. 의존성을 보지 않는다 |
+| api | `GET /api/readyz` | Valkey·MySQL 연결 |
+| chat-gateway | `GET /healthz` | 프로세스 생존만. ALB 뒤가 아니라 파드 프로브용이라 `/api` 접두사가 없다 |
 
 **둘을 나누는 이유:** liveness에서 의존성을 검사하면 DB가 잠깐 끊겼을 때
 전 파드가 재시작 루프에 빠진다(설계 문서 9.4-4).
@@ -280,6 +284,59 @@ PG-A 주입이 모두 해제된 경우에만 허용한다. 이미 목표 provide
 200으로 성공하며 `already_in_target_state=true`를 돌려준다. 단, PG-A 주입이 남아
 있으면 이미 PG-A인 `clear`도 409으로 거부한다. 이 API는 승인·Runbook 권한을 판단하지
 않으며, Action Handler는 별도 승인 경계에서만 호출해야 한다.
+
+### 2.7 조치 실행용 운영 제어면
+
+Agent 가 Runbook `execution_target` 으로 부르는 라우트다. **장애 주입(2.6)과
+반대 방향** — 이쪽은 조치이고 그쪽은 주입이다. 인증은 전부 `X-Admin-Key` 이며
+해당 키가 비어 있으면 403 이다.
+
+| 라우트 | 키 | 조치 | 원복 |
+|---|---|---|---|
+| `POST /api/admin/read-path-degraded` | `READ_PATH_DEGRADED_ADMIN_KEY` | 읽기 경로 부가 발행 차단 (D-062) | `{"action":"clear"}` |
+| `GET /api/admin/read-path-degraded` | 〃 | 상태 조회. 원본은 Valkey 키이며 지표로 추정하지 않는다 | - |
+| `POST /api/admin/pg-circuit-open` | 〃 | 결제 회로 차단 | 〃 |
+| `POST /api/admin/pg-timeout-tighten` | 〃 | PG 타임아웃 축소 | 〃 |
+| `POST /api/admin/pg-retry-backoff` | 〃 | PG 재시도 백오프 | 〃 |
+| `POST /ws/admin/channel-limit` (chat-gateway) | `CHANNEL_LIMIT_ADMIN_KEY` | 방송별 채널 총량 제한 (D-061) | 〃 |
+
+상태 조회 응답 계약은 [`contracts/read-path-degraded-status.md`](contracts/read-path-degraded-status.md)가 원본이다.
+
+**URL 과 키를 Dify 그래프 안에 적지 않는다.** 워크플로 환경변수로만 받는다 —
+DSL 을 저장소에 커밋하는 순간 평문 자격증명이 public 저장소로 나간다.
+
+### 2.8 큐시트
+
+방송 진행 대본이다. 언제 무엇이 시작하고 얼마나 몰릴지를 담아 **사전 확장의
+입력**이 된다 (D-041). 기계 판독 원본은
+[`contracts/cue-sheet-v1.schema.json`](contracts/cue-sheet-v1.schema.json)이고
+예시는 `contracts/examples/cue-sheet-*.example.json` 이다.
+
+| 경계 | 계약 |
+|---|---|
+| 저장 | MySQL `cue_sheets` 한 행 = 방송 하나. 본문은 `body` JSON 통째 (`schema.md` 3.4) |
+| 쓰기 | 현재 사람뿐이다 — 시드 스크립트(`app/seed_cue_sheet.py`). **런타임 형식 검증을 하지 않는다**(D-065). API 라우트나 AI 해석이 붙으면 그때 재검토한다 |
+| 읽기 | `apps/cue-warmer` 가 `scheduled_at` 인덱스로 "앞으로 N분 안에 시작하는 방송" 하나만 조회한다 |
+| 신선도 | `cue_version`. 큐시트를 고칠 때마다 올린다 |
+
+`segments[].expected.entry_window_s` 가 있는 세그먼트만 워밍 대상이다 — 신규
+진입이 몰리는 구간이라는 뜻이고, 없으면 이미 들어와 있는 시청자만 움직이므로
+캐시를 데울 이유가 없다.
+
+### 2.9 내부 캐시 워밍
+
+```
+POST /api/internal/warm/{broadcast_id}
+X-Admin-Key: <CUE_WARMER_ADMIN_KEY>
+```
+
+`bcast:{id}:meta` 만 채운다. **`GET /api/broadcasts/{id}` 를 대신 부르지 않는
+이유가 계약이다** — 그쪽은 재고 조회와 `inventory.check` 발행까지 함께 하고,
+후자는 "트래픽 폭증과 캐시 미스 폭주를 가르는 유일한 근거"(5.1)라 워머의 폴링이
+매 tick 마다 가짜 캐시 히트로 그 지표를 오염시킨다.
+
+키를 `READ_PATH_DEGRADED_ADMIN_KEY` 와 나눈 것도 계약이다. 이 키가 새면 캐시
+워밍만 열리고, 그 키가 새면 S3 조치 노브까지 같이 열린다.
 
 ---
 
@@ -417,12 +474,19 @@ accepted chat
 | `order:{id}` | Valkey 전용 | String(JSON) | 600s | 구현됨. MySQL 기록 전 `ACCEPTED` 표식 |
 | `cfg:pg:delay_ms` | 로컬 + Valkey | Integer | 없음 | 구현됨. S3 목업 PG 동기 지연, 로컬 캐시 1s |
 | `cfg:pg:fail_rate` | 로컬 + Valkey | Number | 없음 | 구현됨. S3 목업 PG 결정론적 실패율, 로컬 캐시 1s |
+| `cfg:pg:active_provider` | Valkey 전용 | String | 없음 | 구현됨. `PG-A` / `PG-B`. 2.6 전환 대상 |
+| `cfg:pg:pg_b_ready` | Valkey 전용 | String | 없음 | 구현됨. PG-B 전환 사전 조건 |
+| `cfg:read_path_degraded:{bcast}` | Valkey 전용 | String | 없음 | 구현됨. **키 존재 여부가 곧 상태다** (2.7, D-062) |
+| `cfg:channel_limit:{bcast}` | Valkey 전용 | Integer | 없음 | 구현됨. chat-gateway 채널 총량 노브 (2.7, D-061) |
 | `chat:{bcast}` | Pub/Sub 채널 | - | - | 구현됨. 3.7 |
 | `chat:rate:{bcast}:{user}` | Valkey 전용 | Integer | 60s | 구현됨. 사용자별 채팅 제한 |
 | `sku:{id}:detail` | 로컬 + Valkey | String(JSON) | 1s / 60s | 예정 |
 | `sess:{token}` | Valkey 전용 | Hash | 1800s | 예정 |
 | `room:{bcast}:pods` | Valkey 전용 | Set | 60s | 예정 |
 | `cache:invalidate` | Pub/Sub 채널 | - | - | 예정 |
+
+`cfg:*` 는 전부 **조치·주입 노브**라 TTL 이 없다. 켠 사람이 끄기 전까지 남는
+것이 계약이다 — 실험이 끝나면 명시적으로 지운다(`scenario-experiment.md` 3).
 
 **`stock:{sku}`에 TTL을 걸지 않는다.** 만료되는 순간 재고가 소실된다.
 방송 종료 후 영속화할 테이블과 배치는 아직 없다. 그 경로를 구현하기 전에는
@@ -800,13 +864,27 @@ Dify의 `custom_alert_json` 하나로 전달한다. 최신보다 오래된 Queue
 종료하며, revision 멱등 항목과 `incident_id`별 lock은 같은 DynamoDB transaction으로
 획득한다. 만료된 lock은 Dify 도달 여부가 불명확하므로 자동 탈취하지 않는다.
 
+Datadog evidence의 `assessment_input`은 Correlator가 문자열을 재해석하지 않도록 수치 evidence의
+기계 판독 경계를 제공한다(D-079). `evidence_type`, `observed_at`, `sample_count`,
+`data_state`, `signal_strength`, `scope`, `measurements`를 정확히 포함한다. S1 propagation/block
+evidence에는 `broadcast_id`, S2 pod evidence에는 `pod`, `POD_VERSION`에는 `version`이 필수다.
+`NO_DATA`와 `STALE`은 0 또는 정상으로 변환하지 않는다.
+수치 하나로 환원할 수 없는 명시 Datadog composite monitor는 `COMPOSITE_CONDITION`을 사용한다.
+이 타입은 `sample_count>=1`, `PRESENT`, 빈 `measurements`를 허용하며, monitor ID mapping에 고정된
+조건 성립 자체만 evidence로 취급한다. 제목·본문을 LLM이나 Correlator가 다시 해석하지 않는다.
+
 예시 원본:
 
 - `contracts/examples/agent-incident-chat-first-v1.example.json`
 - `contracts/examples/agent-incident-correlated-v1.example.json`
+- `contracts/examples/agent-incident-environment-mismatch-v1.example.json`
 
-correlation window의 운영 숫자는 아직 계약하지 않는다. Phase 3C에서 두 source의 실제 도착
-지연을 측정한 뒤 `measurements.md` 근거로 정한다.
+correlation window 는 **420초**다(D-073). p95 나 SLO 가 아니라, 매핑한 Datadog monitor 의
+5분 full window 300초에 관측된 Datadog Triggered tail 상한을 60초 단위로 올린 120초를
+더한 보수적 상한이다. 기계 판독 근거는
+[`../infra/09-incident/correlation-window-evidence.json`](../infra/09-incident/correlation-window-evidence.json),
+drift 검증은 `scripts/validate-incident-correlation-window.py` 가 소유한다.
+서로 다른 READ_PATH 장애의 오병합률 표본이 쌓이면 유지·축소 또는 구분 차원 추가를 정한다.
 
 ---
 
@@ -821,11 +899,3 @@ correlation window의 운영 숫자는 아직 계약하지 않는다. Phase 3C�
 
 위 넷은 **합의 없이 바꾸지 않는다.** 나머지(필드 추가, 새 엔드포인트)는
 기존 계약을 깨지 않는 한 자유롭게 늘린다.
-Datadog evidence의 `assessment_input`은 Correlator가 문자열을 재해석하지 않도록 수치 evidence의
-기계 판독 경계를 제공한다(D-079). `evidence_type`, `observed_at`, `sample_count`,
-`data_state`, `signal_strength`, `scope`, `measurements`를 정확히 포함한다. S1 propagation/block
-evidence에는 `broadcast_id`, S2 pod evidence에는 `pod`, `POD_VERSION`에는 `version`이 필수다.
-`NO_DATA`와 `STALE`은 0 또는 정상으로 변환하지 않는다.
-수치 하나로 환원할 수 없는 명시 Datadog composite monitor는 `COMPOSITE_CONDITION`을 사용한다.
-이 타입은 `sample_count>=1`, `PRESENT`, 빈 `measurements`를 허용하며, monitor ID mapping에 고정된
-조건 성립 자체만 evidence로 취급한다. 제목·본문을 LLM이나 Correlator가 다시 해석하지 않는다.

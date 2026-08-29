@@ -1,8 +1,13 @@
 # AI Agent 공통 진입점 — canonical design
 
 > **Audience:** coding agents and reviewers
-> **Status:** Operational READ_PATH Incident handoff enabled; waiting for the first real correlated Incident
-> **Updated:** 2026-08-25
+> **Status:** Operational READ_PATH Incident handoff enabled; S1·S3 monitor mapping 적용됨.
+> 첫 실제 correlated Incident 표본 대기 중.
+> **Updated:** 2026-08-30
+>
+> 아래 `implementation_state` 의 `*_EXECUTION_DISABLED` 는 **그 Phase 를 적용할 당시의
+> 게이트 상태**다. 현재 실행 게이트의 원본은 `infra/09-incident/terraform.tfvars` 와
+> `infra/08-chat-signal/terraform.tfvars` 이며 지금은 켜져 있다.
 > **Decision:** `decisions.md` D-050, D-055, D-066, D-070, D-072, D-073, D-075, and D-083
 > **Wire contracts:** `contracts.md` 5.8-5.9 and `contracts/agent-*.schema.json`
 
@@ -30,7 +35,7 @@ implementation_state:
   dedicated_test_workflow_dsl: RECORDED_IN_REPOSITORY
   dedicated_test_workflow_api_key: STORED_IN_SECRETS_MANAGER
   existing_team_workflow_targeted: false
-  datadog_source_adapter: DEPLOYED_OPERATIONAL_MONITOR_21940250
+  datadog_source_adapter: DEPLOYED_OPERATIONAL_7_MONITORS
   phase4a_targeted_plan: APPLIED_8_ADD_0_CHANGE_0_DESTROY
   datadog_shadow_webhook: CONFIGURED_PRODUCTION_PAYLOAD_NOT_ATTACHED
   phase4b_synthetic_monitor: DELETED_AFTER_TEST
@@ -44,7 +49,7 @@ implementation_state:
   phase4d_environment_mismatch_shadow: PASS_AMBIGUOUS_NO_AUTO_MERGE
   phase4e_datadog_monitor_mapping: APPLIED_EXECUTION_DISABLED
   phase4e_targeted_plan: APPLIED_0_ADD_1_CHANGE_0_DESTROY_MAPPING_ONLY
-  phase4f_initial_correlation_window: IMPLEMENTED_NOT_APPLIED_420_SECONDS
+  phase4f_initial_correlation_window: APPLIED_420_SECONDS
   phase4f_window_evidence_validation: PASS
   phase4f_targeted_plan: PASS_0_ADD_1_CHANGE_0_DESTROY_WINDOW_ONLY
   common_history_lookup_store: APPLIED_EXECUTION_DISABLED
@@ -813,7 +818,7 @@ D-072에 따라 시나리오 4의 `role:page` 캐시 흡수 실패 composite mon
 요구한다. 같은 조건의 두 `role:sub` monitor는 중복 신호를 막기 위해 제외하고, 주문 응답 p95
 monitor는 READ_PATH가 아니므로 제외한다.
 
-mapping은 `infra/06-agent/terraform.tfvars`가 환경별 실제 monitor ID를 소유한다. 숫자 ID와
+mapping은 `infra/09-incident/terraform.tfvars`가 환경별 실제 monitor ID를 소유한다. 숫자 ID와
 통제된 symptom/surface, 1~128자 service만 허용하도록 Terraform validation도 추가했다.
 Phase 4E는 2026-08-24 병합 후 Correlator가 disabled인 상태에서 targeted apply했다.
 실제 결과는 `0 add / 1 change / 0 destroy`였고
@@ -835,11 +840,16 @@ source-to-Queue 최대 69.474초를 60초 단위로 올린 120초를 합한 보�
 - Chat Worker 고정 window가 15초인지
 - Datadog 시나리오 진입 monitor 기본 full window가 5분인지
 - 관측값에서 계산한 tail guard가 120초인지
-- `infra/06-agent/terraform.tfvars` 값이 계산 결과 420초와 같은지
+- `infra/09-incident/terraform.tfvars` 값이 계산 결과 420초와 같은지
 - scope가 `SHADOW_ONLY`이고 production Agent handoff가 false인지
 
 비활성 상태에서도 측정된 window를 미리 구성할 수 있도록 Terraform precondition을
 `disabled + empty allowlist`로 바꾼다. 실행 `false`와 event source `false`는 그대로 강제한다.
+
+> **적용 완료.** 420초는 `infra/09-incident/terraform.tfvars` 에 들어갔고 실행 게이트도
+> 이후 켜졌다. 따라서 evidence JSON 의 `activation_scope: SHADOW_ONLY` 와
+> `production_agent_handoff_enabled: false` 는 **더 이상 현재 상태가 아니다** —
+> 검증기가 그 두 필드를 비교하지 않아 CI 는 계속 통과한다. 다음 재측정 때 함께 고친다.
 병합 전 실제 state plan은 Correlator 환경변수 `INCIDENT_CORRELATION_WINDOW_SECONDS`만
 `0 → 420`인 `0 add / 1 change / 0 destroy`다. 421초는 variable validation이 거부했고,
 `enabled + empty allowlist`는 resource precondition이 거부했다. 전체 plan의 기존 IAM 1개·Lambda

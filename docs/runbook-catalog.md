@@ -4,6 +4,9 @@
 카탈로그**를 설명한다. 사람 검증 이력에서 라벨별로 만들기로 한
 `infra/06-agent/runbooks/<label>.md`와는 다른 자산이다. 후자는 아직 없다.
 
+> **7절 대조표는 2026-08-25 snapshot 이다.** 그 뒤 코드 원본이 바뀌었다 —
+> 갱신분은 7.3 에 있다. 두 절을 함께 읽는다.
+
 2026-08-25 기준으로 다음 둘을 대조했다.
 
 - 코드 원본: `infra/06-agent/scripts/seed_runbook.py`
@@ -216,10 +219,10 @@ ACTION에 이미 중첩된 `knob`는 남지만 Guardrail은 읽지 않는다.
 | `chat_channel_overload` | dedicated | active | `limit_channel_volume` L3 |
 | `RB-API-LATENCY-001` | generic | draft | `scale_api_one_step` L1 |
 | `RB-API-POD-RESOURCE-SKEW` | dedicated | draft | `isolate_slow_pod` L2 |
-| `pg_external_failure` | scenario | draft | PG-A→PG-B 우회 L3. 검증 History·실측·승인 증거 전에는 조회·실행되지 않음 |
+| `pg_external_failure` | scenario | draft | PG-A→PG-B 우회 L3. **2026-08-27 에 `active` 로 승격됐다 — 7.3 참조** |
 | `legacy_read_path_degraded` | generic | retired | `hold_read_path_degraded` L1 |
 
-코드 원본의 KNOB 정의는 6개다. 그러나 전체 dry-run이 실제 시딩 대상으로 고르는
+코드 원본의 KNOB 정의는 (이 snapshot 시점) 6개다. 그러나 전체 dry-run이 실제 시딩 대상으로 고르는
 것은 Runbook ACTION과 연결된 5개뿐이다. Runbook 없이 보존하려던
 `set_read_path_degraded`는 `selected_action_ids` 필터에서 빠져 현재 시더로는 기록되지
 않는다. 이는 “런북 없는 조치도 KNOB 파티션에 둔다”는 D-067 의도와 다르다.
@@ -257,6 +260,27 @@ Guardrail 기준 유효값은 ACTION의 L3지만, S1 KNOB를 다시 시딩하면
 
 전체 시드를 다시 실행해도 코드에 없는 구형 네 RCA는 자동으로 삭제·retire되지
 않는다. 현재 시더는 자신이 아는 항목을 put/update할 뿐 orphan을 정리하지 않는다.
+
+### 7.3 2026-08-27 이후 코드 원본 변경분
+
+`seed_runbook.py` 가 바뀌었고 7.1 표는 그 이전 상태다. 실테이블(7.2) 재대조는
+아직 안 했다.
+
+| 항목 | 7.1 시점 | 현재 코드 원본 |
+|---|---|---|
+| Runbook 수 | 5 | **6** |
+| `traffic_spike_overload` | 실테이블에만 있던 구형 RCA | **코드 원본에 편입**(generic, `active`). `autoscale_bump` L2 는 S2 scale-executor 재사용이고 `queue_shed_low_priority`·`rate_limit_noncritical` 은 실행기가 없어 retired |
+| `pg_external_failure` | `draft` | **`active`**. 근거는 코드의 `promotion_evidence` — 같은 주입(`delay_ms=1200`·`fail_rate=0.9`)에서 PG-A 5,401/6,001 실패·p95 1.32s 대 PG-B 실패 0·p95 102ms 를 라이브로 가르고 사람이 verified History 로 확정했다 |
+| KNOB 정의 수 | 6 | **10** (`expand_payment_client_pool`, `tighten_payment_timeout_retry`, `autoscale_bump`, `queue_shed_low_priority`, `rate_limit_noncritical` 추가) |
+| S2 복구 판정 | — | `traffic_spike_overload`·`RB-API-LATENCY-001` 둘 다 `p99_ms <= 50` 축으로 이동(2026-08-27) |
+
+**`pg_external_failure` 승격은 시나리오 전제를 건드린다.** `scenario-experiment.md`
+0.7 의 S3 1차 실행은 "실행 가능한 active Runbook 이 없어 `ESCALATED`" 가 성립
+조건이다. 지금 상태로 1차를 다시 찍으면 Lookup 이 후보를 돌려주므로 그 장면이
+재현되지 않는다. 1차 재촬영 전에는 이 런북을 다시 `draft` 로 내리거나, 격리
+데이터셋으로 분리해야 한다.
+
+`limit_channel_volume` 의 ACTION L3 / KNOB L2 불일치는 그대로다.
 
 ## 8. 위험도 관련 주요 리스크
 

@@ -28,16 +28,21 @@ Agent Invocation Queue에 보낸다.
 
 ## 기본 안전 상태
 
+**아래는 변수 기본값이다. 현재 dev 적용값은 `terraform.tfvars` 가 원본이며 실행
+게이트는 켜져 있다** — Adapter·Correlator 실행 `true`, `incident_shadow_mode=false`,
+`incident_operational_handoff_approved=true`, allowlist 7개 monitor.
+
 - Datadog Source Adapter execution: `false`
 - Correlator execution/event source: `false`
 - 합성 allowlist: empty
-- 운영 correlation window: Shadow 초기값 420초
+- 운영 correlation window: 420초 (D-073, 적용됨)
 - 구조화 evidence 입력: `assessment_input`의 type·scope·sample·freshness·NO_DATA 검증
 - Incident 상태: severity material change, sustained recovery, strong exception, cooldown, reopen
 - 운영 전환: `incident_shadow_mode=false`와 `incident_operational_handoff_approved=true`를 함께 요구
 
 `incident_recovery_window_seconds`, `incident_cooldown_seconds`,
-`incident_reopen_window_seconds`는 실측 전 0이다. Operational mode에서는 세 값이 모두 0보다 커야
+`incident_reopen_window_seconds`의 기본값은 실측 전 0이다. dev 적용값은 각각
+300·300·1800초다(D-082). Operational mode에서는 세 값이 모두 0보다 커야
 plan이 통과한다. 승인 플래그만 켜거나 운영 monitor를 Webhook에 붙이는 단독 변경은 금지한다.
 - Agent/Dify 직접 호출 권한: 없음
 
@@ -52,7 +57,10 @@ plan이 통과한다. 승인 플래그만 켜거나 운영 monitor를 Webhook에
 여기서 `06-data`는 기존 `infra/06-datastream`을 뜻한다. `06-agent`와 번호가 겹치므로
 경로 전체를 확인한다.
 
-## 기존 dev state migration
+## 기존 dev state migration — 완료됨
+
+> **이 절은 이력이다.** 이관은 끝났고 이 스택의 backend key 는 `incident/` 다.
+> 같은 상황이 다시 생길 때의 절차로 남긴다.
 
 현재 dev의 Incident 리소스는 `dify/terraform.tfstate`가 소유한다. 코드 디렉터리만 옮긴
 상태에서 `09-incident apply`를 실행하면 같은 물리 이름을 새로 만들려 하고, `06-agent plan`은

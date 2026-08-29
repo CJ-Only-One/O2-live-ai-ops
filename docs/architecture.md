@@ -32,7 +32,7 @@
 | 작성일 | 2026-08-13 |
 | 상태 | 설계 확정, P0 진행 중 |
 | 대상 시스템 | EKS 기반 라이브커머스 (뷰티 커머스 도메인) |
-| 현재 프로비저닝 상태 | VPC, EKS, CI/CD(ECR·Argo CD), Datadog 연동까지 완료. 데이터 계층 없음 |
+| 현재 프로비저닝 상태 | 작성 시점 기준값이다. **현재 상태는 `README.md` 「상태」와 `docs/scenario-readiness.md` 를 본다** — 데이터 계층·영상·Chat Signal·Incident 스택까지 적용됐다 |
 
 ### v1.2 변경 요약
 
@@ -264,6 +264,8 @@ Peak 채팅:  160 MB/s × 3,600s        ≈ 576 GB/시간
    ▼
 [RDS MySQL (+ Read Replica)]
    │  ⑤ InnoDB 버퍼 풀 (사실상 마지막 캐시 계층)
+   │     ※ 리플리카는 아직 안 켰다 — `03-data` 의 `enable_read_replica = false`.
+   │       앱은 writer/reader 를 이미 나눠 쓰고 있어 켜면 코드 변경 없이 갈린다
 ```
 
 ### 3.4 계층별 대상과 TTL
@@ -403,6 +405,11 @@ sub.on('ready', () => local.clear());
 
 **대응 A — 사전 워밍.** 방송 스케줄을 알고 있다는 이점을 활용한다.
 
+> **구현은 CronJob 이 아니다.** 방송마다 큐시트가 달라져 고정 스케줄로는 못 맞춘다.
+> 실제로는 `apps/cue-warmer` 가 상주 Deployment 로 10초마다 큐시트를 폴링해
+> 진입 구간 앞에서 `bcast:{id}:meta` 를 데운다 (D-041, D-065). 아래 YAML 은
+> 설계 시점의 원안으로 남긴다.
+
 ```yaml
 apiVersion: batch/v1
 kind: CronJob
@@ -487,6 +494,10 @@ SELECT
 목표 99% 이상. 라이브커머스는 활성 데이터셋이 작아(상품 수십 건, 주문 수천 건) 달성이 어렵지 않다.
 
 ### 4.2 리드 리플리카 라우팅
+
+> **아직 미적용.** `03-data` 의 `enable_read_replica = false` 라 현재 reader 엔드포인트는
+> writer 와 같은 값이 온다(`04-platform/app_data_access.tf`). 아래는 켰을 때의 라우팅
+> 규칙이고, 앱은 그 전제로 이미 두 URL 을 나눠 쓴다(D-017).
 
 RDS MySQL 리플리카는 비동기 복제다. 주문 직후 조회를 리플리카로 보내면 "주문 없음" 응답이 나갈 수 있다.
 
@@ -612,7 +623,7 @@ resource "aws_db_instance" "main" {
 | 결정 | 선택 | 근거 |
 |---|---|---|
 | 클러스터 모드 | **비활성** | 핫키가 단일 키이므로 샤딩 이득 없음, 운영 복잡도만 증가 |
-| 복제 | Multi-AZ + Replica 2 | 읽기 분산 + 페일오버 |
+| 복제 | Multi-AZ + Replica | 읽기 분산 + 페일오버. 실제 적용값은 `cache_num_nodes = 2`(프라이머리 + 리플리카 1)다 |
 | Serverless vs 노드 | 방송 패턴 단속적 → Serverless 유리 | 로컬 캐시로 QPS가 한 자릿수이므로 ECPU 소모 극소 |
 
 가격은 리전·시점에 따라 변동하므로 도입 직전 ElastiCache 요금 페이지에서 확인한다.
@@ -1118,10 +1129,14 @@ v1.0에서 달라진 것 셋.
 > ├── 05-datadog/      # Datadog 대시보드
 > ├── 06-agent/        # Dify 호스트                 (D-028)
 > ├── 06-datastream/   # 백데이터 파이프라인          (D-029, backend key = data/)
-> └── 07-media/        # MediaMTX용 CloudFront, NLB  (미작성, D-033)
+> ├── 07-media/        # 영상 배포용 CloudFront       (D-033, D-039)
+> ├── 08-chat-signal/  # Chat Candidate·Source Adapter (D-047, D-048)
+> └── 09-incident/     # Incident Correlator·State    (D-055, D-078)
 > ```
 >
-> 번호는 **의존 순서**다. apply는 `01` → `02` → (`03` ∥ `05` ∥ `06` ∥ `07`) → `04` 이고 로컬에서 한다.
+> 번호는 **의존 순서**다. apply는 `01` → `02` → (`03` ∥ `05` ∥ `06-datastream` ∥ `07`)
+> → `09` → (`04` ∥ `06-agent` ∥ `08`) 이고 로컬에서 한다.
+> 전체 순서의 원본은 `infra/09-incident/README.md` 다.
 
 원문(v1.0)의 제안은 다음과 같았다. 원칙 — "`20-data`만 독립적으로 destroy/apply 가능해야 실험 비용을 통제할 수 있다" — 는 그대로 유효하며 `03-data`가 그 역할을 한다.
 
@@ -1344,11 +1359,14 @@ CDN             CloudFront — 영상·정적 자산 전용. API 캐싱 계층�
 분산 캐시        ElastiCache Valkey (Multi-AZ, 클러스터 모드 off)
 무효화 채널      Valkey Pub/Sub + TTL 안전망
 비동기 큐        SQS Standard (주문 큐·Chat Signal 큐 분리, 멱등 키)
-영속 저장소      RDS MySQL (writer + read replica, 암호화 on)
+영속 저장소      RDS MySQL (writer, 암호화 on. read replica 는 코드만 있고 미적용)
 스트리밍 브로커   없음 (커머스 이벤트는 SQS + Valkey Pub/Sub)
 관측            Datadog (AWS Marketplace 경유)
-AI 에이전트      Bedrock + AgentCore Gateway + Datadog MCP
+AI 에이전트      Dify (EKS 밖 EC2, D-028) + Bedrock 모델 + Lambda 릴레이
+                 ※ 설계 시점의 AgentCore Gateway·Datadog MCP 안은 채택되지 않았다.
+                   Datadog 역쿼리는 hot-path Lambda + hot-proxy 로 간다 (D-042, D-043)
 백데이터         별도 파트 소관 — 연동은 이벤트 스키마 계약까지 (7장 범위 주석)
 오케스트레이션    EKS + KEDA + Argo CD + Karpenter (D-051)
-IaC             Terraform (00-cicd / 01-network / 02-eks / 03-data / 04-platform / 05-datadog / 06-agent / 06-datastream / 07-media)
+IaC             Terraform (00-cicd / 01-network / 02-eks / 03-data / 04-platform /
+                 05-datadog / 06-agent / 06-datastream / 07-media / 08-chat-signal / 09-incident)
 ```

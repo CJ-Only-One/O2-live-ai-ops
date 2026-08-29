@@ -2,7 +2,7 @@
 
 Agent(Dify)가 `@webhook-dify` 알림을 받은 뒤 Datadog 에 보관된 인프라/APM
 시계열 지표를 직접 역쿼리하기 위한 게이트웨이입니다.
-`docs/DatadogMcpQueryInstruction.md` 구현안 A(HTTP REST API Gateway)를
+`DatadogMcpQueryInstruction.md`(**저장소 밖 기획 문서**) 구현안 A(HTTP REST API Gateway)를
 구현합니다.
 
 Dify에는 raw Datadog query 대신 `/v1/hot/datadog/metric`만 노출한다. 요청은

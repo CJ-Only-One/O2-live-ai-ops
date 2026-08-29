@@ -1,7 +1,9 @@
 # Warm Path
 
 Agent에게 판단 재료를 실시간으로 공급하는 계층입니다.
-`docs/agent-data-requirements.md` §3·§7 에서 도출된 요구를 구현합니다.
+`agent-data-requirements.md` §3·§7 에서 도출된 요구를 구현합니다.
+**이 문서는 저장소에 없습니다** — 기획 원본은 저장소 밖에 있고, 여기 인용된
+절 번호는 그 원본 기준입니다.
 
 ```
 warm/

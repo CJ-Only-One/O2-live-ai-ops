@@ -1,8 +1,9 @@
 # Chat Incident Candidate — canonical implementation spec
 
 > **Audience:** coding agents and reviewers
-> **Status:** Phase 4 Shadow active; window review deferred; Agent Entry Phase 0 contract complete
-> **Updated:** 2026-08-23
+> **Status:** Candidate 생성 운영 중. Agent handoff 승인·활성화됨 — `agent-entrypoint.md` 의
+> `implementation_state` 가 현재 상태의 원본이다. window review 는 계속 보류.
+> **Updated:** 2026-08-30 (아래 `implementation_state` YAML 은 2026-08-23 snapshot 이며 이력으로 남긴다)
 > **Decision:** `decisions.md` D-047
 > **Wire contracts:** `contracts.md` 5.6-5.7
 
@@ -178,7 +179,7 @@ The two branches are independent.
 | service-specific SQS IAM | applied; Chat Gateway and Order Worker use dedicated Pod Identity roles |
 | Chat Gateway SQS publisher | `shadow` active; external send and fanout verified after Pod restart |
 | Incident Candidate creation | AC-004 same-window AWS E2E passed; fixed-window boundary limitation remains (T-021) |
-| Datadog Pull and Dify handoff | common contract designed in `agent-entrypoint.md`; runtime not implemented |
+| Datadog Pull and Dify handoff | **deployed and enabled**; Source Adapter 는 `09-incident` 소유(D-078). 현재 상태는 `agent-entrypoint.md` 를 본다 |
 
 Do not report a Terraform validation, image build, or document merge as a deployed feature.
 
@@ -288,8 +289,6 @@ rate.
 
 Until `VERIFY-CHAT-WINDOW-001` is decided:
 
-- keep the current implementation in Shadow only;
-- do not connect Candidate output to Dify or an automatic action;
 - do not claim that the 15-second rule is a rolling-window guarantee;
 - use privacy-safe labeled synthetic inputs because raw production chat is not retained for replay.
 
@@ -329,9 +328,14 @@ Initial table requirements:
 ```text
 billing_mode=PAY_PER_REQUEST
 PITR=false
-Streams=false
+Streams=false          # 초기값. 현재는 true
 GlobalTable=false
 ```
+
+`Streams` 는 이후 `NEW_IMAGE` 로 켰다 — Agent Entry Source Adapter 가 새 Candidate
+INSERT 만 비동기로 읽어야 해서다(`infra/03-data/chat_signal.tf`). `KEYS_ONLY` 로는
+privacy-safe payload 를 만들 수 없고 `NEW_AND_OLD_IMAGES` 는 UPDATE 이전 payload 까지
+복제하므로 `NEW_IMAGE` 만 쓴다.
 
 Conceptual item families:
 
@@ -397,8 +401,10 @@ Incident Candidate -> adapter -> Dify -> read-only Datadog Pull -> Bedrock analy
 ```
 
 The adapter and Agent entry contract are defined in
-[`agent-entrypoint.md`](agent-entrypoint.md) and `contracts.md` 5.8. No runtime handoff is
-deployed yet.
+[`agent-entrypoint.md`](agent-entrypoint.md) and `contracts.md` 5.8. The runtime handoff is
+now deployed and approved; Candidate output reaches Dify through the Incident Correlator,
+never directly. **The boundary false negative in 5.1 is therefore live** — a split window
+means no Candidate and no Agent call, which fails closed, not open.
 
 Candidate generation MUST NOT wait for a Datadog monitor or metrics query. Later investigation
 SHOULD query timeseries around `window_start/window_end`; monitor status alone can lag user signal.
