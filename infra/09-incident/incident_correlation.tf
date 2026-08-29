@@ -27,7 +27,8 @@ resource "aws_sqs_queue" "agent_invocation" {
   name = local.agent_invocation_queue_name
 
   # Phase 3D Generic Worker timeout 60초의 6배. 현재는 consumer를 연결하지 않는다.
-  visibility_timeout_seconds = 360
+  # Agent Lambda(780초)가 Dify 승인/검증을 마치기 전에 같은 메시지가 재전달되지 않게 한다.
+  visibility_timeout_seconds = 900
   message_retention_seconds  = 345600 # 4일
   receive_wait_time_seconds  = 20
   sqs_managed_sse_enabled    = true
