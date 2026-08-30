@@ -116,17 +116,20 @@ S2 가 그 경우다 — 처음 보는 장애인데 증상 기반 런북으로 �
 | **S2** | Datadog | `pod_resource_exhaustion`<br>→ `pod_load_skew` | Service 에 붙은 파드 하나만 CPU 조임 → 서비스 꼬리 지연 | 증설 → 미달 → 격리 (둘 다 `L1`/`L2`) | **재진단 → 해결** |
 | **S3** | **채팅** | `pg_external_failure` | 외부 PG-A 지연 → 주문 타임아웃 | 1차: 실행 안 함<br>2차: PG-A → PG-B 전환 (`L3`) | **1차 실패 → 지식화 → 2차 해결** |
 
-**인시던트 단위가 셋 다 다르다.** 이것이 곧 `Deduped` 병합 키다.
+시나리오가 요구하는 **조치 범위**는 셋이 다르지만, 현재 Correlator 병합 키는 공통으로
+`environment#incident_family#symptom_family#service#suspected_surface`다. `broadcast_id`와
+`deployment`는 context에만 있고 키에는 없다.
 
-| | 단위 | 근거 |
+| | 필요한 조치 범위 | 현재 병합 동작 |
 |---|---|---|
-| S1 | `service` + **`broadcast_id`** | 채널 총량은 방송마다 별개다. 다른 방송의 폭주는 다른 인시던트이고 조치도 그 방송에만 건다 |
-| S2 | `service` + **`deployment`** | 파드가 여럿 이상해도 원인이 하나의 Deployment 설정이면 한 인시던트다 |
-| S3 | **`service` 만** (방송 무관) | 외부 의존이라 모든 방송에 동시에 영향한다. **`broadcast_id` 를 병합 키에서 뺀다** — 안 그러면 같은 사건이 방송 수만큼 늘어난다 |
+| S1 | `service` + **`broadcast_id`** | 방송 축이 없어 서로 다른 방송이 같은 시간 창에서 합쳐질 수 있다. 조치는 반드시 context의 대상 방송으로 제한한다 |
+| S2 | `service` + **`deployment`** | Deployment 축이 없어 같은 surface의 사건은 공통 키로 합쳐진다. 재진단에서 pod·deployment를 확인한다 |
+| S3 | **`service` 만** (방송 무관) | 현재 공통 키가 의도와 맞는다. 외부 의존 장애를 방송 수만큼 만들지 않는다 |
 
 ### 0.4 공통 상태 머신
 
-세 시나리오가 모두 이 위에서 돈다. 시나리오별 차이는 **어느 분기를 타는가**뿐이다.
+아래는 세 시나리오의 **목표 상태 머신**이다. 현재 Dify 구현의 재진단 한도와
+`Judging` 분기 차이는 `scenario-readiness.md` 2.1에 별도로 기록한다.
 
 ```mermaid
 stateDiagram-v2
@@ -187,8 +190,9 @@ stateDiagram-v2
 **Phase 1. 장애 탐지**
 
 - 다수 시청자가 개인 Rate Limit 아래에서 동시에 발화한다.
-- 방송 전체 처리량이 채널 용량을 넘어 Datadog 채팅 전파 p95 알림으로 Agent가 진입한다.
-- `service + broadcast_id` 범위에서 `chat_channel_overload`를 진단한다.
+- 방송 전체 처리량이 채널 용량을 넘으면 팬아웃 총량 Monitor가 PRIMARY로 진입하고,
+  채팅 전파 p95와 정상 사용자 차단률은 후속 증거로 붙는다.
+- context의 `broadcast_id` 범위에서 `chat_channel_overload`를 진단하고 조치한다.
 
 **Phase 2. Runbook 조회와 사전 검사**
 
@@ -210,7 +214,7 @@ stateDiagram-v2
 
 ```mermaid
 flowchart TB
-    A["Datadog 채팅 전파 p95 알림"] --> B{"유사 과거 사례"}
+    A["Datadog 채팅 팬아웃 총량 알림"] --> B{"유사 과거 사례"}
     B -->|"있음 · 알려진 장애"| C["전용 런북 조회<br/>조치 = 채널 총량 제한"]
     C --> D{"Precheck<br/>user_effect_reversible"}
     D -->|"아니오 · 예산 밖"| E["대가 게이트<br/>조치 시 피해 · 방치 시 피해"]
@@ -367,8 +371,9 @@ S3가 증명해야 하는 것은 **같은 장애, 같은 Agent라도 검증된 �
 현재 API 주문 접수 경로에는 PG-A 지연·실패 주입과 `payment.process` 이벤트 발행이
 구현돼 있다. SDK에 `pg_latency_ms`·`failure_code`(`PG_TIMEOUT` 등)가 정의돼 있고,
 warm은 `pg_latency_ratio`를 집계하며, `pg_external_failure`는 진단 enum과 복구 판정
-폴백에 있다. PG-B ready 확인·전환·원복과 Provider별 성공 이벤트는 API 목업에
-구현됐지만, 이를 L3 승인 Action Handler와 active Runbook으로 연결한 경로는 아직 없다.
+폴백에 있다. PG-B ready 확인·전환·원복과 Provider별 성공 이벤트가 API 목업에
+구현됐고, `switch_pg_provider` L3 Action Handler와 active Runbook도 연결돼 있다.
+다만 저장소 DSL과 게시된 Dify graph의 비밀값 주입 방식이 달라 재게시·실 E2E 검증이 남아 있다.
 
 ```python
 # apps/api/app/services/payment.py — 목업 PG
@@ -406,7 +411,8 @@ emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
 
 **진입점이 둘이 되면 Agent 호출 전에 병합 계층이 반드시 필요해진다**(0.4 `Deduped`, D-055).
 채팅으로 하나, 알림으로 하나 들어오므로 합치지 않으면 같은 사건을 두 번 조사한다.
-**S3 는 병합 키에서 `broadcast_id` 를 뺀다**(0.3) — 외부 의존이라 모든 방송에 동시에 영향하기 때문이다.
+현재 Correlator는 세 시나리오 모두 병합 키에서 `broadcast_id`를 뺀다(0.3).
+이 동작은 외부 의존 장애인 S3에는 맞지만 S1에는 오병합 위험이 있다.
 
 ---
 
@@ -455,7 +461,7 @@ emit.payment_process(..., result="FAILED" if failed else "SUCCESS",
 | | 무엇을 주입하나 | 안 하면 실패하는 것 |
 |---|---|---|
 | **S1** | `broadcast.js` 의 `PROFILE=s1` 로 `아이템/s = 시청자 × 발화율` 을 M-010 붕괴점 위로. **연결 축**으로 올린다 — 같은 총량이면 연결이 많을수록 확실히 무너진다(M-010 해석 2) | **발화자를 넓게 퍼뜨린다.** 전제는 *전원이 한도 안인데 인원이 많아 총량이 넘는다* 이므로 전원이 `CHAT_RATE_PER_MIN` 아래여야 한다 — 스크립트가 `SENDERS` 를 필수로 받고 1인당 한도를 넘으면 시작 전에 실패한다.<br>파형은 **첫 파동 + 지속 고원** — `SPIKE_RPS`·`SPIKE_S`·`PLATEAU_RPS` 로 두 구간을 만든다 |
-| **S2** | canary Deployment 를 같은 Service 에 붙인다. main 과 **같은 이미지·같은 셀렉터, CPU 상한만** 낮게. 부하는 `read-path.js` 고정 도착률 | **CPU 상한은 `125m` 으로 정해졌다**(2026-08-26 스윕, 200 RPS·60초). `100m` 은 liveness 를 5초로 넓혀도 재시작이 나고, `150m` 은 장애가 약해진다. **`125m` 의 재시작 0 은 60초 부하에서만 성립한다** — 15분 연속에서는 재시작 3회다. 시연처럼 길게 끌면 `150m` 이나 `failureThreshold` 확대를 다시 재야 한다.<br>판정에는 p95 절대값을 쓰지 않는다 — 실행마다 흔들린다. 쓰는 것은 재시작 0 · 정상 파드 중앙값 16ms 대 · canary 가 정상 파드의 8.1배다 |
+| **S2** | canary Deployment를 같은 Service에 붙인다. 현재 main의 이미지·런타임 설정을 복제하되 **Deployment selector는 분리**하고 Service 멤버십 라벨만 공유한다. CPU 상한을 낮추고 관측 중 재시작을 줄이도록 probe 허용치를 입력한다. 부하는 `read-path.js` 고정 도착률 | **CPU 상한은 `125m` 으로 정해졌다**(2026-08-26 스윕, 200 RPS·60초). `100m` 은 liveness 를 5초로 넓혀도 재시작이 나고, `150m` 은 장애가 약해진다. **`125m` 의 재시작 0 은 60초 부하에서만 성립한다** — 15분 연속에서는 재시작 3회다. 시연처럼 길게 끌면 `150m` 이나 `failureThreshold` 확대를 다시 재야 한다.<br>판정에는 p95 절대값을 쓰지 않는다 — 실행마다 흔들린다. 쓰는 것은 재시작 0 · 정상 파드 중앙값 16ms 대 · canary 가 정상 파드의 8.1배다 |
 | **S3** | **목업 PG-A 스텁**에 `cfg:pg:delay_ms`·`cfg:pg:fail_rate`를 SET하고 k6 주문 부하를 건다. `payment.process` 이벤트가 `pg_provider=PG-A`·`failure_stage=PG_CALL`·`failure_code=PG_TIMEOUT`·`pg_latency_ms`를 싣는다. 지식화 후 환경을 초기화하고 같은 값을 다시 주입한다 | **1차와 2차의 장애 조건을 같게 유지한다.** PG 지연을 중간에 풀면 자연 회복이 Failover 효과로 기록된다.<br>**`api` 주문 접수 경로에 넣는다.** `order-worker`에 넣으면 SQS 백로그 때문에 `queue_backlog`로 오진한다.<br>PG-B 전환 뒤에도 PG-A 주입값은 유지하고, Provider별 성공 이벤트로 실제 우회를 확인한다 |
 
 **파드별 지연 지표는 이미 있다.** `p95:o2.apm.request.duration{...} by {pod_name}` 을
@@ -613,74 +619,25 @@ kubectl patch application o2-dev -n argocd --type merge \
 
 ### 4.4 S3 — 외부 결제 PG 지연, 지식화 전후 두 번 실행
 
-1차와 2차에 **같은 주입값과 주문 부하 프로필**을 사용한다. 아래 자리표시자는
-실측값으로 확정하기 전에는 실행하지 않는다.
+1차와 2차에 **같은 주입값과 부하 프로필**을 사용한다. 주입·채팅 선행·주문 부하·정리는
+`loadtest/s3-coldopen.sh`가 소유한다. 직접 `curl`과 `k6`를 따로 실행하지 않는다.
 
 ```bash
-# 공통 입력 — 1차와 2차에 바꾸지 않는다.
-PG_DELAY_MS='<실측 후 확정>'
-PG_FAIL_RATE='<실측 후 확정>'
-ORDER_RATE='<주문 RPS>'
-ORDER_DURATION='<알림 창보다 길게>'
-ORDER_PRE_ALLOCATED_VUS='<실측값>'
-ORDER_MAX_VUS='<실측값>'
-CHAT_BASE_RPS='<타임세일 전 일반 채팅 RPS>'
-CHAT_SALE_RPS='<타임세일 후 증가한 일반 채팅 RPS>'
-CHAT_INCIDENT_RPS='<타임세일 후 결제 장애 채팅 RPS>'
-CHAT_PRE_ALLOCATED_VUS='<채팅 실측값>'
-CHAT_MAX_VUS='<채팅 실측값>'
-
-# 1차 장애 주입
-curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
-  -H "x-admin-key: $PG_STUB_ADMIN_KEY" \
-  -H 'content-type: application/json' \
-  -d "{\"action\":\"set\",\"delay_ms\":${PG_DELAY_MS},\"fail_rate\":${PG_FAIL_RATE}}"
-
-# 1차 주문 부하
+# 1차와 2차에 아래 전체 값을 그대로 재사용한다.
+PG_DELAY_MS=1200 PG_FAIL_RATE=0.9 \
+ORDER_RATE='<1차 기록값>' RUN_DURATION='<1차 기록값>' \
+CHAT_BASE_RPS='<1차 기록값>' CHAT_SALE_RPS='<1차 기록값>' \
+ORDER_PRE_ALLOCATED_VUS='<1차 기록값>' ORDER_MAX_VUS='<1차 기록값>' \
+CHAT_PRE_ALLOCATED_VUS='<1차 기록값>' CHAT_MAX_VUS='<1차 기록값>' \
 BASE_URL='https://<현재-ALB>' WS_URL='wss://<현재-ALB>' \
-RATE="$ORDER_RATE" DURATION="$ORDER_DURATION" \
-PRE_ALLOCATED_VUS="$ORDER_PRE_ALLOCATED_VUS" MAX_VUS="$ORDER_MAX_VUS" \
-CHAT_BASE_RPS="$CHAT_BASE_RPS" CHAT_SALE_RPS="$CHAT_SALE_RPS" \
-CHAT_INCIDENT_RPS="$CHAT_INCIDENT_RPS" \
-CHAT_PRE_ALLOCATED_VUS="$CHAT_PRE_ALLOCATED_VUS" CHAT_MAX_VUS="$CHAT_MAX_VUS" \
-k6 run -e BASE_URL -e WS_URL -e RATE -e DURATION -e PRE_ALLOCATED_VUS \
-  -e MAX_VUS -e CHAT_BASE_RPS -e CHAT_SALE_RPS -e CHAT_INCIDENT_RPS \
-  -e CHAT_PRE_ALLOCATED_VUS -e CHAT_MAX_VUS loadtest/s3-payment.js
-
-# 사람 해결·History/Runbook 검증이 끝난 뒤 실험 환경 초기화
-curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
-  -H "x-admin-key: $PG_STUB_ADMIN_KEY" \
-  -H 'content-type: application/json' \
-  -d '{"action":"clear"}'
-
-# Datadog Monitor가 OK로 복귀하고 2차 실행 지식 상태를 확인한 뒤 같은 장애 재주입
-curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
-  -H "x-admin-key: $PG_STUB_ADMIN_KEY" \
-  -H 'content-type: application/json' \
-  -d "{\"action\":\"set\",\"delay_ms\":${PG_DELAY_MS},\"fail_rate\":${PG_FAIL_RATE}}"
-
-# 2차 주문 부하 — 1차와 같은 프로필
-BASE_URL='https://<현재-ALB>' WS_URL='wss://<현재-ALB>' \
-RATE="$ORDER_RATE" DURATION="$ORDER_DURATION" \
-PRE_ALLOCATED_VUS="$ORDER_PRE_ALLOCATED_VUS" MAX_VUS="$ORDER_MAX_VUS" \
-CHAT_BASE_RPS="$CHAT_BASE_RPS" CHAT_SALE_RPS="$CHAT_SALE_RPS" \
-CHAT_INCIDENT_RPS="$CHAT_INCIDENT_RPS" \
-CHAT_PRE_ALLOCATED_VUS="$CHAT_PRE_ALLOCATED_VUS" CHAT_MAX_VUS="$CHAT_MAX_VUS" \
-k6 run -e BASE_URL -e WS_URL -e RATE -e DURATION -e PRE_ALLOCATED_VUS \
-  -e MAX_VUS -e CHAT_BASE_RPS -e CHAT_SALE_RPS -e CHAT_INCIDENT_RPS \
-  -e CHAT_PRE_ALLOCATED_VUS -e CHAT_MAX_VUS loadtest/s3-payment.js
-
-# 2차 검증까지 끝난 뒤 주입 해제
-curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
-  -H "x-admin-key: $PG_STUB_ADMIN_KEY" \
-  -H 'content-type: application/json' \
-  -d '{"action":"clear"}'
+PG_STUB_ADMIN_URL='https://<현재-ALB>/api/admin/pg-stub' \
+PG_STUB_ADMIN_KEY='<Secret에서 주입>' \
+loadtest/s3-coldopen.sh
 ```
 
-**세기는 "주문은 깨지는데 읽기는 사는 구간" 이다.** 동기 라우트라 uvicorn 스레드풀이
-마르면서 api p95 가 전면 상승하는 것까지는 의도한 것이다(알림이 떠야 병합을 보여준다).
-너무 세면 api 자체가 죽어 `pod_resource_exhaustion` 으로 오진된다 — `delay_ms` × 주문 RPS 를
-스윕해 하한을 잡는다.
+Runbook 승격 증거는 `delay_ms=1200`, `fail_rate=0.9`에서 PG-A와 PG-B 차이를 확인했다.
+이는 Runbook 검증 증거이지 시나리오 전체 E2E 증거는 아니다. 읽기 경로 생존과 오진 여부는
+1차·2차 실행에서 별도로 확인한다.
 
 **확인할 것**
 
@@ -698,9 +655,10 @@ curl -fsS -X POST "$PG_STUB_ADMIN_URL" \
 | 2차 종료 사유 | `final_status: RESOLVED`. PG-A 주입은 검증이 끝날 때까지 유지한다 |
 
 > **현재 구현 경계:** PG-A 장애 주입·이벤트, PG-B ready·전환·원복 제어면,
-> `switch_pg_provider` L3 등록과 Runbook active 승격까지는 끝났다. 남은 것은
-> Dify 그래프의 `PG_PROVIDER_SWITCH_URL` 실주입과 History 분기, 그리고 실제
-> Agent E2E 다. 이 셋을 확인하기 전에는 위 2차 실행을 E2E 완료로 표시하지 않는다.
+> `switch_pg_provider` L3 등록과 Runbook active 승격까지는 끝났다. 게시된 Dify graph는
+> PG 전환을 REAL로 호출하지만 URL·admin key가 평문이라 저장소 DSL과 드리프트가 있다.
+> 비밀값 회전·환경변수 기반 재게시, 명시적인 History 분기, 최종 `RESOLVED` E2E를
+> 확인하기 전에는 2차 실행을 E2E 완료로 표시하지 않는다.
 
 ### 4.5 다음 실행 전 확인
 
@@ -719,20 +677,10 @@ Karpenter 임시 노드가 남지 않았는지 확인한 뒤 다음 시나리오
 
 ### 4.6 발표 도입부 클립 (라이브 화면만)
 
-발표 맨 앞에 아키텍처 설명 없이 **사용자 화면만으로** "불만이 올라왔다가 멎는" 그림을
-보여주려면 4.4 와 다른 부하 프로필이 필요하다. 4.4 의 불만 채팅은 `CHAT_INCIDENT_RPS`
-고정 발화라 PG-B 우회 뒤에도 그대로 쏟아진다 — 측정에는 그게 맞지만(1차·2차 조건을
-같게 유지해야 한다) 회복 장면은 안 나온다.
-
-```bash
-BASE_URL='https://<현재-ALB>' WS_URL='wss://<현재-ALB>' \
-PG_STUB_ADMIN_URL='https://<현재-ALB>/api/admin/pg-stub' PG_STUB_ADMIN_KEY='<주입>' \
-PG_DELAY_MS='<실측 후 확정>' PG_FAIL_RATE='<실측 후 확정>' \
-ORDER_RATE='<주문 RPS>' ORDER_PRE_ALLOCATED_VUS='<실측값>' ORDER_MAX_VUS='<실측값>' \
-CHAT_BASE_RPS='<타임세일 전>' CHAT_SALE_RPS='<타임세일 후>' \
-CHAT_PRE_ALLOCATED_VUS='<실측값>' CHAT_MAX_VUS='<실측값>' \
-RUN_DURATION='<Agent 한 바퀴보다 길게>' loadtest/s3-coldopen.sh
-```
+발표 맨 앞에서 **사용자 화면만으로** "불만이 올라왔다가 멎는" 장면을 보여줄 때도
+4.4의 `s3-coldopen.sh` 명령과 같은 프로필을 쓴다. 이 러너는 실제 502를 본 VU만
+불만을 쓰고 202 응답 뒤 발화 확률을 낮추므로 별도 `CHAT_INCIDENT_RPS`가 필요 없다.
+1차·2차 비교 조건을 보존하려면 환경변수 값도 바꾸지 않고 녹화 화면만 달리 잡는다.
 
 러너가 하는 일은 셋뿐이다 — **타임세일을 열고, 장애를 넣고, 끝나면 원복한다.**
 PG-B 전환은 하지 않는다. 그것을 러너가 대신하면 녹화물이 연극이 된다.
