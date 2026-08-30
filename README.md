@@ -1,270 +1,265 @@
-# O2 live ai ops
+# O2 Live Commerce AIOps
 
-라이브 스트리밍 서비스의 인프라와 배포를 담는 저장소.
-애플리케이션 코드, 인프라 코드, 배포 매니페스트를 한 곳에서 관리한다.
+> AWS/EKS 기반 라이브커머스 서비스와, <br>채팅·메트릭에서 장애 신호를 찾아 안전하게 진단·조치·검증하는 AIOps 플랫폼
 
-## 구조
+O2는 라이브 영상, 실시간 채팅, 재고·주문·결제를 운영하는 서비스입니다. 동시에 사용자가 채팅으로 먼저 알린 이상 징후와 Datadog 모니터 신호를 하나의 Incident로 병합하고, 검증된 장애 이력과 Runbook을 근거로 AI Agent가 대응하도록 설계했습니다.
 
-```
-.github/workflows/
-  app.yml        빌드 + 배포
-  tf.yml         fmt · validate (PR 전용) — plan도 apply도 하지 않는다
-  scan.yml       gitleaks
-  docs.yml       결정 기록 인덱스 + 계약 스키마 검사
-  warm.yml       warm path 집계기 시험 + SDK 계약 드리프트
-infra/
-  00-cicd/       GitHub OIDC, IAM 역할, ECR
-  01-network/    VPC, 서브넷, 라우팅, NAT
-  02-eks/        클러스터, 노드그룹, EKS 애드온
-  03-data/       RDS, Valkey, 주문·Chat Signal SQS, Candidate DynamoDB
-                 (backend key는 `datastore/` · D-015, D-017, D-047)
-  04-platform/   Argo CD, Load Balancer Controller, ESO, Datadog 에이전트,
-                 클러스터 접근 권한과 앱 배선
-  05-datadog/    Datadog 대시보드
-  06-agent/      Dify 호스트 — EKS 밖의 EC2 (D-028)
-  06-datastream/ Kinesis, Firehose, S3 레이크, Glue, DynamoDB, Lambda
-                 에이전트가 쓰는 내부 데이터 시스템 (backend key는 `data/` · D-029)
-  07-media/      영상 배포용 CloudFront — `/hls` 만 통과 (D-033, D-039)
-                 나머지 영상 구성요소는 매니페스트가 만든다
-  08-chat-signal/ Chat Signal Lambda·Chat Candidate Source Adapter (D-048)
-  09-incident/   Incident Signal/Invocation Queue, Datadog Source Adapter,
-                 Incident Correlator·State — 모니터링 팀 소유 (D-078)
-apps/<service>/  Dockerfile + src
-loadtest/        부하 테스트 시나리오
-AGENTS.md        작업 시작 전에 읽을 것 — 규약과 함정, 문서 지도 (D-022)
-docs/
-  architecture.md  전체 설계 (부하 가정, 캐싱, 스케일링, 리스크)
-  decisions.md   결정 기록
-  contracts.md   인터페이스 계약 (REST, WebSocket, 캐시 키, 이벤트, 큐시트)
-  contracts/     기계 판독 스키마와 예시 (agent-*, cue-sheet-v1)
-  chat-incident-candidate.md  채팅 기반 Incident Candidate canonical spec
-  agent-entrypoint.md  Candidate 이후 Agent 공통 진입점
-  agent.md       Dify 워크플로 대조본
-  runbook-catalog.md   Runbook 실행 카탈로그 형식과 위험도
-  scenario-experiment.md / scenario-readiness.md  시나리오 실험과 준비 상태
-  schema.md      MySQL 테이블·Valkey 키·마이그레이션
-  troubleshooting.md / measurements.md  증상 기록과 실측
-```
+자동화의 목표는 단순히 “AI가 명령을 실행하는 것”이 아닙니다. **가역적인 조치만 제한적으로 실행하고, 고정된 지표로 복구를 확인하며, 실패하면 원복하거나 사람에게 인계하는 운영 루프**를 만드는 것입니다.
 
-**쿠버네티스 매니페스트는 이 저장소에 없다.**
-[`CJ-Only-One/O2-live-deploy`](https://github.com/CJ-Only-One/O2-live-deploy)에 있고
-Argo CD가 그쪽을 감시한다. `main` 의 브랜치 보호와 CI의 태그 갱신 커밋이
-충돌해서 나눴다 — 근거는 D-006.
+## 목차
 
-`infra/`의 번호는 **의존 순서**다. `02`와 `03`은 `01`의 출력을 remote state로
-참조하고, `06`은 `02`가 만든 클러스터의 OIDC 프로바이더를 조회하므로 apply는
-반드시 이 순서를 지켜야 한다. apply는 로컬에서 하므로
-순서를 지키는 것은 사람의 몫이다 — `tf.yml` 은 문법과 포맷만 검사한다 (D-023).
+1. [팀 구성](#팀-구성)
+2. [해결하려는 문제](#해결하려는-문제)
+3. [핵심 기능](#핵심-기능)
+4. [전체 아키텍처](#전체-아키텍처)
+5. [핵심 서비스 흐름](#핵심-서비스-흐름)
+6. [관측 데이터 파이프라인](#관측-데이터-파이프라인)
+7. [AIOps 동작 방식](#aiops-동작-방식)
+8. [MLflow 기반 모델 비교·선정](#mlflow-기반-모델-비교선정)
+9. [장애 대응 시나리오](#장애-대응-시나리오)
+10. [실측 지표](#실측-지표)
+11. [배포와 운영](#배포와-운영)
+12. [저장소 구성](#저장소-구성)
+13. [기술 스택](#기술-스택)
 
-`03-data`와 `06-datastream`은 이름이 비슷하지만 다른 것이다. 앞은 서비스가
-읽고 쓰는 저장소, 뒤는 그 서비스를 관찰한 결과다. **state 키를 서로 바꿔 쓰면
-상대 리소스를 지운다** (D-015, D-029).
+## 팀 구성
 
-`08-chat-signal`은 `03-data`의 Chat Signal SQS와 Candidate DynamoDB를 참조한다.
-따라서 `03-data` 이후에 적용한다(D-048). Candidate 생성과 Source Adapter는 실행
-게이트가 켜져 있고, 출력은 `09-incident`의 Signal Queue로만 간다.
-
-`09-incident`는 Incident 생성 runtime을 소유하고 `06-agent`가 그 소비자다(D-078).
-신규 환경에서는 `06-agent`·`08-chat-signal`보다 먼저 적용한다. 전체 순서는
-[`infra/09-incident/README.md`](infra/09-incident/README.md)가 원본이다.
-
-배경과 근거는 [`docs/decisions.md`](docs/decisions.md)에 있다.
-
-## 워크플로
-
-| | 트리거 | 하는 일 |
+| 이름 | 역할 | 담당 |
 |---|---|---|
-| `app.yml` | `apps/**` 변경 | PR은 `verify`(lint·test·build)까지. main 푸시에서 이미지 빌드 → Trivy 스캔 → ECR → 매니페스트 저장소에 태그 갱신 |
-| `tf.yml` | `infra/**` PR | `fmt`·`init -backend=false`·`validate` 만. **plan도 apply도 하지 않는다** — AWS 접근이 필요 없다 (D-023) |
-| `scan.yml` | 모든 PR·푸시, 주 1회 | 시크릿 유출 검사 |
-| `docs.yml` | `docs/**`·`AGENTS.md`·검증 스크립트 변경 | 결정 기록 인덱스, Agent 계약 스키마, 큐시트, correlation window 근거 검사 |
-| `warm.yml` | `infra/06-datastream/warm/**` 변경, 주 1회 | 집계기 시험. 계약 드리프트는 PR 게이트로 걸지 않는다 |
+| 정영찬 | PM·인프라 | 프로젝트 관리, AWS·EKS 인프라 구축 |
+| 김도훈 | 데이터 파이프라인 | 이벤트 수집·집계·저장 파이프라인 구축 |
+| 이상문 | 서비스·CI/CD | 라이브커머스 서비스와 CI/CD·GitOps 구축 |
+| 서태영 | AI Agent | 이상 탐지·장애 진단 Agent 구축 |
+| 김수연 | AI Agent | 안전 조치·검증·결과 보고 Agent 구축 |
 
-나눈 기준은 **실패했을 때 되돌리는 비용**이다.
-앱 배포는 다시 하면 되지만 인프라는 그렇지 않고, 유출된 시크릿은 되돌릴 수 없다.
-그래서 인프라만 CI가 적용하지 않는다 — 사람이 로컬에서 plan을 읽고 apply한다.
+## 해결하려는 문제
 
-## 최초 셋업
+라이브커머스는 방송 시작과 특가 오픈 시점에 트래픽이 한 번에 몰리고, 영상·채팅·주문이 서로 다른 방식으로 확장됩니다. 장애가 발생하면 모니터 임계치보다 사용자 채팅이 먼저 반응할 수 있고, 결제나 데이터 계층 장애는 주문 손실로 바로 이어집니다.
 
-### 1. Terraform 상태 저장소
+O2는 이 문제를 세 계층으로 나눠 해결합니다.
 
-state에는 RDS 비밀번호 같은 값이 평문으로 들어가므로 로컬에 두지 않는다.
-S3 버킷과 잠금 테이블을 먼저 만든다. (이 두 개만은 손으로 만든다 —
-state를 보관할 곳을 만드는 데 state가 필요한 순환을 피하기 위해서다)
-
-**이미 만들어져 있다** — `s3://o2-tfstate-066107819912`. 아래는 재현이 필요할 때의
-기록이다. 버킷 하나만 손으로 만들고, 각 스택은 `backend "s3"` 로 그 안의 키를 쓴다.
-
-```bash
-B=o2-tfstate-066107819912
-aws s3api create-bucket --bucket $B --region ap-northeast-2 \
-  --create-bucket-configuration LocationConstraint=ap-northeast-2
-aws s3api put-public-access-block --bucket $B --public-access-block-configuration \
-  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-aws s3api put-bucket-versioning --bucket $B \
-  --versioning-configuration Status=Enabled
-aws s3api put-bucket-encryption --bucket $B --server-side-encryption-configuration \
-  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"},"BucketKeyEnabled":true}]}'
-```
-
-버전 관리를 켜는 이유는 잘못된 apply로 state가 깨졌을 때 되돌리기 위해서다.
-오래된 버전은 90일 뒤 만료되게 lifecycle 규칙을 걸어두었다.
-
-잠금에 DynamoDB는 필요 없다. Terraform 1.10부터 S3 자체 잠금(`use_lockfile`)을 쓴다.
-
-### 2. GitHub 시크릿
-
-| 이름 | 값 |
+| 계층 | 해결 방식 |
 |---|---|
-| `AWS_TF_ROLE_ARN` | Terraform용 IAM Role — `ReadOnlyAccess`. **지금 CI는 쓰지 않는다** — plan을 뺀 뒤(D-023) `tf.yml` 에 AWS 접근이 없다 |
-| `AWS_APP_ROLE_ARN` | 애플리케이션 배포용 IAM Role — ECR push 등 좁은 권한 |
-| `DEPLOY_REPO_TOKEN` | 매니페스트 저장소에 태그 갱신을 커밋할 fine-grained PAT.<br>`O2-live-deploy` 한 곳, `Contents: Read and write` 만. **만료 주의** |
+| 서비스 인프라 | CloudFront 영상 팬아웃, Valkey 채팅 팬아웃, SQS 비동기 주문, HPA·KEDA·Karpenter 확장 |
+| 관측·데이터 | 애플리케이션 이벤트와 Datadog 메트릭을 수집하고 Hot·Warm·History 데이터로 분리 |
+| AIOps | 채팅·Datadog 신호 병합 → 이력·Runbook 조회 → 진단 → 승인·조치 → 복구 검증 |
 
-**두 역할을 반드시 분리한다.** 그리고 둘 다 쓰기 범위를 좁게 유지한다 —
-CI 자격증명에 쓰기 권한을 주면 PR 하나가 곧 인프라 변경 수단이 되기 때문이다 (D-011).
-plan을 뺀 지금은 `tf.yml` 이 AWS에 아예 붙지 않아, public 저장소에서 PR로 CI 코드를
-실행하는 경로가 하나 더 줄었다 (D-023).
+## 핵심 기능
 
-### 3. Argo CD 등록
+- **실시간 서비스 분리:** 영상, 채팅, 주문 경로를 분리해 한 경로의 장애가 전체 방송으로 번지는 범위를 줄입니다.
+- **복합 신호 Incident:** 사용자의 채팅 기반 체감 장애와 Datadog 알림을 공통 계약으로 정규화해 하나의 Incident로 병합합니다.
+- **근거 기반 진단:** 현재 Hot/Warm 지표, 검증된 과거 Incident, 실행 가능한 Runbook을 함께 AI Agent 입력으로 사용합니다.
+- **통제된 자동 조치:** 위험도, 사전 조건, 실행 권한, 운영자 승인, 최대 반복 횟수로 자동화 범위를 제한합니다.
+- **폐쇄 루프 검증:** 조치 성공 응답만 보지 않고 안정화 대기 후 동일 지표를 다시 측정해 `RESOLVED` 또는 사람 인계를 결정합니다.
+- **GitOps 배포:** 애플리케이션 빌드와 Kubernetes 선언 상태를 분리하고 ECR → 배포 저장소 → Argo CD로 변경 이력을 남깁니다.
 
-`infra/04-platform` 이 Argo CD 설치와 `o2-dev` Application 등록을 함께 한다.
-손으로 `kubectl apply` 할 것은 없다 — 예전 `bootstrap/argocd-application.yaml`
-은 같은 리소스를 두 곳에서 만들게 되어 제거했다. (D-011)
+## 전체 아키텍처
 
-이후로는 배포 저장소에 태그 갱신 커밋이 올라올 때마다 Argo가 알아서 반영한다.
-기본 폴링 주기는 180초다.
+![O2 전체 AWS 아키텍처](./docs/images/architecture/overview.png)
 
-## 배포 흐름
-
-```
-푸시 → app.yml
-        ├ verify   바뀐 서비스만. 언어를 판별하지 못하면 건너뛴다 (D-013)
-        ├ image    이미지 빌드 → Trivy 스캔 → ECR (태그: 커밋 SHA)
-        └ deploy   O2-live-deploy 의 <service>-deployment.yaml 태그 갱신 후 커밋
-                     → Argo CD가 감지 → 클러스터에 반영
-```
-
-스캔은 **푸시 전에** 돈다. 올라간 뒤에 보면 통보일 뿐 게이트가 아니기 때문이다.
-**CRITICAL이 하나라도 있으면 ECR 푸시가 막힌다.** HIGH는 막지 않고 기록만 한다 —
-대개 베이스 이미지의 것이라 우리가 고칠 수 없고, 손쓸 수 없는 이유로 배포가 서면
-결국 스캔을 끄게 되기 때문이다. 결과는 저장소 **Security 탭**에 쌓인다. 근거는 D-014.
-
-`app.yml` 은 **EKS를 직접 건드리지 않는다.** 배포 요청을 커밋으로 남기는 데서 끝난다.
-CI에 클러스터 수정 권한을 주지 않기 위해서다. 근거는 D-004에 있다.
-
-매니페스트 파일명은 배포 저장소의 `<service>-deployment.yaml` 규약을 따른다.
-평면 배치라 `yq` 가 이 경로로 이미지 태그를 찾아 고치기 때문이며,
-이름이 어긋나면 태그 갱신이 건너뛰어진다(워크플로가 경고를 남긴다).
-
-## 애플리케이션이 데이터 계층에 붙는 법
-
-**접속 정보를 코드나 매니페스트에 적지 않는다.** 클러스터에서는 두 가지가
-`envFrom` 으로 통째로 들어온다.
-
-| 이름 | 종류 | 내용 |
+| 영역 | 주요 구성 | 역할 |
 |---|---|---|
-| `o2-data` | ConfigMap | RDS·Valkey 엔드포인트, SQS 큐 URL |
-| `o2-db` | Secret | `DB_PASSWORD` 하나 |
-| `o2-events` | Secret | `O2_EVENTS_SALT` 하나 (D-027) |
+| Edge | CloudFront, ALB, NLB | 정적 자산·HLS 배포, HTTP/WebSocket·RTMP 진입 |
+| Compute | EKS, EC2 Dify, Lambda | 라이브 서비스, 이벤트 처리, Incident·Agent 실행 |
+| Data | RDS MySQL, Valkey, SQS, DynamoDB, S3 | 주문 원본, 캐시·Pub/Sub, 비동기 버퍼, 상태·이력 저장 |
+| Observability | Datadog, CloudWatch | 메트릭·로그·APM 수집과 장애 신호 생성 |
+| AI | Dify, Amazon Bedrock, S3 Vectors | 진단·조치 워크플로, LLM 추론, 유사 장애 검색 |
+| Delivery | GitHub Actions, ECR, Argo CD | 검증, 이미지 배포, 선언 상태 동기화 |
 
-둘 다 `infra/04-platform` 이 `03-data` 의 remote state 를 읽어 만든다.
-데이터 스택을 다시 만들어도 그 스택을 apply 하면 따라간다.
+아키텍처 그림은 시스템 배치를 설명합니다. 자동 조치 활성화 여부와 시나리오별 실제 검증 범위는 [`scenario-readiness.md`](./docs/scenario-readiness.md)를 기준으로 판단합니다.
 
-이벤트와 DB의 `user_key`를 같은 값으로 만들려면 세 서비스가 동일한
-`O2_EVENTS_SALT`를 봐야 한다. `o2-events` Secret 이 그 값을 나른다 — 원본은
-Secrets Manager 에 있고 ESO 가 동기화한다 (D-027).
+## 핵심 서비스 흐름
 
-### 이름이 계약이다
+### 1. 라이브 영상
 
+![라이브 영상 흐름](./docs/images/architecture/live-streaming.png)
+
+MediaMTX는 RTMP를 HLS로 리패키징하고, 대규모 시청자 팬아웃은 CloudFront가 담당합니다. 영상 트래픽을 애플리케이션 API 부하와 분리해 EKS 서비스의 장애 반경을 제한합니다.
+
+
+### 2. 주문·결제
+
+![주문 결제 흐름](./docs/images/architecture/order-payment.png)
+결제 승인 전에는 재고 예약과 멱등성을 보장하고, 승인된 주문만 SQS로 넘깁니다. Order Worker는 큐 적체량에 따라 KEDA가 확장하며, 소비자 장애가 API 요청을 장시간 붙잡지 않게 합니다.
+
+### 3. 채팅 팬아웃과 장애 신호 분리
+![채팅 팬아웃과 장애 신호 분기](./docs/images/architecture/chat-signal.png)
+실시간 전송은 Valkey Pub/Sub, 장애 분석은 내구성 있는 SQS 경로를 사용합니다. 분석 파이프라인이 느려지거나 실패해도 시청자 채팅 팬아웃은 계속 동작합니다. 분석 입력에는 채팅 원문 대신 메시지 수, 고유 사용자 수, 시간 분포 같은 비식별 특징만 사용합니다.
+
+
+## 관측 데이터 파이프라인
+
+![O2 관측 데이터 파이프라인](./docs/images/architecture/data-pipeline.png)
+
+```text
+Application + o2events SDK
+  ├→ Datadog Agent → Metrics · Logs · APM → Monitor
+  └→ Kinesis
+       ├→ Lambda → DynamoDB              # Warm context
+       └→ Firehose → S3 Data Lake        # Cold history
 ```
-ConfigMap/Secret 키  ==  apps/api 의 Settings 필드  ==  .env.example 항목
+
+[`o2-sdk-for-event`](https://github.com/CJ-Only-One/o2-sdk-for-event)는 서비스가 발행하는 이벤트에 `event_id`, `trace_id`, 서비스 버전, 비식별 사용자 키를 자동으로 추가합니다. 로컬 큐와 배치 전송을 사용하므로 관측 경로 장애가 주문·채팅 요청을 막지 않습니다.
+
+데이터는 목적별로 분리합니다.
+
+| 데이터 | 용도 | 저장소 |
+|---|---|---|
+| Hot | 장애 직전의 최신 메트릭·로그 | Datadog |
+| Warm | 최근 구간 집계와 Agent 판단 컨텍스트 | DynamoDB |
+| History | 장기 이벤트, Incident 결과, 유사 장애 검색 | S3, S3 Vectors |
+| Runbook | 승인된 조치, 조건, 검증·롤백 기준 | DynamoDB |
+
+## AIOps 동작 방식
+
+![O2 AIOps Agent 루프](./docs/images/architecture/aiops-loop.png)
+
+```text
+Chat Candidate / Datadog Alert
+  → Source Adapter
+  → Incident Correlator
+  → Agent Worker
+  → 현재 지표 + 검증된 History + Runbook 조회
+  → Dify / Bedrock 진단
+  → Guardrail + Slack 승인
+  → 제한 조치
+  → 안정화 대기 + 동일 지표 검증
+  → 복구 / 재진단 / 원복 / 사람 인계
 ```
 
-**앱이 읽는 키는** 셋이 같아야 한다. `REDIS_URL` 같은 새 이름을 만들면 **주입된 값이 조용히 무시되고
-기본값(localhost)이 쓰인다.** 파드는 정상적으로 뜨고 DB 호출에서만 실패하므로
-알아채기 늦다. 현재 키 목록은 `apps/api/.env.example` 에 있다.
+### Agent 책임 분리
 
-셋이 완전히 같은 집합은 아니다. `o2-data` ConfigMap 에는 chat-gateway 만 읽는
-키(`CHAT_SIGNAL_MODE`, `EMIT_CHAT_EVENTS` 등)가 함께 들어가고, `.env.example`
-에는 `Settings` 가 아니라 이벤트 SDK 가 읽는 `O2_*` 가 있다. 규칙이 적용되는
-것은 **같은 값을 두 곳이 읽는 키**다.
+| 단계 | 책임 |
+|---|---|
+| Source Adapter | Chat·Datadog의 서로 다른 입력을 `agent.trigger.v1` 계약으로 정규화 |
+| Incident Correlator | 환경·서비스·증상·시간 창을 기준으로 신호 병합, revision·멱등성 관리 |
+| Agent Worker | 현재 데이터와 검증된 이력을 준비하고 Dify를 호출 |
+| Diagnosis Agent | RCA 후보, 근거, 신뢰도 산출 |
+| Runbook Lookup | RCA와 일치하며 `active`인 조치만 반환 |
+| Guardrail | 위험도·권한·사전 조건·반복 횟수 평가, 필요 시 Slack 승인 요청 |
+| Action Handler | 허용된 파라미터 범위에서 가역적 조치 실행 |
+| Verification | 고정된 SLO·회복 지표로 성공 판정, 실패 시 원복·재진단·인계 |
 
-### 로컬과 클러스터의 차이는 둘뿐
+Dify가 Datadog, DynamoDB, S3 Vectors를 직접 탐색하지 않습니다. Worker가 필요한 데이터만 선별해 전달하므로 입력 계약, 개인정보 제외, 토큰 상한과 실패 처리를 코드에서 통제할 수 있습니다.
 
-`docker-compose` 가 같은 이름의 환경변수를 쓰므로 로컬에서 돌아가는 코드는
-클러스터에서도 그대로 돈다. 다른 것은 두 가지다.
+### 안전 경계
 
-- **Valkey TLS.** 클러스터는 transit 암호화가 켜져 있어 평문 접속이 끊긴다.
-  `VALKEY_TLS=true` 가 주입되고, `settings.valkey_url` 이 `rediss://` 를 낸다.
-  로컬 컨테이너에는 TLS 가 없어 `false` 다.
-- **SQS.** 로컬에는 큐가 없다. `SQS_ORDER_QUEUE_URL` 이 비면 발행을 건너뛰도록
-  코드에서 분기한다.
+- 채팅 원문과 사용자 식별자를 Agent 입력·임베딩에 저장하지 않습니다.
+- History의 존재와 자동 실행 권한을 분리합니다. `verified=true`인 사례도 근거일 뿐 실행 허가는 아닙니다.
+- Runbook은 `case → draft → 별도 검증 → 운영자 승인 → active` 생명주기를 따릅니다.
+- 고위험 조치는 Slack 승인이 없으면 실행하지 않고, 거부·시간 초과 시 반복을 종료합니다.
+- Queue, DLQ, Incident revision, 실행 ledger로 중복 호출과 메시지 손실을 확인합니다.
+- HTTP 200이 아니라 Dify 상태, 조치 결과, 안정화 후 지표, 원복 상태까지 확인해야 완료입니다.
 
-### AWS 자격증명
+## MLflow 기반 모델 비교·선정
 
-**액세스 키를 만들지 않는다.** 파드는 EKS Pod Identity 로 임시 자격증명을 받는다.
-매니페스트에 `serviceAccountName` 을 적고, 같은 이름이
-`infra/04-platform` 의 `app_service_accounts` 목록에 있어야 한다.
+Amazon Bedrock의 Claude Opus 5, Sonnet 5, Haiku 4.5를 실제 O2 로그와 Runbook으로 비교하고, 모든 결과를 MLflow에 기록하고 비교했습니다.
 
-이름이 어긋나면 파드는 뜨고 **AWS 호출에서만** 실패한다. 두 곳을 함께 고친다.
+### 실험 설계
 
-### 서비스를 새로 붙일 때
+| 평가 축 | 방법 | MLflow runs |
+|---|---|---:|
+| 장문 컨텍스트 | 10개 로그 소스 × 3개 프롬프트 × 모델별 컨텍스트 길이에서 토큰·비용·진단 결과 기록 | 413 |
+| Tool 호출 | `get_metrics`, `get_logs`, `lookup_runbook` 멀티턴 호출의 인자 정확성 측정 | 441 |
+| 위험도 판정 | 실제 Runbook 조치의 L1·L2·L3 라벨과 모델 판정 비교 | 359 |
+| 진단 품질 | 동일 로그·프롬프트 셀의 두 출력을 Opus 5가 pairwise 평가 | 123 |
+| **합계** | MLflow에 완료 상태로 기록된 실행 | **1,336** |
 
-1. 매니페스트에 `serviceAccountName: <service>` 와 `envFrom` 두 줄
-2. `infra/04-platform` 의 `app_service_accounts` 에 이름 추가 후 apply.
-   **변수만 늘리면 plan 이 막힌다** — 이 목록에는 `api`·`order-worker`·
-   `chat-gateway` 정확히 셋만 허용하는 validation 이 걸려 있다. 역할·정책·
-   매핑(`app_data_access.tf`)과 validation 을 함께 고친다
-3. 새 환경변수가 필요하면 `04-platform/app_data_access.tf` 의 ConfigMap 에
-   추가하고, 같은 이름을 앱 설정과 `.env.example` 에도 넣는다
+MLflow에 기록된 모델 호출 비용은 세금 포함 **$660.47**입니다. 이는 모델 비교 호출 비용이며 기존 EKS, RDS, Valkey, MLflow 호스트 같은 상시 인프라 비용은 포함하지 않습니다.
 
-AWS 호출이 필요 없는 서비스는 이 목록에 넣지 않는다. `cue-warmer` 가 그 예로,
-클러스터 API 만 쓰므로 `04-platform/cue_warmer_access.tf` 가 따로 RBAC 을 준다.
+### 비교 결과
 
-## 서비스 추가하기
+| 지표 | Haiku 4.5 | Sonnet 5 | Opus 5 | 해석 |
+|---|---:|---:|---:|---|
+| Pairwise 품질 비교 | 0 | 24 | **99** | Opus > Sonnet > Haiku|
+| 위험도 라벨 일치 | **55.0%** (66/120) | 49.2% (59/120) | 34.5% (41/119) | 전체 46.2%로 자동 Guardrail에 사용하기 부족 |
+| Tool 인자 오류 | 0 | 0 | 0 | 전체 4,006회 Tool 호출에서 잘못된 인자 0회 |
+| 100K 목표 로그 평균 비용 | **$0.1061** | $0.2897 | $0.8031 | 각각 44·47·48 runs 평균, 출력 토큰 포함 |
+| 100K 목표 로그 평균 입력 토큰 | 88,450 | 112,349 | 112,359 | 모델별 토크나이저 차이로 실제 토큰 수가 다름 |
 
-1. `apps/<service>/` — Dockerfile과 소스
-2. **배포 저장소**에 `<service>-deployment.yaml`, `<service>-service.yaml`
-3. ECR 저장소 `o2/<service>` 생성 (`infra/00-cicd` 의 `services` 변수에 추가)
+Pairwise 평가는 Opus 5가 심사했으므로 자기 모델 선호 편향을 배제하지 못합니다. 위험도 실험도 `action_id`만 제공한 제한된 조건입니다. 따라서 단일 점수로 모델을 확정하지 않고 품질, 비용, 안전 책임을 분리했습니다.
 
-워크플로는 고치지 않아도 된다. `apps/` 아래를 훑어 바뀐 서비스만 빌드한다.
+### 선정안과 적용 상태
 
-## 상태
+| 역할 | 선정 | 근거 | 상태 |
+|---|---|---|---|
+| 기본 장애 진단 | **Sonnet 5** | Haiku 대비 pairwise 24/24 승리, Opus보다 100K 목표 로그 평균 비용 64% 절감 | 적용 전 |
+| 복합·고위험 RCA 재진단 | **Opus 5** | pairwise 99승으로 진단 품질 최상위 | 적용 전 |
+| 요약·형식화·저비용 처리 | **Haiku 4.5** | 100K 목표 로그 평균 비용 최저 | 현재 Dify 진단 노드에 적용 |
+| 위험도·실행 허가 | **LLM 미사용** | 세 모델 모두 라벨 일치율이 운영 Guardrail 기준에 미달 | Runbook catalog·결정론적 규칙 사용 |
 
-- [x] 저장소 골격
-- [x] `scan.yml` — gitleaks
-- [x] `tf.yml` — PR `fmt`·`validate` 전용 (plan 없음 · D-023, apply는 로컬)
-- [x] `app.yml` — 빌드 → ECR → 태그 갱신 커밋 (Argo가 배포)
-- [x] `apps/api` — FastAPI (Python). 초기에는 Spring Boot(Kotlin)였다
-- [x] 매니페스트를 `O2-live-deploy` 로 분리 (D-006)
-- [x] Argo CD Application — `infra/04-platform` 이 소유 (`bootstrap/` 제거 · D-011)
-- [x] `loadtest/` — 시나리오별 부하 스크립트 (k6). S1 `broadcast.js`, S2 `read-path.js`+`s2-canary.sh`, S3 `s3-payment.js`
-- [x] `AWS_APP_ROLE_ARN` / `AWS_TF_ROLE_ARN` 시크릿 등록
-- [x] `infra/00-cicd` — OIDC 프로바이더, IAM Role 2개, ECR (로컬 적용 완료)
-- [x] 파이프라인 전 구간 검증 — 커밋 → ECR → 태그 갱신 → Argo → 파드 응답
-- [x] Terraform state를 S3로 이전 (버전 관리·암호화·잠금)
-- [x] `infra/01-network`, `02-eks` — 팀 코드 반영 (D-007)
-- [x] `infra/04-platform` — 클러스터 안의 구성을 코드로 (D-008)
-- [x] state를 팀 버킷(`o2-tfstate-066107819912`) 하나로 통일 (D-010)
-- [x] `infra/03-data` — RDS, Valkey, SQS (D-017). 적용 완료
-- [x] `infra/01-network` — `enable_data_tier = true` (private-data 서브넷)
-- [x] `infra/04-platform` — 접속 정보를 클러스터로 넣는 배선 (D-018). 적용·검증 완료
-- [x] `apps/api` — 환경변수 계약 반영, `docker-compose` 에 Valkey 추가
-- [x] `apps/frontend` — 계약(`contracts.md`)에 맞춰 전면 수정 (D-019)
-- [x] DB 스키마와 마이그레이션 방식 — `docs/schema.md` + Alembic
-- [x] OIDC 프로바이더 소유권을 `00-cicd` 로 정리 (D-009)
-- [x] 배포 저장소 ruleset이 태그 갱신 커밋을 막던 문제 해결 (D-012)
-- [x] ~~`apps/testpage`~~ — 역할이 끝나 제거 (D-013 → D-020). ECR 저장소만 남겨둠
-- [x] ~~`data/terraform.tfstate` 는 백데이터 파트 소관 (D-015)~~ — `06-datastream` 으로 흡수 (D-029)
-- [x] `app.yml` — Trivy 이미지 스캔, 결과를 Code Scanning으로 (D-014)
-- [x] Trivy를 CRITICAL 차단으로 승격 (D-014)
-- [x] `docs/contracts.md` — REST·WebSocket·캐시 키·이벤트 계약 (D-016)
-- [x] `infra/07-media` — 영상 배포용 CloudFront (D-039). 적용 완료
-- [x] `infra/08-chat-signal` — Chat Candidate 생성과 Source Adapter (D-047, D-048)
-- [x] `infra/09-incident` — Incident Correlator·State, Agent Invocation Queue (D-055, D-078)
-- [x] `apps/cue-warmer` — 큐시트 기반 캐시 사전 워밍 (D-041, D-065)
-- [x] `chat.send` 발행 — `EMIT_CHAT_EVENTS`·`O2_EVENTS_SINK=kinesis` 로 켜졌고 warm 이 집계한다
-- [ ] `contracts.md` 5.5 — 모르는 `event_name` 을 Firehose→S3→Glue 가 어떻게 처리하는지는 아직 미확인
-- [ ] `tf.yml` — `trivy config` 로 Terraform 미스컨피그 검사 (게이트 없이 리포트만)
-- [ ] `scan.yml` — gitleaks 결과도 Code Scanning으로 이전
-- [ ] 주 1회 ECR 최신 이미지 재스캔 — CI 스캔은 빌드 시점만 본다
+현재 게시된 Dify graph는 Haiku 4.5 단일 모델입니다. Sonnet 기본 진단과 Opus 재진단 라우팅은 MLflow 실험에서 도출한 선정안이며, Dify graph 반영과 동일 조건 E2E를 완료하기 전까지 운영 적용으로 표기하지 않습니다.
+
+## 장애 대응 시나리오
+
+| 시나리오 | 장애 | 대응 흐름 | 현재 검증 범위 |
+|---|---|---|---|
+| S1 | 채팅 팬아웃 급증 | 방송 단위 총량 제한 → 전파 지연·차단률 검증 → 해제 | 주입·제어면·한계 실측 완료, 전체 자동 조치 E2E 보완 중 |
+| S2 | 특정 API 파드 지연 | 파드 증설 → 검증 실패 → 파드별 재진단 → Canary 격리·원복 | Canary와 수동 조치 효과 실측 완료, 자동 재진단·원복 E2E 보완 중 |
+| S3 | 외부 PG 지연·실패 | Chat 선감지 + Datadog 후속 신호 → PG 장애 진단 → PG-A에서 PG-B 전환 | PG 주입·전환·Runbook 증거 검증 완료, 복합 신호부터 최종 복구까지 E2E 보완 중 |
+
+완료된 기반 기능과 시나리오 전체 자동 복구를 구분합니다. 현재 프로젝트는 서비스·관측·Incident·Agent 기반을 실제 환경에서 검증했지만, S1-S3의 모든 자동 조치가 운영 수준으로 완료된 상태는 아닙니다.
+
+## 실측 지표
+
+
+| 근거 | 검증 항목 | 조건 | 결과 |
+|---|---|---|---|
+| M-003 | 알림 버스트 무손실 처리 | Function URL 동시 알림 30건, Worker 최대 동시 실행 5 | HTTP 30/30, 처리 30/30, 오류 0, DLQ 0 |
+| M-009 | API 읽기 경로 | API 1 Pod·Uvicorn 1 Worker, 외부 k6 | 300 RPS에서 p95 314ms·p99 573ms·실패 0.04%; 400 RPS에서 p95 1,352ms로 기준 초과 |
+| M-010 | 채팅 팬아웃 | Chat Gateway 2 Pod, 6,000 connections × 20 msg/s | 120,000 items/s에서 서버 p95 576ms·파드당 메모리 241Mi로 안정; 160,000 items/s에서 384Mi limit 도달 후 OOMKill |
+| M-020 | 복합 신호 병합 | 실제 WebSocket Chat + Datadog Monitor | 동일 Incident revision 2·sources 2로 병합, Dify 정확히 1회 `succeeded` |
+| M-021 | Chat-to-History E2E | WebSocket → Candidate → Incident → Bedrock embedding → Dify → S3/S3 Vectors | Worker 8,200.75ms·attempt 1·96MB, 이력 원본·Vector 저장과 합성 데이터 정리 확인 |
+| M-022 | AZ 장애 복구 | RDS failover, Valkey failover, EKS node drain | 애플리케이션 중단 RDS 15초, Valkey 37초, 노드 drain 1초 |
+| MLflow | 모델 비교 | 장문·Tool·위험도·pairwise 4개 축 | 1,336 runs, Tool 인자 오류 0/4,006회, 추적 호출 비용 $660.47 |
+
+측정값은 인스턴스, Pod 수, 부하 생성 위치, 집계 창이 바뀌면 다시 측정합니다. 특히 클라이언트 k6 지연과 서버측 지연을 구분하고, 미측정 값은 목표치로 표시합니다.
+
+## 배포와 운영
+
+```text
+O2-live-ai-ops
+  → GitHub Actions verify
+  → Image build + Trivy scan
+  → Amazon ECR
+  → O2-live-deploy image tag update
+  → Argo CD sync
+  → Amazon EKS
+```
+
+- 애플리케이션 CI는 EKS를 직접 수정하지 않습니다.
+- 이미지 태그는 CI만 갱신하고, 리소스·Probe·오토스케일링 정책은 배포 저장소에서 리뷰합니다.
+- Terraform CI는 `fmt`·`validate`만 수행하며, `plan`·`apply`는 대상과 destroy 수를 확인한 뒤 실행합니다.
+- GitHub OIDC, EKS Pod Identity, 서비스별 IAM/RBAC으로 장기 액세스 키와 과도한 권한을 피합니다.
+- Secrets Manager와 External Secrets를 사용해 비밀값을 코드·Terraform state·매니페스트에서 분리합니다.
+- 배포 롤백은 배포 저장소의 커밋을 `git revert`해 Argo CD가 이전 선언 상태를 복원하게 합니다.
+
+## 저장소 구성
+
+통합 프로젝트는 책임이 다른 세 코드베이스로 구성됩니다.
+
+| 경로 | 책임 | 주요 내용 |
+|---|---|---|
+| [`O2-live-ai-ops`](https://github.com/CJ-Only-One/O2-live-ai-ops) | 애플리케이션·인프라·AIOps | 서비스 코드, Terraform, CI, 데이터·Incident·Agent 파이프라인, 부하 테스트, 설계·실측 문서 |
+| [`O2-live-deploy`](https://github.com/CJ-Only-One/O2-live-deploy) | Kubernetes 선언 상태 | Argo CD가 감시하는 Deployment, Service, Ingress, KEDA 매니페스트 |
+| [`o2-sdk-for-event`](https://github.com/CJ-Only-One/o2-sdk-for-event) | 이벤트 계약 | Python SDK, 이벤트 스키마, 비동기 전송, 프레임워크 미들웨어, 테스트 |
+
+```text
+.
+├── O2-live-ai-ops/       # Application, Terraform, CI, AIOps
+├── O2-live-deploy/       # GitOps manifests
+├── o2-sdk-for-event/     # Business event SDK
+├── docs/images/          # README architecture assets
+└── README.md
+```
+
+## 기술 스택
+
+| 구분 | 기술 |
+|---|---|
+| Cloud | AWS EKS, EC2, Lambda, CloudFront, RDS, ElastiCache, SQS, Kinesis, Firehose, S3, DynamoDB, Glue |
+| Application | Python, FastAPI, Node.js, WebSocket, MediaMTX |
+| AI·Data | Dify, Amazon Bedrock, S3 Vectors, Athena |
+| Observability | Datadog, CloudWatch, 구조화 로그·메트릭·APM |
+| IaC·Delivery | Terraform, GitHub Actions, ECR, Argo CD, KEDA, Karpenter |
+| Validation | pytest, Node test runner, k6, kubeconform, Trivy, gitleaks |
